@@ -11,30 +11,14 @@ which significantly speeds up the answering process.
 import asyncio
 
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel
 
-from agent.common.llm_config import get_llm
 from agent.dataclasses.company import Company
-from agent.dataclasses.examples import BRANDBACK_COMPANY
-from agent.dataclasses.question_tree import QuestionNode, QuestionTree
+from agent.dataclasses.question_tree import QuestionNode
 from agent.pipeline.stages.answering.with_tool import graph as answer_with_tool_graph
 from agent.pipeline.stages.answering.without_tool import (
     graph as answer_without_tool_graph,
 )
-
-# Initialize LLM
-llm = get_llm(temperature=0.0)
-
-
-class AnswerQuestionTreeState(BaseModel):
-    """State for answering an entire question tree."""
-
-    question_tree: QuestionTree
-    company: Company = BRANDBACK_COMPANY
-    vc_context: str | None = None
-
-    is_backtesting: bool | None = False
-    search_end_date: str | None = None
+from agent.pipeline.state.answer import AnswerQuestionTreeState
 
 
 async def _async_answer_question_with_tool(
@@ -173,14 +157,26 @@ graph = builder.compile()
 if __name__ == "__main__":
     import json
 
-    from agent.cached_question_trees import get_market_question_tree
-
-    state = AnswerQuestionTreeState(
-        company=BRANDBACK_COMPANY,
-        question_tree=get_market_question_tree(BRANDBACK_COMPANY),
-        is_backtesting=True,
-        search_end_date="2023-06-15",
+    from agent.dataclasses.examples import BRANDBACK_COMPANY
+    from agent.pipeline.stages.questions import (
+        INVESTMENT_QUESTIONS,
+        get_cached_question_tree,
     )
 
-    result = asyncio.run(graph.ainvoke(state))
-    print(json.dumps(result["question_tree"].model_dump(), indent=2, default=str))
+    # Get a cached question tree for testing
+    question_tree = get_cached_question_tree(
+        INVESTMENT_QUESTIONS["market"], BRANDBACK_COMPANY, "market"
+    )
+
+    if question_tree:
+        state = AnswerQuestionTreeState(
+            company=BRANDBACK_COMPANY,
+            question_tree=question_tree,
+            is_backtesting=True,
+            search_end_date="2023-06-15",
+        )
+
+        result = asyncio.run(graph.ainvoke(state))
+        print(json.dumps(result["question_tree"].model_dump(), indent=2, default=str))
+    else:
+        print("No cached question tree found. Run decomposition first.")

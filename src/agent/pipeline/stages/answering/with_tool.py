@@ -8,20 +8,17 @@ VC investment research with proper rate limiting and error handling.
 """
 
 import os
-from datetime import datetime
 
 from dotenv import load_dotenv
-from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
-from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
-from pydantic import BaseModel, Field
-from typing_extensions import Annotated
 
 from agent.common.llm_config import get_llm
 from agent.dataclasses.company import Company
-from agent.dataclasses.examples import BRANDBACK_COMPANY
+from agent.pipeline.state.answer import AnswerState
+from agent.pipeline.utils.helpers import generate_context_block
 from agent.web_search import get_provider
 
 load_dotenv()
@@ -98,33 +95,6 @@ Avoid: repetition, excessive keywords, quotation marks unless needed for exact p
                 return f"Search failed: {error_msg}. Try broader industry terms rather than specific company names."
 
 
-class AnswerState(BaseModel):
-    """State for answering with tool support."""
-
-    question: str
-    is_backtesting: bool | None = False
-    search_end_date: str | None = None
-
-    messages: Annotated[list[AnyMessage], add_messages] = Field(default_factory=list)
-    company: Company = Field(default_factory=lambda: BRANDBACK_COMPANY)
-    qa_pairs: list[dict[str, str]] = Field(default_factory=list)
-    answer: str | None = None
-    vc_context: str = ""
-
-    tool_usage_count: int = 0
-    max_tool_usage: int = 1
-
-    def model_post_init(self, __context):
-        """Set search_end_date automatically for non-backtesting mode."""
-        if not self.is_backtesting and not self.search_end_date:
-            self.search_end_date = datetime.now().strftime("%Y-%m-%d")
-
-        if self.is_backtesting and not self.search_end_date:
-            self.search_end_date = datetime(year=2022, month=1, day=24).strftime(
-                "%Y-%m-%d"
-            )
-
-
 # Initialize LLM
 llm = get_llm(temperature=0.0)
 
@@ -133,22 +103,6 @@ def _create_tools_for_state(state: AnswerState) -> list:
     """Create tools dynamically based on the current state."""
     web_search_tool = IntelligentWebSearchTool(search_end_date=state.search_end_date)
     return [web_search_tool]
-
-
-def _generate_context_block(qa_pairs: list[dict[str, str]], vc_context: str) -> str:
-    """Generate a context block from Q&A pairs and VC context."""
-    if qa_pairs:
-        formatted_pairs = "\n-----------------\n".join(
-            [f"Q: {qa['question']}\nA: {qa['answer']}" for qa in qa_pairs]
-        )
-        context_block = f"\nSub questions and answers:\n{formatted_pairs}"
-    else:
-        context_block = ""
-
-    if vc_context:
-        context_block += f"\n\nVC Context:\n{vc_context}"
-
-    return context_block
 
 
 def limited_tools_condition(state: AnswerState):
@@ -202,7 +156,7 @@ def answer_question(state: AnswerState) -> AnswerState:
                 content=QUESTION_PROMPT.format(
                     question=state.question,
                     company_summary=state.company.get_company_summary(),
-                    context_block=_generate_context_block(
+                    context_block=generate_context_block(
                         state.qa_pairs, state.vc_context
                     ),
                 )

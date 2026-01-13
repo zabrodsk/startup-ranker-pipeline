@@ -1,60 +1,21 @@
 """Main LangGraph for iterative investment story generation.
 
 This module defines and compiles the full investment analysis pipeline,
-orchestrating all stages from argument generation to final decision.
+orchestrating all stages from question decomposition through argument
+generation to final investment decision.
 
 Pipeline Flow:
-    START
-      |
-      v
-    [check_if_final] --- is_final ---> [score_and_select_best_k]
-      |                                        |
-      | not_final                              |
-      v                                        |
-    [generate_pro_arguments]  <----------------+
-    [generate_contra_arguments]  (parallel)
-      |
-      v
-    [merge_arguments]
-      |
-      v
-    [apply_devils_advocate_to_pro]    (parallel)
-    [apply_devils_advocate_to_contra]
-      |
-      v
-    [score_and_select_best_k]
-      |
-      v
-    [refine_pro_arguments]    (parallel)
-    [refine_contra_arguments]
-      |
-      v
-    [merge_refined_arguments]
-      |
-      v
-    [add_arguments_to_history]
-      |
-      v
-    [reset_and_increment_iteration]
-      |
-      v
-    [check_continue] --- continue ---> [apply_devils_advocate...]
-      |
-      | finalize
-      v
-    [prepare_final_arguments]
-      |
-      v
-    [decide_final_investment_decision]
-      |
-      v
-    [create_final_investment_story]
-      |
-      v
-    END
+1. Decompose 4 investment questions in parallel
+2. Answer all question trees in parallel
+3. Generate pro/contra arguments from Q&A pairs
+4. Apply devil's advocate critiques
+5. Score and evaluate arguments
+6. Refine top arguments
+7. Iterate or make final decision
 """
 
 import asyncio
+from typing import Literal
 
 from langgraph.graph import END, START, StateGraph
 
@@ -80,32 +41,73 @@ from agent.pipeline.stages.generation import (
     generate_pro_arguments,
     merge_arguments,
 )
+from agent.pipeline.stages.parallel_answering import answer_all_trees
+from agent.pipeline.stages.parallel_decomposition import decompose_all_questions
 from agent.pipeline.stages.refinement import (
     merge_refined_arguments,
     refine_contra_arguments,
     refine_pro_arguments,
 )
-from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
+from agent.pipeline.state.investment_story import (
+    InputState,
+    IterativeInvestmentStoryState,
+)
+
+
+def check_start_point(
+    state: IterativeInvestmentStoryState,
+) -> Literal["decompose_questions", "generate_pro_and_contra_arguments", "score_and_select_best_k"]:
+    """Router: determines pipeline entry point based on state.
+
+    - If company provided but no question_trees: start with decomposition
+    - If question_trees exist but is_final=False: start with argument generation
+    - If is_final=True: skip to scoring (for final evaluation only)
+    """
+    # If is_final, skip to scoring
+    if state.is_final:
+        if len(state.current_arguments) == 0:
+            raise ValueError("No current arguments to prepare final arguments")
+        return "score_and_select_best_k"
+
+    # If we have question_trees or all_qa_pairs, skip decomposition/answering
+    if state.question_trees or state.all_qa_pairs:
+        return "generate_pro_and_contra_arguments"
+
+    # Otherwise, start from decomposition (company always has a default)
+    return "decompose_questions"
 
 
 def build_graph() -> StateGraph:
     """Build the investment story graph.
 
     Creates a StateGraph with all nodes and edges for the
-    iterative argument refinement pipeline.
+    full investment analysis pipeline, from decomposition to decision.
+
+    The graph uses InputState as the input schema (for langgraph.dev)
+    and IterativeInvestmentStoryState as the full state schema.
 
     Returns:
         Compiled StateGraph ready for invocation.
     """
-    builder = StateGraph(state_schema=IterativeInvestmentStoryState)
+    builder = StateGraph(
+        state_schema=IterativeInvestmentStoryState,
+        input=InputState,
+    )
 
-    # Add nodes
+    # Stage 1: Parallel decomposition of 4 investment questions
+    builder.add_node("decompose_questions", decompose_all_questions)
+
+    # Stage 2: Parallel answering of all question trees
+    builder.add_node("answer_questions", answer_all_trees)
+
+    # Stage 3: Generate arguments
     builder.add_node("generate_pro_arguments", generate_pro_arguments)
     builder.add_node("generate_contra_arguments", generate_contra_arguments)
     builder.add_node("generate_pro_and_contra_arguments", generate_pro_and_contra_arguments)
     builder.add_node("merge_arguments", merge_arguments)
+
+    # Stage 4: Critique arguments
     builder.add_node("apply_devils_advocate", apply_devils_advocate)
-    builder.add_node("score_and_select_best_k", score_and_select_best_k)
     builder.add_node(
         "apply_devils_advocate_to_pro_arguments", apply_devils_advocate_to_pro_arguments
     )
@@ -113,9 +115,16 @@ def build_graph() -> StateGraph:
         "apply_devils_advocate_to_contra_arguments",
         apply_devils_advocate_to_contra_arguments,
     )
+
+    # Stage 5: Evaluate arguments
+    builder.add_node("score_and_select_best_k", score_and_select_best_k)
+
+    # Stage 6: Refine arguments
     builder.add_node("refine_pro_arguments", refine_pro_arguments)
     builder.add_node("refine_contra_arguments", refine_contra_arguments)
     builder.add_node("merge_refined_arguments", merge_refined_arguments)
+
+    # Stage 7: Decision
     builder.add_node("add_arguments_to_history", add_arguments_to_history)
     builder.add_node(
         "reset_arguments_and_increment_iteration", reset_arguments_and_increment_iteration
@@ -124,44 +133,52 @@ def build_graph() -> StateGraph:
     builder.add_node("decide_final_investment_decision", decide_final_investment_decision)
     builder.add_node("create_final_investment_story", create_final_investment_story)
 
-    # 1. Conditional start - check if final
-    builder.add_conditional_edges(START, check_if_final)
+    # === EDGES ===
 
-    # 2. Generate pro and contra arguments (parallel)
+    # 1. Conditional start - check where to begin
+    builder.add_conditional_edges(START, check_start_point)
+
+    # 2. Decomposition -> Answering
+    builder.add_edge("decompose_questions", "answer_questions")
+
+    # 3. Answering -> Argument generation
+    builder.add_edge("answer_questions", "generate_pro_and_contra_arguments")
+
+    # 4. Generate pro and contra arguments (parallel)
     builder.add_edge("generate_pro_and_contra_arguments", "generate_pro_arguments")
     builder.add_edge("generate_pro_and_contra_arguments", "generate_contra_arguments")
 
-    # 3. Merge pro and contra arguments
+    # 5. Merge pro and contra arguments
     builder.add_edge("generate_contra_arguments", "merge_arguments")
     builder.add_edge("generate_pro_arguments", "merge_arguments")
 
-    # 4. Apply devil's advocate (parallel)
+    # 6. Apply devil's advocate (parallel)
     builder.add_edge("merge_arguments", "apply_devils_advocate")
     builder.add_edge("apply_devils_advocate", "apply_devils_advocate_to_pro_arguments")
     builder.add_edge("apply_devils_advocate", "apply_devils_advocate_to_contra_arguments")
 
-    # 5. Score and select best k arguments
+    # 7. Score and select best k arguments
     builder.add_edge("apply_devils_advocate_to_pro_arguments", "score_and_select_best_k")
     builder.add_edge("apply_devils_advocate_to_contra_arguments", "score_and_select_best_k")
 
-    # 6. Refine arguments (parallel)
+    # 8. Refine arguments (parallel)
     builder.add_edge("score_and_select_best_k", "refine_contra_arguments")
     builder.add_edge("score_and_select_best_k", "refine_pro_arguments")
 
-    # 7. Merge refined arguments
+    # 9. Merge refined arguments
     builder.add_edge("refine_pro_arguments", "merge_refined_arguments")
     builder.add_edge("refine_contra_arguments", "merge_refined_arguments")
 
-    # 8. Add arguments to history
+    # 10. Add arguments to history
     builder.add_edge("merge_refined_arguments", "add_arguments_to_history")
 
-    # 9. Reset arguments and increment iteration
+    # 11. Reset arguments and increment iteration
     builder.add_edge("add_arguments_to_history", "reset_arguments_and_increment_iteration")
 
-    # 10. Conditional routing: continue iterations or prepare final arguments
+    # 12. Conditional routing: continue iterations or prepare final arguments
     builder.add_conditional_edges("reset_arguments_and_increment_iteration", check_continue)
 
-    # 11. Prepare final arguments and create final story
+    # 13. Prepare final arguments and create final story
     builder.add_edge("prepare_final_arguments", "decide_final_investment_decision")
     builder.add_edge("decide_final_investment_decision", "create_final_investment_story")
     builder.add_edge("create_final_investment_story", END)
@@ -176,24 +193,34 @@ graph = build_graph().compile()
 async def main() -> None:
     """Entry point for running the investment story pipeline.
 
-    Uses a cached question tree for demonstration.
+    Runs the full pipeline starting from company input:
+    1. Decompose 4 investment questions
+    2. Answer all question trees
+    3. Generate and refine arguments
+    4. Make final investment decision
     """
-    from agent.cached_answered_question_trees import get_retable_answered_question_tree
+    from agent.dataclasses.examples import BRANDBACK_COMPANY
 
     try:
+        # Start from company - the pipeline will handle everything
         initial_state = IterativeInvestmentStoryState(
-            question_tree=get_retable_answered_question_tree(),
+            company=BRANDBACK_COMPANY,
             config=Config(
-                n_pro_arguments=1,
-                n_contra_arguments=1,
-                k_best_arguments_per_iteration=[2, 2],
-                max_iterations=2,
+                n_pro_arguments=3,
+                n_contra_arguments=3,
+                k_best_arguments_per_iteration=[1, 1],
+                max_iterations=1,
             ),
         )
 
+        print("=" * 70)
+        print(f"Starting investment analysis for: {BRANDBACK_COMPANY.name}")
+        print(f"Industry: {BRANDBACK_COMPANY.industry}")
+        print("=" * 70)
+
         final_state: IterativeInvestmentStoryState = await graph.ainvoke(
             initial_state,
-            config={"recursion_limit": 50},
+            config={"recursion_limit": 100},
         )
 
         display_results(final_state)

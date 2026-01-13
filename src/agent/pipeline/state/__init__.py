@@ -5,6 +5,7 @@ This module exports all state classes used throughout the pipeline:
 - AnswerState: State for answering with tool support
 - AnswerStateSimple: State for answering without tools
 - AnswerQuestionTreeState: State for tree-wide answering
+- Decomposition states: Input/output for question decomposition
 - Various LLM output schemas
 """
 
@@ -13,7 +14,16 @@ from agent.pipeline.state.answer import (
     AnswerState,
     AnswerStateSimple,
 )
-from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
+from agent.pipeline.state.decomposition import (
+    DecompositionInput,
+    DecompositionNode,
+    DecompositionOutput,
+    DecompositionTree,
+)
+from agent.pipeline.state.investment_story import (
+    InputState,
+    IterativeInvestmentStoryState,
+)
 from agent.pipeline.state.schemas import (
     ArgumentCritique,
     ArgumentOutput,
@@ -24,12 +34,19 @@ from agent.pipeline.state.schemas import (
 )
 
 __all__ = [
+    # Input state (for langgraph.dev)
+    "InputState",
     # Main state
     "IterativeInvestmentStoryState",
     # Answer states
     "AnswerState",
     "AnswerStateSimple",
     "AnswerQuestionTreeState",
+    # Decomposition states
+    "DecompositionInput",
+    "DecompositionOutput",
+    "DecompositionNode",
+    "DecompositionTree",
     # LLM output schemas
     "ArgumentOutput",
     "ArgumentsOutput",

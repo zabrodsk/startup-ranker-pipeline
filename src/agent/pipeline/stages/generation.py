@@ -1,7 +1,7 @@
 """Stage 3: Generate pro and contra investment arguments.
 
-Takes the answered question tree and generates initial arguments
-for and against investing in the company based on the Q&A pairs.
+Takes the answered question trees (via all_qa_pairs) and generates initial
+arguments for and against investing in the company based on the Q&A pairs.
 
 This is the first stage of the argument refinement loop.
 """
@@ -11,11 +11,7 @@ from typing import Literal
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agent.common.llm_config import get_llm
-from agent.common.utils import (
-    format_qa_pairs_with_index,
-    get_qa_pair_from_question_tree_with_index,
-    get_qa_pairs_from_question_tree,
-)
+from agent.common.utils import format_qa_pairs_with_index
 from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
 from agent.pipeline.state.schemas import ArgumentsOutput
 from agent.pipeline.utils.helpers import convert_llm_arguments_to_objects
@@ -65,7 +61,8 @@ def generate_pro_arguments(
     if state.current_iteration > 0:
         return state
 
-    qa_pairs = get_qa_pairs_from_question_tree(state.question_tree)
+    # Use all_qa_pairs from the answering stage
+    qa_pairs = state.all_qa_pairs
     formatted_qa_pairs = format_qa_pairs_with_index(qa_pairs)
 
     llm_with_structured_output = llm.with_structured_output(ArgumentsOutput)
@@ -85,13 +82,12 @@ def generate_pro_arguments(
         arguments.arguments, "pro", tracking_id_counter=1
     )
 
-    # Attach Q&A pairs to each argument
+    # Attach Q&A pairs to each argument using indices
     for arg in pro_argument_objects:
-        qa_pairs_list = get_qa_pairs_from_question_tree(state.question_tree)
         arg.qa_pairs = [
-            get_qa_pair_from_question_tree_with_index(state.question_tree, index)
+            qa_pairs[index]
             for index in arg.qa_indices
-            if index < len(qa_pairs_list)
+            if index < len(qa_pairs)
         ]
 
     return {"pro_arguments": pro_argument_objects}
@@ -110,7 +106,8 @@ def generate_contra_arguments(
     if state.current_iteration > 0:
         return state
 
-    qa_pairs = get_qa_pairs_from_question_tree(state.question_tree)
+    # Use all_qa_pairs from the answering stage
+    qa_pairs = state.all_qa_pairs
     formatted_qa_pairs = format_qa_pairs_with_index(qa_pairs)
 
     llm_with_structured_output = llm.with_structured_output(ArgumentsOutput)
@@ -132,13 +129,12 @@ def generate_contra_arguments(
         arguments.arguments, "contra", tracking_id_counter=pro_args_count + 1
     )
 
-    # Attach Q&A pairs to each argument
+    # Attach Q&A pairs to each argument using indices
     for arg in contra_argument_objects:
-        qa_pairs_list = get_qa_pairs_from_question_tree(state.question_tree)
         arg.qa_pairs = [
-            get_qa_pair_from_question_tree_with_index(state.question_tree, index)
+            qa_pairs[index]
             for index in arg.qa_indices
-            if index < len(qa_pairs_list)
+            if index < len(qa_pairs)
         ]
 
     return {"contra_arguments": contra_argument_objects}

@@ -11,6 +11,33 @@ from agent.pipeline.state.schemas import ArgumentOutput, CriterionScore
 from agent.prompts import CRITERIA_MAPPING
 
 
+def generate_context_block(qa_pairs: list[dict[str, str]], vc_context: str) -> str:
+    """Generate a context block from Q&A pairs and VC context.
+
+    This formats Q&A pairs and VC context into a readable string
+    for inclusion in LLM prompts.
+
+    Args:
+        qa_pairs: List of question/answer dictionaries
+        vc_context: Additional VC-specific context
+
+    Returns:
+        Formatted context block string
+    """
+    if qa_pairs:
+        formatted_pairs = "\n-----------------\n".join(
+            [f"Q: {qa['question']}\nA: {qa['answer']}" for qa in qa_pairs]
+        )
+        context_block = f"\nSub questions and answers:\n{formatted_pairs}"
+    else:
+        context_block = ""
+
+    if vc_context:
+        context_block += f"\n\nVC Context:\n{vc_context}"
+
+    return context_block
+
+
 def convert_llm_arguments_to_objects(
     llm_arguments: list[ArgumentOutput],
     argument_type: Literal["pro", "contra"],

@@ -16,11 +16,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from openai import RateLimitError
 
 from agent.common.llm_config import get_llm
-from agent.common.utils import (
-    format_qa_pairs_with_index,
-    get_qa_pair_from_question_tree_with_index,
-    get_qa_pairs_from_question_tree,
-)
+from agent.common.utils import format_qa_pairs_with_index
 from agent.dataclasses.argument import Argument
 from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
 from agent.pipeline.state.schemas import IndividualRefinedArgumentOutput
@@ -116,7 +112,8 @@ async def refine_pro_arguments(
     if len(pro_arguments_with_critiques) == 0:
         return {"refined_pro_arguments": []}
 
-    qa_pairs = get_qa_pairs_from_question_tree(state.question_tree)
+    # Use all_qa_pairs from the answering stage
+    qa_pairs = state.all_qa_pairs
     formatted_qa_pairs = format_qa_pairs_with_index(qa_pairs)
 
     refinement_tasks = [
@@ -130,11 +127,10 @@ async def refine_pro_arguments(
     for arg, refined_result in zip(pro_arguments_with_critiques, refined_results):
         arg.refined_content = refined_result.content
         arg.refined_qa_indices = refined_result.qa_indices
-        qa_pairs_list = get_qa_pairs_from_question_tree(state.question_tree)
         arg.qa_pairs = [
-            get_qa_pair_from_question_tree_with_index(state.question_tree, index)
+            qa_pairs[index]
             for index in arg.refined_qa_indices
-            if index < len(qa_pairs_list)
+            if index < len(qa_pairs)
         ]
 
     return {"refined_pro_arguments": pro_arguments_with_critiques}
@@ -155,7 +151,8 @@ async def refine_contra_arguments(
     if len(contra_arguments_with_critiques) == 0:
         return {"refined_contra_arguments": []}
 
-    qa_pairs = get_qa_pairs_from_question_tree(state.question_tree)
+    # Use all_qa_pairs from the answering stage
+    qa_pairs = state.all_qa_pairs
     formatted_qa_pairs = format_qa_pairs_with_index(qa_pairs)
 
     refinement_tasks = [
@@ -169,11 +166,10 @@ async def refine_contra_arguments(
     for arg, refined_result in zip(contra_arguments_with_critiques, refined_results):
         arg.refined_content = refined_result.content
         arg.refined_qa_indices = refined_result.qa_indices
-        qa_pairs_list = get_qa_pairs_from_question_tree(state.question_tree)
         arg.qa_pairs = [
-            get_qa_pair_from_question_tree_with_index(state.question_tree, index)
+            qa_pairs[index]
             for index in arg.refined_qa_indices
-            if index < len(qa_pairs_list)
+            if index < len(qa_pairs)
         ]
 
     return {"refined_contra_arguments": contra_arguments_with_critiques}

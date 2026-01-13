@@ -15,10 +15,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from openai import RateLimitError
 
 from agent.common.llm_config import get_llm
-from agent.common.utils import (
-    format_qa_pairs_without_index,
-    get_qa_pairs_from_question_tree,
-)
+from agent.common.utils import format_qa_pairs_without_index
 from agent.dataclasses.argument import Argument
 from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
 from agent.pipeline.state.schemas import ArgumentCritique
@@ -109,8 +106,8 @@ async def apply_devils_advocate_to_pro_arguments(
     if not state.current_arguments:
         raise ValueError("No current arguments to apply devil's advocate to")
 
-    qa_pairs = get_qa_pairs_from_question_tree(state.question_tree)
-    formatted_qa_pairs = format_qa_pairs_without_index(qa_pairs)
+    # Use all_qa_pairs from the answering stage
+    formatted_qa_pairs = format_qa_pairs_without_index(state.all_qa_pairs)
 
     pro_arguments = [
         arg for arg in state.current_arguments if arg.argument_type == "pro"
@@ -141,8 +138,8 @@ async def apply_devils_advocate_to_contra_arguments(
     if not state.current_arguments:
         raise ValueError("No current arguments to apply devil's advocate to")
 
-    qa_pairs = get_qa_pairs_from_question_tree(state.question_tree)
-    formatted_qa_pairs = format_qa_pairs_without_index(qa_pairs)
+    # Use all_qa_pairs from the answering stage
+    formatted_qa_pairs = format_qa_pairs_without_index(state.all_qa_pairs)
 
     contra_arguments = [
         arg for arg in state.current_arguments if arg.argument_type == "contra"
