@@ -22,9 +22,14 @@ class InputState(BaseModel):
     This is what users provide when invoking the graph (e.g., in langgraph.dev).
     Only requires the company to analyze - all other fields have sensible defaults.
 
+    When all_qa_pairs is pre-populated (e.g. from batch file-based ingestion),
+    the pipeline skips decomposition and answering, jumping straight to
+    argument generation.
+
     Attributes:
         company: The company to analyze (required)
         config: Optional pipeline configuration
+        all_qa_pairs: Pre-populated Q&A pairs (skips decomposition/answering)
     """
 
     company: Company = BRANDBACK_COMPANY
@@ -34,6 +39,7 @@ class InputState(BaseModel):
         k_best_arguments_per_iteration=[3, 1],
         max_iterations=2,
     )
+    all_qa_pairs: list[Dict[str, str]] = Field(default_factory=list)
 
 
 class IterativeInvestmentStoryState(BaseModel):

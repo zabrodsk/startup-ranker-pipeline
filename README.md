@@ -51,6 +51,16 @@ This opens LangGraph Studio where you can run the pipeline interactively, visual
 
 ```
 src/agent/
+├── batch.py                  # Batch CLI entrypoint
+├── llm.py                    # Multi-provider LLM factory (Gemini, OpenAI, etc.)
+├── retrieval.py              # TF-IDF chunk retrieval
+├── evidence_answering.py     # Document-grounded question answering
+├── ingest/                   # File ingestion module
+│   ├── pdf_ingest.py         # PDF text extraction
+│   ├── pptx_ingest.py        # PPTX text extraction
+│   ├── tabular_ingest.py     # CSV/XLSX to text
+│   ├── chunking.py           # Text chunking with overlap
+│   └── store.py              # In-memory evidence store
 ├── pipeline/
 │   ├── graph.py              # Main LangGraph definition
 │   ├── stages/               # Pipeline stages
@@ -71,6 +81,68 @@ src/agent/
 ```
 
 The main entry point is `pipeline/graph.py`, which orchestrates all stages using LangGraph. Each stage is modular and can be tested independently.
+
+## Batch Mode: File-Based Startup Sorting
+
+Evaluate and rank multiple startups from local documents (no web search required). Each startup gets pro/contra investment arguments, numeric scores, and a final invest/not-invest recommendation.
+
+### Setup
+
+```bash
+pip install -e .
+cp .env.example .env
+```
+
+Edit `.env` with your API key. Gemini is the default free-tier path:
+
+```
+LLM_PROVIDER=gemini
+MODEL_NAME=gemini-2.5-flash
+GOOGLE_API_KEY=your_google_api_key_here
+```
+
+Other supported providers: `openai`, `anthropic`, `openrouter`.
+
+### Input Folder Structure
+
+Create a `deals/` folder with one subfolder per startup:
+
+```
+deals/
+  acme-robotics/
+    pitch_deck.pdf          # or pitch_deck.pptx (required)
+    metrics.xlsx            # optional
+    notes.txt               # optional
+    anything_else.md        # optional
+  betacorp/
+    pitch_deck.pptx
+    financials.csv
+```
+
+Supported file types: PDF, PPTX, CSV, XLSX, TXT, MD.
+
+### Run
+
+```bash
+python -m agent.batch --input ./deals --output results.xlsx
+```
+
+Options:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--input` | *(required)* | Path to deals folder |
+| `--output` | `results.xlsx` | Output Excel file |
+| `--k` | `8` | Evidence chunks retrieved per question |
+| `--max-startups` | all | Limit number of startups to evaluate |
+
+### Output
+
+The output Excel file contains three sheets:
+
+- **Summary** — One row per startup, ranked by `total_score` (avg pro - avg contra). Includes the top 3 pro and contra arguments with scores, plus the invest/not-invest decision.
+- **Arguments** — One row per argument across all startups, with type, score, original text, critique, and refined text.
+- **Evidence** — One row per document chunk, showing source file, page/slide number, and extracted text.
 
 ## Citation
 

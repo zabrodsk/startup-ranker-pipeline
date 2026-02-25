@@ -1,0 +1,18 @@
+Meeting notes - NovaBite intro call (Jan 15, 2026)
+
+Positives:
+- Strong founder-market fit. Maria has deep food tech connections.
+- Product demo was impressive - real-time dashboard with actionable alerts.
+- Customer references: Sweetgreen and CAVA both confirmed 40%+ waste reduction.
+- Unit economics look solid, payback period under 3 months for most customers.
+
+Concerns:
+- Heavy reliance on POS integrations. If Toast changes API terms, could be disruptive.
+- Competition from larger players entering the space (e.g., Oracle's food waste module).
+- International expansion plans seem premature given current US market penetration.
+- Need to verify the 92% accuracy claim independently.
+
+Follow-ups:
+- Request audited financials for 2025.
+- Reference calls with 3 more customers.
+- Technical deep-dive on ML model architecture with CTO.

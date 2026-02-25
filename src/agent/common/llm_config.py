@@ -1,37 +1,20 @@
-"""
-Centralized LLM configuration for the agent package.
+"""Centralized LLM configuration for the agent package.
 
-This module provides a single source of truth for LLM instantiation,
-making it easy to change models or configuration across the entire codebase.
+Delegates to agent.llm.create_llm() for multi-provider support.
 """
 
-import os
-from langchain_openai import ChatOpenAI
-from dotenv import load_dotenv
+from langchain_core.language_models.chat_models import BaseChatModel
 
-load_dotenv()
+from agent.llm import create_llm
 
-def get_llm(temperature: float = 0.0) -> ChatOpenAI:
-    """
-    Get a configured LLM instance.
-    
+
+def get_llm(temperature: float = 0.0) -> BaseChatModel:
+    """Get a configured LLM instance.
+
     Args:
-        temperature: Controls randomness in responses (0.0 = deterministic, 1.0 = very random)
-                    Default is 0.0 for consistent, analytical responses.
-    
+        temperature: Controls randomness in responses (0.0 = deterministic).
+
     Returns:
-        Configured ChatOpenAI instance
-    
-    Raises:
-        ValueError: If temperature is not between 0.0 and 2.0
+        Configured chat model instance for the active provider.
     """
-    if not (0.0 <= temperature <= 2.0):
-        raise ValueError(f"Temperature must be between 0.0 and 2.0, got {temperature}")
-    
-    # Get model from environment variable or use default
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    if model == "gpt-5-mini":
-        # GPT-5-mini only supports temperature 1
-        temperature = 1
-        
-    return ChatOpenAI(model=model, temperature=temperature)
+    return create_llm(temperature=temperature)

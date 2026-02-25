@@ -167,4 +167,11 @@ cython_debug/
 .claude/
 .cursor/
 
+# Batch output
+results.xlsx
+*.xlsx
+
+# macOS
+.DS_Store
+
 CLAUDE.md
