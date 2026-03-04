@@ -23,6 +23,17 @@ DIMENSION_ASPECTS = {
 }
 
 
+def _normalize_text(value: Any) -> str:
+    """Coerce arbitrary payloads to text."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return " ".join(str(v) for v in value if v is not None).strip()
+    return str(value)
+
+
 def _group_qa_by_dimension(
     all_qa_pairs: list[dict[str, Any]],
 ) -> dict[str, list[dict[str, Any]]]:
@@ -70,7 +81,8 @@ def _score_dimension(
     if dimension == "strategy_fit":
         system_prompt = get_prompt("ranking.strategy_fit.system", prompt_overrides)
         user_prompt = get_prompt("ranking.strategy_fit.user", prompt_overrides)
-        vc_block = vc_context.strip() if vc_context else "Not provided."
+        vc_text = _normalize_text(vc_context).strip()
+        vc_block = vc_text if vc_text else "Not provided."
         user_content = user_prompt.format(
             company_summary=company_summary,
             vc_context=vc_block,
@@ -227,7 +239,8 @@ def generate_executive_summary(
         return {}
 
     company_summary = state.company.get_company_summary()
-    vc_context = (state.vc_context or "").strip() or "Not provided."
+    vc_context = _normalize_text(state.vc_context).strip()
+    vc_context = vc_context or "Not provided."
 
     dimension_block = _format_dimension_block(result.dimension_scores)
 

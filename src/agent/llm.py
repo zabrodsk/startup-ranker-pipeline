@@ -4,7 +4,7 @@ Supports Gemini, OpenAI, Anthropic, and OpenRouter via environment variables.
 
 Environment variables:
     LLM_PROVIDER: One of "gemini", "openai", "anthropic", "openrouter" (default: "gemini")
-    MODEL_NAME: Model identifier (default: "gemini-3-flash-lite-preview")
+    MODEL_NAME: Model identifier (default: "gemini-3.1-flash-lite-preview")
     GOOGLE_API_KEY: Required when LLM_PROVIDER=gemini
     OPENAI_API_KEY: Required when LLM_PROVIDER=openai or openrouter
     ANTHROPIC_API_KEY: Required when LLM_PROVIDER=anthropic
@@ -21,7 +21,7 @@ from agent.rate_limit import wrap_llm
 load_dotenv()
 
 _DEFAULT_PROVIDER = "gemini"
-_DEFAULT_MODEL = "gemini-3-flash-lite-preview"
+_DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 
 
 def create_llm(temperature: float = 0.0) -> BaseChatModel:

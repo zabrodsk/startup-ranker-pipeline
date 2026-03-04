@@ -20,9 +20,12 @@ from agent.ingest.store import Chunk, EvidenceStore
 
 
 def _safe(val: Any) -> str | None:
-    """Return None for NaN/empty, else stripped string."""
-    if pd.isna(val):
+    """Return None for NaN/empty, else stripped string. Handles lists from Excel/CSV."""
+    if pd.isna(val) or val is None:
         return None
+    if isinstance(val, list):
+        s = " ".join(str(x) for x in val).strip() if val else ""
+        return s if s else None
     s = str(val).strip()
     return s if s else None
 
@@ -67,23 +70,27 @@ def _parse_person(row: pd.Series) -> Person:
     raw_edu = _parse_json_field(row.get("Education"))
     if isinstance(raw_edu, list):
         for e in raw_edu:
+            if not isinstance(e, dict):
+                continue
             education_list.append(Education(
-                institution=e.get("Name"),
-                start_year=e.get("Start Date"),
-                end_year=e.get("End Date"),
+                institution=_safe(e.get("Name")),
+                start_year=_safe(e.get("Start Date")),
+                end_year=_safe(e.get("End Date")),
             ))
 
     experience_list: list[Experience] = []
     raw_exp = _parse_json_field(row.get("Experience"))
     if isinstance(raw_exp, list):
         for e in raw_exp:
+            if not isinstance(e, dict):
+                continue
             experience_list.append(Experience(
-                company=e.get("Company Name"),
-                title=e.get("Title"),
-                description=e.get("Description"),
-                start_date=e.get("Start Date"),
-                end_date=e.get("End Date"),
-                location=e.get("Location"),
+                company=_safe(e.get("Company Name")),
+                title=_safe(e.get("Title")),
+                description=_safe(e.get("Description")),
+                start_date=_safe(e.get("Start Date")),
+                end_date=_safe(e.get("End Date")),
+                location=_safe(e.get("Location")),
             ))
 
     location = _safe(row.get("Location"))
@@ -439,10 +446,13 @@ def _build_person_detail_chunk(
     edu_raw = _parse_json_field(person_row.get("Education"))
     if isinstance(edu_raw, list):
         for e in edu_raw:
-            field = e.get("Field of Study")
-            degree = e.get("Degree Title")
+            if not isinstance(e, dict):
+                continue
+            field = _safe(e.get("Field of Study"))
+            degree = _safe(e.get("Degree Title"))
+            name_part = _safe(e.get("Name")) or "Unknown"
             if field or degree:
-                extra = f"  - {e.get('Name', 'Unknown')}: {degree or ''} {field or ''}".strip()
+                extra = f"  - {name_part}: {degree or ''} {field or ''}".strip()
                 parts.append(extra)
 
     if person.experience:

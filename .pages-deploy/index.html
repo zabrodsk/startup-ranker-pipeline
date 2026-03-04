@@ -739,8 +739,10 @@ function renderFiles() {
 
 function isSpecterMode() {
   const names = uploadedFiles.map(f => f.name.toLowerCase());
-  return names.some(n => n.includes('company') && n.includes('signal') && n.endsWith('.csv'))
-      && names.some(n => n.includes('people') && n.includes('signal') && n.endsWith('.csv'));
+  const isTabular = (n) => n.endsWith('.csv') || n.endsWith('.xlsx') || n.endsWith('.xls');
+  const hasCompany = (n) => n.includes('company') || n.includes('comapny');
+  const hasPeople = (n) => n.includes('people');
+  return names.some(n => hasCompany(n) && isTabular(n)) && names.some(n => hasPeople(n) && isTabular(n));
 }
 
 function addFiles(fileList) {

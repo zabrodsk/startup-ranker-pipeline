@@ -28,6 +28,15 @@ from agent.pipeline.stages.parallel_decomposition import decompose_all_questions
 from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
 
 
+def _ensure_str(val: Any) -> str:
+    """Convert value to str; handle list (join) to avoid 'list' has no attribute 'strip'."""
+    if val is None:
+        return ""
+    if isinstance(val, list):
+        return " ".join(str(x) for x in val) if val else ""
+    return str(val)
+
+
 # ---------------------------------------------------------------------------
 # Company info extraction
 # ---------------------------------------------------------------------------
@@ -159,7 +168,7 @@ async def evaluate_startup(
         question_trees, company, store, k=k,
         use_web_search=use_web_search,
         on_progress=_on_qa_progress,
-        vc_context=(vc_investment_strategy or "").strip() or "",
+        vc_context=_ensure_str(vc_investment_strategy).strip() or "",
         prompt_overrides=prompt_overrides or {},
     )
     _progress(f"[3/4] {len(all_qa_pairs)} Q&A pairs generated")
@@ -174,7 +183,7 @@ async def evaluate_startup(
             "config": config,
             "all_qa_pairs": all_qa_pairs,
             "prompt_overrides": prompt_overrides or {},
-            "vc_context": (vc_investment_strategy or "").strip() or "",
+            "vc_context": _ensure_str(vc_investment_strategy).strip() or "",
             "slug": slug,
         },
         config={"recursion_limit": 100},
@@ -245,7 +254,7 @@ async def evaluate_from_specter(
         question_trees, company, store, k=k,
         use_web_search=use_web_search,
         on_progress=_on_qa_progress,
-        vc_context=(vc_investment_strategy or "").strip() or "",
+        vc_context=_ensure_str(vc_investment_strategy).strip() or "",
         prompt_overrides=prompt_overrides or {},
     )
     _progress(f"[2/3] {len(all_qa_pairs)} Q&A pairs generated")
@@ -259,7 +268,7 @@ async def evaluate_from_specter(
             "config": config,
             "all_qa_pairs": all_qa_pairs,
             "prompt_overrides": prompt_overrides or {},
-            "vc_context": (vc_investment_strategy or "").strip() or "",
+            "vc_context": _ensure_str(vc_investment_strategy).strip() or "",
             "slug": slug,
         },
         config={"recursion_limit": 100},
@@ -506,6 +515,8 @@ def build_qa_provenance_rows(results: List[Dict[str, Any]]) -> List[Dict]:
                 "chunks_preview": qa.get("chunks_preview", ""),
                 "web_search_query": qa.get("web_search_query") or "",
                 "web_search_results": qa.get("web_search_results") or "",
+                "web_search_used": bool(qa.get("web_search_used")),
+                "web_search_decision": qa.get("web_search_decision") or "",
             })
 
     return rows

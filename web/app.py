@@ -25,7 +25,7 @@ from fastapi import Cookie, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 load_dotenv()
 
@@ -74,11 +74,30 @@ class LoginRequest(BaseModel):
     password: str
 
 
+def _ensure_str(val: Any) -> str:
+    """Normalize to str; handle list to avoid 'list' has no attribute 'strip'."""
+    if val is None:
+        return ""
+    if isinstance(val, list):
+        return " ".join(str(x) for x in val) if val else ""
+    return str(val)
+
+
 class AnalyzeRequest(BaseModel):
     use_web_search: bool = False
     instructions: str | None = None
     input_mode: str = "pitchdeck"  # pitchdeck | specter | original
     vc_investment_strategy: str | None = None
+
+    @field_validator("instructions", "vc_investment_strategy", mode="before")
+    @classmethod
+    def _coerce_str(cls, v: Any) -> str | None:
+        if v is None:
+            return None
+        if isinstance(v, list):
+            return " ".join(str(x) for x in v).strip() or None
+        s = str(v).strip()
+        return s if s else None
 
 
 class AnalysisStatus(BaseModel):
@@ -164,9 +183,10 @@ def _parse_max_startups_from_instructions(instructions: str | None) -> int | Non
     - "only rank the first 20 companies"
     - "rank only 20 companies"
     """
-    if not instructions or not instructions.strip():
+    text_raw = _ensure_str(instructions)
+    if not text_raw or not text_raw.strip():
         return None
-    text = instructions.lower().strip()
+    text = text_raw.lower().strip()
     patterns = [
         r"only\s+(?:rank\s+)?(?:the\s+)?first\s+(\d+)\s*companies?",
         r"limit\s+to\s+(\d+)\s*companies?",
@@ -226,16 +246,16 @@ async def web_search_available(session_id: str | None = Cookie(default=None)):
 
 
 def _detect_specter_csvs(upload_dir: Path, filenames: list[str]) -> dict | None:
-    """Check if uploaded files are a Specter company + people CSV pair."""
+    """Check if uploaded files are a Specter company + people pair (CSV or Excel)."""
     companies_file = None
     people_file = None
     for name in filenames:
         lower = name.lower()
-        if not lower.endswith(".csv"):
+        if not (lower.endswith(".csv") or lower.endswith(".xlsx") or lower.endswith(".xls")):
             continue
-        if "people" in lower and "signal" in lower:
+        if "people" in lower:
             people_file = upload_dir / name
-        elif ("company" in lower or "comapny" in lower) and "signal" in lower:
+        elif "company" in lower or "comapny" in lower:
             companies_file = upload_dir / name
     if companies_file and people_file:
         return {"companies": str(companies_file), "people": str(people_file)}
@@ -296,12 +316,14 @@ async def start_analysis(
     _results_cache[job_id]["input_mode"] = req.input_mode
     _results_cache[job_id]["vc_investment_strategy"] = req.vc_investment_strategy
 
+    vc_str = _ensure_str(req.vc_investment_strategy).strip() or None
+    inst = _ensure_str(req.instructions).strip() or None
     asyncio.create_task(_run_analysis(
         job_id,
         use_web_search=req.use_web_search,
-        instructions=req.instructions,
+        instructions=inst,
         input_mode=req.input_mode,
-        vc_investment_strategy=req.vc_investment_strategy,
+        vc_investment_strategy=vc_str,
     ))
     return {"status": "running", "use_web_search": req.use_web_search}
 
@@ -421,15 +443,19 @@ async def _run_analysis(
         specter = _results_cache[job_id].get("specter")
 
         if input_mode == "specter":
+            specter_detected = _results_cache[job_id].get("specter")
             files = _results_cache[job_id].get("files", [])
-            if len(files) < 2:
+            if specter_detected:
+                specter_paths = specter_detected
+            elif len(files) >= 2:
+                specter_paths = {
+                    "companies": str(upload_dir / files[0]["name"]),
+                    "people": str(upload_dir / files[1]["name"]),
+                }
+            else:
                 _jobs[job_id].status = "error"
-                _jobs[job_id].progress = "Specter mode requires 2 files (companies first, people second)."
+                _jobs[job_id].progress = "Specter mode requires 2 files (company + people CSV/Excel)."
                 return
-            specter_paths = {
-                "companies": str(upload_dir / files[0]["name"]),
-                "people": str(upload_dir / files[1]["name"]),
-            }
             await _run_specter_analysis(
                 job_id, upload_dir, specter_paths, use_web_search, instructions,
                 vc_investment_strategy=vc_investment_strategy,

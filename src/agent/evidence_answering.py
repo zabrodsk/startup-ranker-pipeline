@@ -17,7 +17,8 @@ WEB_SEARCH_TIMEOUT_SEC = 45
 # Max concurrent LLM calls to avoid rate limiting and connection exhaustion
 MAX_CONCURRENT_LLM_CALLS = int(os.getenv("LLM_MAX_CONCURRENT", "2"))
 # Max web search (Perplexity/Brave) calls per company to control cost
-MAX_PPLX_CALLS_PER_COMPANY = int(os.getenv("MAX_PPLX_CALLS_PER_COMPANY", "2"))
+# Default raised from 2 -> 100 to strongly favor coverage over cost.
+MAX_PPLX_CALLS_PER_COMPANY = int(os.getenv("MAX_PPLX_CALLS_PER_COMPANY", "100"))
 # When to trigger web search:
 #   "answer" = only when LLM answer indicates no evidence (e.g. "Unknown from provided documents")
 #   "no_chunks" = legacy: only when documents have zero chunks
@@ -40,6 +41,28 @@ _ANSWER_NO_EVIDENCE_RE = re.compile(
     "|".join(f"({p})" for p in _ANSWER_NO_EVIDENCE_PATTERNS),
     re.IGNORECASE | re.DOTALL,
 )
+
+_SEARCH_BAD_RESULT_PATTERNS = [
+    r"no web search api key configured",
+    r"web search failed",
+    r"\b429\b",
+    r"rate limit",
+    r"timed out",
+    r"timeout",
+    r"no relevant (web )?results",
+    r"no search results found",
+]
+_SEARCH_BAD_RESULT_RE = re.compile(
+    "|".join(f"({p})" for p in _SEARCH_BAD_RESULT_PATTERNS),
+    re.IGNORECASE | re.DOTALL,
+)
+
+_TOKEN_STOPWORDS = {
+    "what", "which", "when", "where", "why", "how", "does", "do", "is", "are", "the",
+    "and", "or", "for", "with", "from", "that", "this", "into", "about", "their",
+    "its", "they", "them", "you", "your", "can", "could", "would", "should", "built",
+    "support", "supports", "product", "company",
+}
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -102,7 +125,44 @@ Question: {question}
 """
 
 
-def _answer_indicates_no_evidence(answer: str) -> bool:
+def _coerce_text(value: Any) -> str:
+    """Coerce model/tool outputs to plain text.
+
+    Some providers can return list/dict content blocks instead of a raw string.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if item is None:
+                continue
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                text_val = item.get("text")
+                if isinstance(text_val, str) and text_val.strip():
+                    parts.append(text_val)
+                    continue
+                content_val = item.get("content")
+                if isinstance(content_val, str) and content_val.strip():
+                    parts.append(content_val)
+                    continue
+            parts.append(str(item))
+        return " ".join(p.strip() for p in parts if p and p.strip()).strip()
+    if isinstance(value, dict):
+        for key in ("text", "content", "output_text"):
+            candidate = value.get(key)
+            if isinstance(candidate, str):
+                return candidate
+        return str(value)
+    return str(value)
+
+
+def _answer_indicates_no_evidence(answer: Any) -> bool:
     """Return True if the LLM answer indicates it lacks evidence from documents.
 
     Matches patterns: Unknown from provided documents; no information about;
@@ -110,12 +170,49 @@ def _answer_indicates_no_evidence(answer: str) -> bool:
     insufficient information available; no relevant chunks found; outlines...but contains no.
     Empty answers are treated as no evidence.
     """
-    if not answer or not answer.strip():
+    text = _coerce_text(answer)
+    if not text or not text.strip():
         return True
-    return bool(_ANSWER_NO_EVIDENCE_RE.search(answer))
+    return bool(_ANSWER_NO_EVIDENCE_RE.search(text))
 
 
-def _run_web_search(query: str, company_name: str) -> str:
+def _tokenize_text(text: str) -> set[str]:
+    tokens = set(re.findall(r"[a-z0-9]+", (text or "").lower()))
+    return {t for t in tokens if len(t) >= 3 and t not in _TOKEN_STOPWORDS}
+
+
+def _web_results_add_value(question: str, company_name: str, web_results: str) -> tuple[bool, str]:
+    """Heuristic quality gate for fallback search results.
+
+    Returns (is_useful, reason).
+    """
+    raw = (web_results or "").strip()
+    if _SEARCH_BAD_RESULT_RE.search(raw):
+        return (False, "web results indicate failure/noise")
+    if len(raw) < 80:
+        return (False, "web results too short")
+
+    result_tokens = _tokenize_text(raw)
+    if not result_tokens:
+        return (False, "web results have no usable tokens")
+
+    company_tokens = _tokenize_text(company_name)
+    if company_tokens and not (company_tokens & result_tokens):
+        return (False, "web results do not mention the company")
+
+    q_tokens = _tokenize_text(question)
+    if not q_tokens:
+        return (True, "question has no strong tokens; accepting web results")
+
+    overlap = len(q_tokens & result_tokens)
+    overlap_ratio = overlap / max(1, len(q_tokens))
+    if overlap < 2 and overlap_ratio < 0.20:
+        return (False, "web results weakly related to question")
+
+    return (True, "web results relevant to company/question")
+
+
+def _run_web_search(search_query: str) -> str:
     """Run a web search using the configured provider."""
     from datetime import datetime
 
@@ -140,7 +237,6 @@ def _run_web_search(query: str, company_name: str) -> str:
 
         search_date = datetime.now().strftime("%Y-%m-%d")
         provider = get_provider(search_end_date=search_date, provider_name=provider_name)
-        search_query = f"{company_name} {query}"
         return provider.search(search_query)
     except Exception as exc:
         return f"Web search failed: {exc}"
@@ -203,17 +299,21 @@ async def answer_question_from_evidence(
 
     web_search_query: str | None = None
     web_search_results: str | None = None
+    web_search_used = False
+    web_search_decision = "not requested"
     grounded_system_prompt = get_prompt("evidence.grounded.system", prompt_overrides)
     grounded_user_prompt = get_prompt("evidence.grounded.user", prompt_overrides)
     hybrid_system_prompt = get_prompt("evidence.hybrid.system", prompt_overrides)
     hybrid_user_prompt = get_prompt("evidence.hybrid.user", prompt_overrides)
 
     vc_block = ""
-    if aspect == "general_company" and (vc_context or "").strip():
-        vc_block = f"VC Investment Strategy (use when evaluating alignment):\n{vc_context.strip()}\n\n"
+    if aspect == "general_company" and vc_context:
+        vc_str = vc_context if isinstance(vc_context, str) else " ".join(str(x) for x in vc_context)
+        if vc_str.strip():
+            vc_block = f"VC Investment Strategy (use when evaluating alignment):\n{vc_str.strip()}\n\n"
 
     async def _do_llm_call() -> tuple[str, dict]:
-        nonlocal web_search_query, web_search_results
+        nonlocal web_search_query, web_search_results, web_search_used, web_search_decision
 
         # Step 1: Always run the grounded LLM call first (documents only)
         if not chunks:
@@ -229,7 +329,7 @@ async def answer_question_from_evidence(
                 SystemMessage(content=grounded_system_prompt),
                 HumanMessage(content=vc_block + user_content),
             ])
-            grounded_answer = response.content or "Unknown from provided documents."
+            grounded_answer = _coerce_text(response.content) or "Unknown from provided documents."
 
         # Step 2: Decide whether to run Perplexity based on the answer
         # "answer" trigger: search only when LLM says it lacks evidence
@@ -238,6 +338,7 @@ async def answer_question_from_evidence(
             needs_search = use_web_search and _answer_indicates_no_evidence(grounded_answer)
         else:
             needs_search = use_web_search and not chunks
+        web_search_decision = "needed" if needs_search else "not needed"
 
         # Per-company cap: check and increment under lock
         do_search = False
@@ -246,18 +347,36 @@ async def answer_question_from_evidence(
                 if web_search_state["count"][0] < web_search_state["max"]:
                     web_search_state["count"][0] += 1
                     do_search = True
+                else:
+                    web_search_decision = "skipped: cap reached"
         elif needs_search:
             do_search = True
 
         if do_search:
-            web_search_query = f"{company.name} {question}"
+            web_search_decision = "attempted"
+            web_search_query = f"\"{company.name}\" {question}"
             web_results = await asyncio.wait_for(
-                asyncio.to_thread(_run_web_search, question, company.name),
+                asyncio.to_thread(_run_web_search, web_search_query),
                 timeout=WEB_SEARCH_TIMEOUT_SEC,
             )
             web_search_results = web_results[:WEB_RESULTS_TRUNCATE]
             if len(web_results) > WEB_RESULTS_TRUNCATE:
                 web_search_results += "\n...[truncated]"
+
+            useful, reason = _web_results_add_value(question, company.name, web_results)
+            if not useful:
+                web_search_decision = f"skipped: {reason}"
+                provenance = {
+                    "chunk_ids": chunk_ids,
+                    "chunks_preview": chunks_preview,
+                    "web_search_query": web_search_query,
+                    "web_search_results": web_search_results,
+                    "web_search_used": web_search_used,
+                    "web_search_decision": web_search_decision,
+                }
+                return (grounded_answer, provenance)
+            web_search_used = True
+            web_search_decision = f"used: {reason}"
 
             llm = create_llm(temperature=0.2)
             user_content = hybrid_user_prompt.format(
@@ -270,12 +389,14 @@ async def answer_question_from_evidence(
                 SystemMessage(content=hybrid_system_prompt),
                 HumanMessage(content=vc_block + user_content),
             ])
-            answer = response.content or "Unknown from provided documents."
+            answer = _coerce_text(response.content) or "Unknown from provided documents."
             provenance = {
                 "chunk_ids": chunk_ids,
                 "chunks_preview": chunks_preview,
                 "web_search_query": web_search_query,
                 "web_search_results": web_search_results,
+                "web_search_used": web_search_used,
+                "web_search_decision": web_search_decision,
             }
             return (answer, provenance)
 
@@ -285,6 +406,8 @@ async def answer_question_from_evidence(
             "chunks_preview": chunks_preview,
             "web_search_query": web_search_query,
             "web_search_results": web_search_results,
+            "web_search_used": web_search_used,
+            "web_search_decision": web_search_decision,
         }
         return (grounded_answer, provenance)
 
@@ -307,6 +430,8 @@ async def answer_question_from_evidence(
             "chunks_preview": chunks_preview,
             "web_search_query": web_search_query,
             "web_search_results": web_search_results,
+            "web_search_used": web_search_used,
+            "web_search_decision": web_search_decision,
         }
         return ("Answer timed out (API slow or rate limited).", provenance)
 

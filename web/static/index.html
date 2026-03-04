@@ -1402,8 +1402,10 @@ function renderFiles() {
 
 function isSpecterMode() {
   const names = uploadedFiles.map(f => f.name.toLowerCase());
-  return names.some(n => n.includes('company') && n.includes('signal') && n.endsWith('.csv'))
-      && names.some(n => n.includes('people') && n.includes('signal') && n.endsWith('.csv'));
+  const isTabular = (n) => n.endsWith('.csv') || n.endsWith('.xlsx') || n.endsWith('.xls');
+  const hasCompany = (n) => n.includes('company') || n.includes('comapny');
+  const hasPeople = (n) => n.includes('people');
+  return names.some(n => hasCompany(n) && isTabular(n)) && names.some(n => hasPeople(n) && isTabular(n));
 }
 
 function addFiles(fileList) {
@@ -1501,6 +1503,8 @@ $('#analyze-btn').addEventListener('click', async () => {
 
     const useWebSearch = !!$('#web-search-checkbox')?.checked;
     const instructions = ($('#instructions-input')?.value || '').trim();
+    const effectiveInputMode = uploadRes.mode === 'specter' ? 'specter' : inputMode;
+    if (uploadRes.mode === 'specter') setInputMode('specter');
     try {
       await api(`/api/analyze/${currentJobId}`, {
         method: 'POST',
@@ -1508,7 +1512,7 @@ $('#analyze-btn').addEventListener('click', async () => {
         body: JSON.stringify({
           use_web_search: useWebSearch,
           instructions: instructions || undefined,
-          input_mode: inputMode,
+          input_mode: effectiveInputMode,
           vc_investment_strategy: vcInvestmentStrategy || undefined,
         }),
         timeoutMs: 60000,
@@ -1831,6 +1835,11 @@ function showAuditLog(slug) {
       html += `<div class="audit-qa-block">`;
       html += `<div class="audit-qa-q">Q: ${escapeHtml(qa.question || '')}</div>`;
       html += `<div class="audit-qa-a">${escapeHtml(qa.answer || '')}</div>`;
+      if (qa.web_search_decision) {
+        const used = !!qa.web_search_used;
+        const label = used ? 'Web search used' : 'Web search skipped';
+        html += `<div class="audit-qa-a" style="font-size:12px;color:var(--text-dim)">${label}: ${escapeHtml(qa.web_search_decision)}</div>`;
+      }
       const chunkIds = (qa.chunk_ids || '').toString().split(',').map((s) => s.trim()).filter(Boolean);
       if (chunkIds.length > 0) {
         html += `<div class="audit-chunk-tags">`;
