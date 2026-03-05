@@ -11,6 +11,7 @@ class Company(BaseModel):
     tagline: Optional[str] = None
     about: Optional[str] = None
     team: Optional[List["Person"]] = None
+    domain: Optional[str] = None
     
     def _get_team_summary(self) -> str:
         """Format team data focusing on team members with their details.

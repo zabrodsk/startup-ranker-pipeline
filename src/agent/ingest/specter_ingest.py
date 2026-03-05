@@ -30,6 +30,20 @@ def _safe(val: Any) -> str | None:
     return s if s else None
 
 
+def _normalize_public_url(val: str | None) -> str | None:
+    """Normalize URL-like strings to explicit https:// when missing a scheme."""
+    if not val:
+        return None
+    v = val.strip()
+    if not v:
+        return None
+    if v.startswith("http://") or v.startswith("https://"):
+        return v
+    if v.startswith("www.") or "linkedin.com/" in v:
+        return f"https://{v.lstrip('/')}"
+    return v
+
+
 def _safe_float(val: Any) -> float | None:
     if pd.isna(val):
         return None
@@ -102,11 +116,23 @@ def _parse_person(row: pd.Series) -> Person:
 
     return Person(
         name=_safe(row.get("Full Name")),
+        title=_safe(row.get("Current Position Title")),
         about=_safe(row.get("About")),
         city=city,
         country_code=country,
         followers=_safe_int(row.get("LinkedIn - Followers")),
         connections=_safe_int(row.get("LinkedIn - Connections")),
+        profile_url=_normalize_public_url((
+            _safe(row.get("LinkedIn - Profile URL"))
+            or _safe(row.get("LinkedIn - URL"))
+            or _safe(row.get("Linkedin - URL"))
+            or _safe(row.get("Linkedin URL"))
+            or _safe(row.get("Linkedin - Profile URL"))
+            or _safe(row.get("LinkedIn Profile URL"))
+            or _safe(row.get("Profile URL"))
+            or _safe(row.get("LinkedIn URL"))
+            or _safe(row.get("URL"))
+        )),
         education=education_list or None,
         experience=experience_list or None,
         educations_details=_safe(row.get("Education Level")),
@@ -558,6 +584,7 @@ def ingest_specter(
             tagline=_safe(row.get("Tagline")),
             about=_safe(row.get("Description")),
             team=team_persons or None,
+            domain=_safe(row.get("Domain")),
         )
 
         # --- Build EvidenceStore ---

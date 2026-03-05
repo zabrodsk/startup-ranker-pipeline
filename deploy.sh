@@ -23,14 +23,14 @@ case "$LLM_PROVIDER" in
       echo "ERROR: ANTHROPIC_API_KEY not set in .env (required when LLM_PROVIDER=anthropic)"
       exit 1
     fi
-    echo "Using Anthropic (MODEL_NAME=${MODEL_NAME:-claude-sonnet-4-20250514})"
+    echo "Using Anthropic (MODEL_NAME=${MODEL_NAME:-claude-haiku-4-5-20251001})"
     ;;
   gemini)
     if [ -z "$GOOGLE_API_KEY" ] || [ "$GOOGLE_API_KEY" = "your_google_api_key_here" ]; then
-      echo "ERROR: GOOGLE_API_KEY not set in .env"
+      echo "ERROR: GOOGLE_API_KEY not set in .env (required when LLM_PROVIDER=gemini)"
       exit 1
     fi
-    echo "Using Gemini"
+    echo "Using Gemini (MODEL_NAME=${MODEL_NAME:-gemini-3.1-flash-lite-preview})"
     ;;
   *)
     echo "Using LLM provider: $LLM_PROVIDER"

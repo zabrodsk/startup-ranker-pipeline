@@ -44,6 +44,11 @@ from agent.batch import (
     rank_batch_companies,
 )
 from agent.ingest.specter_ingest import ingest_specter
+from agent.person_intel.models import (
+    BulkFounderJobRequest,
+    PersonProfileJobRequest,
+)
+from agent.person_intel.service import PersonIntelService
 
 app = FastAPI(title="Startup Ranker", docs_url=None, redoc_url=None)
 
@@ -63,11 +68,34 @@ SESSION_STORE_PATH = Path(
         str(Path(tempfile.gettempdir()) / "startup_ranker_sessions.json"),
     ),
 )
+JOBS_STORE_PATH = Path(
+    os.getenv(
+        "JOBS_STORE_PATH",
+        str(Path(tempfile.gettempdir()) / "startup_ranker_jobs.json"),
+    ),
+)
 _sessions: dict[str, float] = {}
 _results_cache: dict[str, dict[str, Any]] = {}
 
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# Friendly display names for common LLM model IDs
+_LLM_DISPLAY_NAMES = {
+    "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
+    "claude-sonnet-4-20250514": "Claude Sonnet 4",
+    "gemini-2.0-flash": "Gemini 2.0 Flash",
+    "gemini-3-flash-lite-preview": "Gemini 3 Flash Lite",
+    "gemini-3.1-flash-lite-preview": "Gemini 3.1 Flash Lite",
+}
+
+
+def _get_llm_display() -> str:
+    """Return a display string for the configured LLM (provider + model)."""
+    provider = os.getenv("LLM_PROVIDER", "gemini").lower()
+    model = os.getenv("MODEL_NAME", "gemini-3.1-flash-lite-preview")
+    friendly = _LLM_DISPLAY_NAMES.get(model)
+    return friendly if friendly else f"{provider} · {model}"
 
 
 class LoginRequest(BaseModel):
@@ -111,6 +139,18 @@ class AnalysisStatus(BaseModel):
 _jobs: dict[str, AnalysisStatus] = {}
 
 
+class PersonProfileJobStatus(BaseModel):
+    job_id: str
+    status: str  # "pending" | "running" | "done" | "error"
+    progress: str = ""
+    result: dict[str, Any] | None = None
+    error: str | None = None
+
+
+_person_jobs: dict[str, PersonProfileJobStatus] = {}
+_person_service = PersonIntelService()
+
+
 def _persist_sessions() -> None:
     """Persist active sessions to disk."""
     try:
@@ -146,6 +186,56 @@ def _load_sessions() -> None:
 
 
 _load_sessions()
+
+
+def _persist_jobs() -> None:
+    """Persist completed jobs to disk so they survive server restarts."""
+    try:
+        to_save = {}
+        for job_id, job in _jobs.items():
+            if job.status == "done" and job.results is not None:
+                to_save[job_id] = {
+                    "status": job.status,
+                    "progress": job.progress,
+                    "progress_log": getattr(job, "progress_log", []) or [],
+                    "results": job.results,
+                }
+        if not to_save:
+            return
+        JOBS_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        JOBS_STORE_PATH.write_text(json.dumps(to_save, default=str))
+    except Exception:
+        pass
+
+
+def _load_jobs() -> None:
+    """Load persisted jobs from disk on startup."""
+    global _jobs, _results_cache
+    if not JOBS_STORE_PATH.exists():
+        return
+    try:
+        raw = json.loads(JOBS_STORE_PATH.read_text())
+        if not isinstance(raw, dict):
+            return
+        for job_id, data in raw.items():
+            if not isinstance(data, dict) or data.get("status") != "done":
+                continue
+            results = data.get("results")
+            if results is None:
+                continue
+            _jobs[job_id] = AnalysisStatus(
+                job_id=job_id,
+                status="done",
+                progress=data.get("progress", "Analysis complete"),
+                progress_log=data.get("progress_log") or [],
+                results=results,
+            )
+            _results_cache[job_id] = {"results": results}
+    except Exception:
+        pass
+
+
+_load_jobs()
 
 
 def _check_session(session_id: str | None) -> bool:
@@ -415,9 +505,24 @@ def _build_results_payload(
             "summary_rows": summary_rows,
             "argument_rows": argument_rows,
             "qa_provenance_rows": qa_provenance_rows,
+            "founders": _extract_founders_from_company(company, r.get("slug", company.name)),
+            "team_members": _extract_founders_from_company(company, r.get("slug", company.name)),
         }
     else:
         failed_rows = build_failed_rows(results_list)
+        founders_by_slug: dict[str, list[dict[str, Any]]] = {}
+        for item in evaluated:
+            slug = item.get("slug", "")
+            founders_by_slug[slug] = _extract_founders_from_company(
+                item.get("company"),
+                slug,
+            )
+
+        for row in summary_rows:
+            row_slug = row.get("startup_slug", "")
+            row["founders"] = founders_by_slug.get(row_slug, [])
+            row["team_members"] = founders_by_slug.get(row_slug, [])
+
         _results_cache[job_id]["results"] = {
             "mode": "batch",
             "num_companies": len(evaluated),
@@ -426,9 +531,31 @@ def _build_results_payload(
             "argument_rows": argument_rows,
             "qa_provenance_rows": qa_provenance_rows,
             "failed_rows": failed_rows,
+            "founders_by_slug": founders_by_slug,
+            "team_members_by_slug": founders_by_slug,
         }
 
     _results_cache[job_id]["excel_path"] = str(excel_path)
+
+
+def _extract_founders_from_company(company: Any, slug: str) -> list[dict[str, Any]]:
+    """Build team-member metadata for on-demand person intelligence."""
+    founders: list[dict[str, Any]] = []
+    team = getattr(company, "team", None) or []
+    for idx, person in enumerate(team, start=1):
+        name = getattr(person, "name", None)
+        profile_url = getattr(person, "profile_url", None)
+        founders.append(
+            {
+                "person_key": f"{slug}:founder:{idx}",
+                "full_name": name or f"Team Member {idx}",
+                "primary_profile_url": profile_url or "",
+                "current_company": getattr(company, "name", None) or "",
+                "role": getattr(person, "title", None) or "",
+                "known_aliases": [],
+            }
+        )
+    return founders
 
 
 async def _run_analysis(
@@ -525,6 +652,7 @@ async def _run_document_analysis(
         _jobs[job_id].status = "done"
         _jobs[job_id].progress = "Analysis complete"
         _jobs[job_id].results = _results_cache[job_id]["results"]
+        _persist_jobs()
         return
 
     results_list: list[dict] = []
@@ -573,6 +701,7 @@ async def _run_document_analysis(
     _jobs[job_id].status = "done"
     _jobs[job_id].progress = f"Analysis complete — {len(evaluated)}/{total} companies ranked"
     _jobs[job_id].results = _results_cache[job_id]["results"]
+    _persist_jobs()
 
 
 async def _run_specter_analysis(
@@ -649,6 +778,147 @@ async def _run_specter_analysis(
     _jobs[job_id].status = "done"
     _jobs[job_id].progress = f"Analysis complete — {len(evaluated)}/{total} companies ranked"
     _jobs[job_id].results = _results_cache[job_id]["results"]
+    _persist_jobs()
+
+
+async def _run_person_profile_job(job_id: str, req: PersonProfileJobRequest) -> None:
+    """Execute asynchronous person profile generation job."""
+    try:
+        _person_jobs[job_id].status = "running"
+        _person_jobs[job_id].progress = "Collecting evidence..."
+        built = await _person_service.build_profile(req)
+        diagnostics: dict[str, Any] = {}
+        if isinstance(built, tuple) and len(built) == 4:
+            profile_json, profile_markdown, cache_key, diagnostics = built
+        else:
+            profile_json, profile_markdown, cache_key = built  # backward compatibility
+            diagnostics = {}
+        evidence_sources: dict[str, int] = {}
+        for claim in getattr(profile_json, "claims", []) or []:
+            for ev in getattr(claim, "evidence", []) or []:
+                st = getattr(ev, "source_type", None) or "unknown"
+                evidence_sources[st] = evidence_sources.get(st, 0) + 1
+        diagnostics["evidence_sources"] = evidence_sources
+        _person_jobs[job_id].status = "done"
+        _person_jobs[job_id].progress = "Profile completed"
+        _person_jobs[job_id].result = {
+            "profile_json": profile_json.model_dump(),
+            "profile_markdown": profile_markdown,
+            "cache_key": cache_key,
+            "diagnostics": diagnostics,
+        }
+    except Exception as exc:
+        _person_jobs[job_id].status = "error"
+        _person_jobs[job_id].progress = "Profile generation failed"
+        _person_jobs[job_id].error = str(exc)
+
+
+@app.post("/api/person-profile/jobs")
+async def create_person_profile_job(
+    req: PersonProfileJobRequest,
+    session_id: str | None = Cookie(default=None),
+):
+    """Create one person intelligence job."""
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    job_id = str(uuid.uuid4())[:8]
+    _person_jobs[job_id] = PersonProfileJobStatus(
+        job_id=job_id,
+        status="pending",
+        progress="Queued",
+    )
+    asyncio.create_task(_run_person_profile_job(job_id, req))
+    return {"job_id": job_id, "status": "running"}
+
+
+@app.get("/api/person-profile/status/{job_id}")
+async def get_person_profile_status(
+    job_id: str,
+    session_id: str | None = Cookie(default=None),
+):
+    """Fetch person intelligence job state/result."""
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if job_id not in _person_jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = _person_jobs[job_id]
+    return {
+        "job_id": job.job_id,
+        "status": job.status,
+        "progress": job.progress,
+        "result": job.result,
+        "error": job.error,
+    }
+
+
+@app.post("/api/person-profile/jobs/bulk-founders")
+async def create_bulk_founder_jobs(
+    req: BulkFounderJobRequest,
+    session_id: str | None = Cookie(default=None),
+):
+    """Create one enrichment job per founder candidate."""
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    created: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+
+    for idx, founder in enumerate(req.founders):
+        person_key = founder.person_key or f"{req.company_slug}:founder:{idx + 1}"
+        if not founder.primary_profile_url:
+            skipped.append(
+                {
+                    "person_key": person_key,
+                    "full_name": founder.full_name or f"Founder {idx + 1}",
+                    "status": "needs_input",
+                    "reason": "missing_primary_profile_url",
+                }
+            )
+            continue
+
+        profile_req = PersonProfileJobRequest(
+            primary_profile_url=founder.primary_profile_url,
+            full_name=founder.full_name,
+            location=founder.location,
+            current_company=founder.current_company,
+            role=founder.role,
+            known_aliases=founder.known_aliases,
+            user_uploaded_text=req.user_uploaded_text,
+            user_uploaded_images=req.user_uploaded_images,
+            company_slug=req.company_slug,
+            person_key=person_key,
+        )
+        job_id = str(uuid.uuid4())[:8]
+        _person_jobs[job_id] = PersonProfileJobStatus(
+            job_id=job_id,
+            status="pending",
+            progress="Queued",
+        )
+        asyncio.create_task(_run_person_profile_job(job_id, profile_req))
+        created.append(
+            {
+                "person_key": person_key,
+                "full_name": founder.full_name or "",
+                "job_id": job_id,
+                "status": "running",
+            }
+        )
+
+    return {
+        "company_slug": req.company_slug,
+        "jobs": created,
+        "skipped": skipped,
+    }
+
+
+@app.get("/api/config")
+async def get_config(session_id: str | None = Cookie(default=None)):
+    """Return current app config (e.g. LLM) for backfilling past runs."""
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return {"llm": _get_llm_display()}
 
 
 @app.get("/api/status/{job_id}")
@@ -666,6 +936,7 @@ async def get_status(job_id: str, session_id: str | None = Cookie(default=None))
         "progress": job.progress,
         "progress_log": getattr(job, "progress_log", []) or [],
         "results": _results_cache.get(job_id, {}).get("results"),
+        "llm": _get_llm_display(),
     }
 
 

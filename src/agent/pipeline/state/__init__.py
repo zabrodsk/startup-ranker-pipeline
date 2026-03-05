@@ -29,6 +29,12 @@ from agent.pipeline.state.schemas import (
     ArgumentOutput,
     ArgumentsOutput,
     CriterionScore,
+    PersonClaim,
+    PersonClaimEvidence,
+    PersonProfileOutput,
+    PersonProfileSections,
+    PersonProvenanceRecord,
+    PersonSubject,
     IndividualRefinedArgumentOutput,
     SingleArgumentScore,
 )
@@ -54,4 +60,10 @@ __all__ = [
     "SingleArgumentScore",
     "ArgumentCritique",
     "IndividualRefinedArgumentOutput",
+    "PersonSubject",
+    "PersonClaimEvidence",
+    "PersonProfileSections",
+    "PersonClaim",
+    "PersonProvenanceRecord",
+    "PersonProfileOutput",
 ]

@@ -212,7 +212,38 @@ def _web_results_add_value(question: str, company_name: str, web_results: str) -
     return (True, "web results relevant to company/question")
 
 
-def _run_web_search(search_query: str) -> str:
+_QUESTION_PREFIX_RE = re.compile(
+    r"^(what is the?|how (?:does|is|large|many)|which|who are|can you|please|does the)\s+",
+    re.IGNORECASE,
+)
+_WEB_SEARCH_QUERY_MAX_LEN = 180
+
+
+def _build_web_search_query(company: Company, question: str) -> str:
+    """Reformulate question into a company-first, keyword-rich search query.
+
+    Avoids definition-style results (e.g. generic TAM explanations) by stripping
+    interrogative scaffolding and leading with the company name.
+    """
+    q = question.strip()
+    q = _QUESTION_PREFIX_RE.sub("", q, count=1)
+    q = re.sub(r"\bthe company'?s?\b", company.name, q, flags=re.IGNORECASE)
+    # Collapse multiple spaces, remove parenthetical noise except acronyms like (TAM)
+    q = re.sub(r"\s+", " ", q).strip()
+    # Build company-first query
+    parts = [company.name, q]
+    if company.industry and ("market" in q.lower() or "tam" in q.lower() or "segment" in q.lower()):
+        parts.append(company.industry)
+    result = " ".join(parts)
+    if len(result) > _WEB_SEARCH_QUERY_MAX_LEN:
+        result = result[: _WEB_SEARCH_QUERY_MAX_LEN - 3].rsplit(" ", 1)[0] + "..."
+    return result
+
+
+def _run_web_search(
+    search_query: str,
+    domain_filter: list[str] | None = None,
+) -> str:
     """Run a web search using the configured provider."""
     from datetime import datetime
 
@@ -237,7 +268,7 @@ def _run_web_search(search_query: str) -> str:
 
         search_date = datetime.now().strftime("%Y-%m-%d")
         provider = get_provider(search_end_date=search_date, provider_name=provider_name)
-        return provider.search(search_query)
+        return provider.search(search_query, domain_filter=domain_filter)
     except Exception as exc:
         return f"Web search failed: {exc}"
 
@@ -354,9 +385,20 @@ async def answer_question_from_evidence(
 
         if do_search:
             web_search_decision = "attempted"
-            web_search_query = f"\"{company.name}\" {question}"
+            web_search_query = _build_web_search_query(company, question)
+            domain_filter = None
+            if company.domain:
+                raw = company.domain.strip().lower()
+                raw = re.sub(r"^https?://(www\.)?", "", raw).split("/")[0]
+                if raw:
+                    domain_filter = [raw, "crunchbase.com", "linkedin.com"]
+                domain_filter = [
+                    company.domain,
+                    "crunchbase.com",
+                    "linkedin.com",
+                ]
             web_results = await asyncio.wait_for(
-                asyncio.to_thread(_run_web_search, web_search_query),
+                asyncio.to_thread(_run_web_search, web_search_query, domain_filter),
                 timeout=WEB_SEARCH_TIMEOUT_SEC,
             )
             web_search_results = web_results[:WEB_RESULTS_TRUNCATE]

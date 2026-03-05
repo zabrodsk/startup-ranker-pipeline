@@ -111,6 +111,8 @@ class Person(BaseModel):
     # Additional semantic content for LLM analysis
     about: Optional[str] = None
     connections: Optional[int] = None
+    profile_url: Optional[str] = None
+    title: Optional[str] = None
 
     def __post_init__(self):
         """Initialize empty lists if None."""
@@ -144,6 +146,8 @@ class Person(BaseModel):
             parts.append(f"Network: {', '.join(network_info)}")
 
         # Current role
+        if self.title:
+            parts.append(f"Title: {self.title}")
         if self.current_company:
             parts.append(f"Current Company: {self.current_company}")
 

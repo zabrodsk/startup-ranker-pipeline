@@ -8,6 +8,7 @@ Usage:
 import argparse
 import asyncio
 import sys
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
@@ -333,10 +334,48 @@ def _get_top_args(
     arg_type: str,
     n: int = 3,
 ) -> List[Argument]:
-    """Get top N arguments of a given type sorted by score descending."""
+    """Get top N arguments of a given type, prioritizing score and diversity."""
     typed = [a for a in arguments if a.argument_type == arg_type]
     typed.sort(key=lambda a: a.score, reverse=True)
-    return typed[:n]
+    if not typed:
+        return []
+
+    def _arg_text(a: Argument) -> str:
+        return (a.refined_content or a.content or "").strip()
+
+    def _normalize(text: str) -> str:
+        text = text.lower()
+        for ch in ",.;:!?()[]{}\"'":
+            text = text.replace(ch, " ")
+        return " ".join(text.split())
+
+    def _too_similar(a: str, b: str) -> bool:
+        if not a or not b:
+            return False
+        na, nb = _normalize(a), _normalize(b)
+        if na == nb:
+            return True
+
+        # Lexical overlap gate.
+        ta, tb = set(na.split()), set(nb.split())
+        if ta and tb:
+            overlap = len(ta & tb) / max(1, min(len(ta), len(tb)))
+            if overlap >= 0.75:
+                return True
+
+        # Near-duplicate phrasing gate.
+        return SequenceMatcher(None, na, nb).ratio() >= 0.82
+
+    selected: List[Argument] = []
+    for candidate in typed:
+        c_text = _arg_text(candidate)
+        if all(not _too_similar(c_text, _arg_text(chosen)) for chosen in selected):
+            selected.append(candidate)
+        if len(selected) >= n:
+            break
+
+    # If strict diversity leaves fewer than requested, show fewer rather than duplicates.
+    return selected[:n]
 
 
 def build_summary_rows(results: List[Dict[str, Any]]) -> List[Dict]:

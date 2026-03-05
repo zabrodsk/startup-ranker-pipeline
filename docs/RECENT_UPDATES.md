@@ -1,12 +1,39 @@
 # Recent Updates (Since Last Push)
 
-*Last push: v0.0.3 — Executive summary with dimension summaries, Key Points, Red Flags*
+*Last push: v0.0.4 — Person intelligence, deploy improvements*
 
 ---
 
 ## Summary
 
-This document summarizes the main improvements and fixes since the last push to GitHub. **Work is ongoing**, with current focus on improving Perplexity web search quality and robustness.
+This document summarizes the main improvements and fixes since the last push to GitHub. **v0.0.4** adds **Person Intelligence** — on-demand team-member profile enrichment from LinkedIn and public web sources — plus deploy script improvements and pipeline schema updates.
+
+---
+
+## Person Intelligence (New)
+
+On-demand team-member profile enrichment from LinkedIn and public web sources:
+
+- **`PersonIntelService`** — Orchestrates evidence collection, fact extraction, deduplication, and markdown synthesis
+- **Providers** — Apify MCP (LinkedIn), user-supplied inputs, web fallback for public profiles
+- **Output** — Structured `PersonProfileOutput` with claims, evidence, synthesized sections, and markdown
+- **Web API** — `/person-profile/job` and `/person-profile/job/{id}` for async profile jobs
+- **Integration** — Team-member metadata enrichment in the web app; person dataclass aligned with Brightdata/LinkedIn schema
+
+### Project layout
+
+```
+src/agent/person_intel/
+├── service.py      # Orchestrator
+├── extract.py      # Fact extraction and normalization
+├── dedup.py        # Provenance indexing and deduplication
+├── synthesize.py  # Section synthesis (LLM)
+├── render_markdown.py
+├── models.py       # PersonProfileJobRequest, EvidenceRecord, etc.
+└── providers/      # Apify MCP, user inputs, web fallback
+```
+
+Tests: `tests/person_intel/` — full coverage for extract, dedup, synthesize, providers, service, and profile schema.
 
 ---
 
@@ -69,22 +96,28 @@ If the gate fails, the pipeline **falls back to the grounded answer** (documents
 
 ---
 
-## Current Work in Progress
+## Deploy Script
 
-- **Improving Perplexity searches** — tuning quality gates, query construction, and fallback behavior
-- Further refinements to executive summaries and ranking dimensions
+- `deploy.sh` — Clearer error messages for missing API keys, improved provider validation
 
 ---
 
-## Files Changed
+## Files Changed (v0.0.4)
 
 | File | Summary |
 |------|---------|
-| `src/agent/evidence_answering.py` | Quality gate, coerce_text, provenance, query formatting |
-| `src/agent/batch.py` | _ensure_str for VC context, QA provenance columns |
-| `web/app.py` | VC strategy coercion, Pydantic validators |
-| `web/static/index.html` | Minor UI tweaks |
+| `src/agent/person_intel/` | **New** — Person intelligence pipeline (service, extract, dedup, synthesize, providers) |
+| `tests/person_intel/` | **New** — Tests for person intel |
+| `src/agent/dataclasses/person.py` | Person dataclass aligned with Brightdata/LinkedIn schema |
+| `src/agent/dataclasses/company.py` | Company schema updates |
+| `src/agent/pipeline/state/schemas.py` | PersonProfileOutput, PersonSubject, PersonClaim, etc. |
+| `src/agent/pipeline/state/__init__.py` | State exports |
+| `web/app.py` | Person profile job API, team-member enrichment |
+| `web/static/index.html` | Person intel UI, cache key |
+| `src/agent/batch.py` | Batch updates |
+| `src/agent/evidence_answering.py` | Quality gate, provenance |
 | `src/agent/ingest/specter_ingest.py` | Parsing refinements |
-| `src/agent/pipeline/stages/ranking.py` | Ranking adjustments |
-| `README.md` | Major rewrite |
+| `src/agent/web_search/providers.py` | Provider updates |
 | `.env.example` | Config updates |
+| `deploy.sh` | Deploy script improvements |
+| `README.md` | Project structure update |

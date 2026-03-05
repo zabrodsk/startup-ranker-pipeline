@@ -26,8 +26,11 @@ class WebSearchProvider(ABC):
     """Minimal interface for search providers."""
 
     @abstractmethod
-    def search(self, query: str) -> str:
-        """Execute a query and return a formatted string."""
+    def search(self, query: str, *, domain_filter: Optional[List[str]] = None) -> str:
+        """Execute a query and return a formatted string.
+
+        domain_filter: Optional list of domains to limit results (Perplexity only).
+        """
 
 
 class BraveSearchProvider(WebSearchProvider):
@@ -60,7 +63,7 @@ class BraveSearchProvider(WebSearchProvider):
             },
         )
 
-    def search(self, query: str) -> str:
+    def search(self, query: str, *, domain_filter: Optional[List[str]] = None) -> str:
         return self._brave_search.run(query)
 
     @staticmethod
@@ -104,7 +107,7 @@ class SonarSearchProvider(WebSearchProvider):
                 "The 'requests' package is required for SonarSearchProvider."
             ) from exc
 
-    def search(self, query: str) -> str:
+    def search(self, query: str, *, domain_filter: Optional[List[str]] = None) -> str:
         payload = {
             "query": query,
             "max_results": self._max_results,
@@ -116,6 +119,8 @@ class SonarSearchProvider(WebSearchProvider):
             payload["search_after_date_filter"] = self._search_after
         if self._search_before:
             payload["search_before_date_filter"] = self._search_before
+        if domain_filter:
+            payload["search_domain_filter"] = domain_filter[:20]
 
         response = run_with_sync_retries(
             self._requests.post,

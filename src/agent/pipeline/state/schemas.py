@@ -4,7 +4,9 @@ These schemas define the expected structure of LLM responses
 when using structured output mode.
 """
 
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ArgumentOutput(BaseModel):
@@ -74,3 +76,137 @@ class DimensionScoreOutput(BaseModel):
         default_factory=list,
         description="Missing high-impact facts",
     )
+
+
+class PersonSubject(BaseModel):
+    """Canonical subject identity metadata."""
+
+    primary_profile_url: str
+    normalized_profile_url: str
+    profile_image_url: str | None = None
+    full_name: str | None = None
+    location: str | None = None
+    current_company: str | None = None
+    role: str | None = None
+    known_aliases: list[str] = Field(default_factory=list)
+
+
+class PersonClaimEvidence(BaseModel):
+    """Single evidence entry for a claim."""
+
+    url: str
+    snippet_or_field: str
+    source_type: Literal[
+        "apify_profile",
+        "apify_posts",
+        "user_text",
+        "user_image_ocr",
+        "web_fallback",
+    ]
+    retrieved_at: str
+
+
+class PersonProfileSections(BaseModel):
+    """Rendered narrative sections for person intelligence output."""
+
+    interests_lifestyle: str
+    strengths: list[str]
+    more_details: str
+    biggest_achievements: list[str]
+    values_beliefs: str
+    key_points: list[str]
+    coolest_fact: str
+    top_risk: str
+
+    @field_validator("strengths")
+    @classmethod
+    def _validate_strengths(cls, value: list[str]) -> list[str]:
+        if not 5 <= len(value) <= 8:
+            raise ValueError("strengths must contain 5-8 bullet points")
+        normalized = [v.strip() for v in value if v and v.strip()]
+        if len(normalized) != len(value):
+            raise ValueError("strengths cannot contain empty bullets")
+        if not all(v.startswith("✅") for v in normalized):
+            raise ValueError("each strengths bullet must start with '✅'")
+        return normalized
+
+    @field_validator("biggest_achievements")
+    @classmethod
+    def _validate_achievements(cls, value: list[str]) -> list[str]:
+        if not 3 <= len(value) <= 7:
+            raise ValueError("biggest_achievements must contain 3-7 bullet points")
+        normalized = [v.strip() for v in value if v and v.strip()]
+        if len(normalized) != len(value):
+            raise ValueError("biggest_achievements cannot contain empty bullets")
+        return normalized
+
+    @field_validator("key_points")
+    @classmethod
+    def _validate_key_points(cls, value: list[str]) -> list[str]:
+        if not 5 <= len(value) <= 8:
+            raise ValueError("key_points must contain 5-8 bullet points")
+        normalized = [v.strip() for v in value if v and v.strip()]
+        if len(normalized) != len(value):
+            raise ValueError("key_points cannot contain empty bullets")
+        return normalized
+
+    @staticmethod
+    def _sentence_count(text: str) -> int:
+        candidates = [p.strip() for p in text.replace("\n", " ").split(".")]
+        return len([c for c in candidates if c])
+
+    @model_validator(mode="after")
+    def _validate_lengths(self) -> "PersonProfileSections":
+        interests_sentences = self._sentence_count(self.interests_lifestyle)
+        values_sentences = self._sentence_count(self.values_beliefs)
+        cool_sentences = self._sentence_count(self.coolest_fact)
+
+        if not 2 <= interests_sentences <= 5:
+            raise ValueError("interests_lifestyle must contain 2-5 sentences")
+        if not 2 <= values_sentences <= 5:
+            raise ValueError("values_beliefs must contain 2-5 sentences")
+        if not 1 <= cool_sentences <= 2:
+            raise ValueError("coolest_fact must contain 1-2 sentences")
+
+        return self
+
+
+class PersonClaim(BaseModel):
+    """Atomic claim with provenance and uncertainty annotation."""
+
+    claim_id: str
+    text: str
+    section: Literal[
+        "interests_lifestyle",
+        "strengths",
+        "more_details",
+        "biggest_achievements",
+        "values_beliefs",
+        "key_points",
+        "coolest_fact",
+        "top_risk",
+    ]
+    evidence: list[PersonClaimEvidence] = Field(default_factory=list)
+    confidence: float = Field(ge=0, le=1)
+    timestamp: str
+    status: Literal["supported", "unknown", "conflicted"]
+
+
+class PersonProvenanceRecord(BaseModel):
+    """Deduplicated provenance row keyed by stable hash."""
+
+    key: str
+    url: str
+    snippet_or_field: str
+    source_type: str
+    retrieved_at: str
+
+
+class PersonProfileOutput(BaseModel):
+    """Final person intelligence output."""
+
+    subject: PersonSubject
+    sections: PersonProfileSections
+    claims: list[PersonClaim]
+    unknowns: list[str] = Field(default_factory=list)
+    provenance_index: list[PersonProvenanceRecord] = Field(default_factory=list)

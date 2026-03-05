@@ -387,6 +387,11 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .recent-run-llm {
+      font-size: 11px;
+      color: var(--text-dim);
+      opacity: 0.85;
+    }
     .recent-run-actions {
       display: flex;
       align-items: center;
@@ -407,7 +412,7 @@
     .recent-run-status.running { color: var(--green); border-color: var(--green-border); background: rgba(0,255,135,0.08); }
     .recent-run-status.done { color: var(--text-light); }
     .recent-run-status.error { color: var(--red); border-color: var(--red-border); background: rgba(255,107,107,0.08); }
-    .recent-run-open {
+    .recent-run-open, .recent-run-view-log {
       background: none;
       border: 1px solid var(--text-dark);
       color: var(--text-light);
@@ -416,7 +421,7 @@
       font-size: 12px;
       cursor: pointer;
     }
-    .recent-run-open:hover { border-color: var(--text-gray); }
+    .recent-run-open:hover, .recent-run-view-log:hover { border-color: var(--text-gray); }
 
     input[type="file"] { display: none; }
 
@@ -468,6 +473,7 @@
       border-bottom: 1px solid var(--border);
     }
     .progress-feed-line:last-child { border-bottom: none; }
+    .progress-feed-placeholder { color: var(--text-dim); font-style: italic; }
     .processing-steps {
       margin-top: 32px; text-align: left;
       display: flex; flex-direction: column; gap: 12px;
@@ -671,6 +677,10 @@
       cursor: pointer;
     }
     .audit-modal-close:hover { border-color: var(--text-gray); }
+    .progress-log-modal-content {
+      max-height: 400px; overflow-y: auto; font-size: 12px; font-family: monospace;
+      white-space: pre-wrap; padding: 12px; color: var(--text-dim);
+    }
     .audit-section { margin-bottom: 24px; }
     .audit-section-title {
       font-size: 12px; font-weight: 600;
@@ -847,6 +857,182 @@
     .executive-summary-block .key-points-list li { margin-bottom: 4px; }
     .executive-summary-block .red-flags-list li { margin-bottom: 4px; color: var(--red); }
     .executive-summary-block .red-flags-title { color: var(--red) !important; }
+    .person-intel-section {
+      margin-top: 16px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 14px;
+      background: var(--bg-dark);
+    }
+    .person-intel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .person-intel-title {
+      font-size: 12px;
+      letter-spacing: 1px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      font-weight: 600;
+    }
+    .person-intel-empty {
+      font-size: 12px;
+      color: var(--text-dim);
+      line-height: 1.5;
+    }
+    .team-member-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 8px 0 10px;
+    }
+    .team-member-pill {
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-card);
+      color: var(--text-light);
+      border-radius: 999px;
+      padding: 7px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+    .team-member-pill:hover {
+      border-color: var(--green-border);
+      color: var(--green);
+      background: rgba(0,255,135,0.08);
+    }
+    .person-intel-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .person-intel-card {
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: var(--bg-card);
+    }
+    .person-intel-card-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 6px;
+      align-items: center;
+    }
+    .person-intel-name { font-size: 13px; color: var(--text-light); }
+    .person-intel-status {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text-dim);
+    }
+    .person-intel-status.done { color: var(--green); }
+    .person-intel-status.error { color: var(--red); }
+    .person-intel-md {
+      font-size: 12px;
+      color: var(--text-mid);
+      line-height: 1.5;
+      white-space: pre-wrap;
+      max-height: 180px;
+      overflow-y: auto;
+      border-top: 1px solid var(--border);
+      padding-top: 8px;
+      margin-top: 8px;
+    }
+    .person-report {
+      margin-top: 8px;
+      border-top: 1px solid var(--border);
+      padding-top: 10px;
+    }
+    .person-report-head {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .person-report-avatar {
+      width: 62px;
+      height: 62px;
+      border-radius: 50%;
+      border: 1px solid var(--border-subtle);
+      object-fit: cover;
+      background: var(--bg-dark);
+    }
+    .person-report-name {
+      font-size: 22px;
+      font-weight: 800;
+      color: var(--text-white);
+      letter-spacing: 0.2px;
+      line-height: 1.1;
+    }
+    .person-report-meta {
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-top: 4px;
+    }
+    .person-report-section {
+      margin: 10px 0;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg-dark);
+    }
+    .person-report-section h4 {
+      font-size: 11px;
+      letter-spacing: 1px;
+      color: var(--green);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+    }
+    .person-report-section h4.risk {
+      color: var(--red);
+    }
+    .person-report-section p {
+      font-size: 12px;
+      color: var(--text-light);
+      line-height: 1.55;
+    }
+    .person-report-section ul {
+      margin-left: 14px;
+      color: var(--text-light);
+    }
+    .person-report-section li {
+      font-size: 12px;
+      line-height: 1.5;
+      margin-bottom: 4px;
+    }
+    .person-intel-manual {
+      margin-top: 10px;
+      border-top: 1px solid var(--border);
+      padding-top: 10px;
+      display: none;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .person-intel-manual input {
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-card);
+      color: var(--text-light);
+      font-size: 12px;
+      min-width: 180px;
+    }
+    .person-intel-manual button {
+      padding: 8px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--green-border);
+      background: rgba(0,255,135,0.12);
+      color: var(--green);
+      font-size: 12px;
+      cursor: pointer;
+    }
   </style>
 </head>
 <body>
@@ -978,7 +1164,7 @@
       <div class="spinner"></div>
       <h2>Analyzing...</h2>
       <p class="status status-live" id="processing-status">Uploading files and starting analysis...</p>
-      <div id="progress-feed" class="progress-feed" style="display:none"></div>
+      <div id="progress-feed" class="progress-feed"></div>
       <p class="status-hint">Progress updates every few seconds. Each company takes 1–2 minutes.</p>
     </div>
   </div>
@@ -1044,6 +1230,17 @@
   </div>
 </div>
 
+<!-- Progress log modal -->
+<div id="progress-log-modal-overlay" class="audit-modal-overlay">
+  <div class="audit-modal-panel">
+    <div class="audit-modal-header">
+      <h2 class="audit-modal-title">Progress Log</h2>
+      <button type="button" class="audit-modal-close" id="progress-log-modal-close">Close</button>
+    </div>
+    <div id="progress-log-modal-content" class="progress-log-modal-content"></div>
+  </div>
+</div>
+
 <!-- Settings modal -->
 <div id="settings-modal-overlay" class="audit-modal-overlay">
   <div class="audit-modal-panel">
@@ -1075,7 +1272,9 @@ let inputMode = 'pitchdeck';
 const ACTIVE_JOB_KEY = 'active_job_id';
 const RECENT_RUNS_KEY = 'recent_runs_v1';
 const VC_STRATEGY_KEY = 'vc_investment_strategy';
+const PERSON_INTEL_CACHE_KEY = 'person_intel_cache_v3_harvest_only';
 let vcInvestmentStrategy = localStorage.getItem(VC_STRATEGY_KEY) || '';
+let personIntelState = {};
 
 function showScreen(id) {
   $$('.screen').forEach(s => s.classList.remove('active'));
@@ -1114,6 +1313,29 @@ function loadRecentRuns() {
 
 function saveRecentRuns(runs) {
   localStorage.setItem(RECENT_RUNS_KEY, JSON.stringify(runs.slice(0, 12)));
+}
+
+async function backfillRecentRunsWithLlm() {
+  const runs = loadRecentRuns();
+  const needBackfill = runs.some((r) => !r.llm);
+  if (!needBackfill || runs.length === 0) return;
+  try {
+    const config = await api('/api/config', { timeoutMs: 5000, retries: 0 });
+    if (!config.llm) return;
+    let changed = false;
+    for (const run of runs) {
+      if (!run.llm) {
+        run.llm = config.llm;
+        changed = true;
+      }
+    }
+    if (changed) {
+      saveRecentRuns(runs);
+      renderRecentRuns();
+    }
+  } catch (_) {
+    // Not authenticated or network error; skip backfill
+  }
 }
 
 function upsertRecentRun(update) {
@@ -1163,13 +1385,20 @@ function renderRecentRuns() {
     const status = run.status || 'pending';
     const actionLabel = status === 'done' ? 'Open results' : 'Resume';
     const subtitle = run.progress || `Started ${formatRunTimestamp(run.createdAt)}`;
+    const llmLine = run.llm ? `<div class="recent-run-llm">${escapeHtml(run.llm)}</div>` : '';
+    const showViewLog = true;
+    const viewLogBtn = showViewLog
+      ? `<button class="recent-run-view-log" data-job-log="${run.jobId}">View log</button>`
+      : '';
     return `<div class="recent-run-card">
       <div class="recent-run-meta">
         <div class="recent-run-title">${getRunTitle(run)}</div>
         <div class="recent-run-subtitle">${subtitle}</div>
+        ${llmLine}
       </div>
       <div class="recent-run-actions">
         <span class="recent-run-status ${status}">${status}</span>
+        ${viewLogBtn}
         <button class="recent-run-open" data-job-open="${run.jobId}">${actionLabel}</button>
       </div>
     </div>`;
@@ -1177,6 +1406,12 @@ function renderRecentRuns() {
 
   $$('[data-job-open]').forEach((btn) => {
     btn.addEventListener('click', () => openSavedRun(btn.dataset.jobOpen));
+  });
+  $$('[data-job-log]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showProgressLogModal(btn.dataset.jobLog);
+    });
   });
 }
 
@@ -1212,6 +1447,266 @@ async function api(path, opts = {}) {
   }
 }
 
+function loadPersonIntelCache() {
+  try {
+    return JSON.parse(localStorage.getItem(PERSON_INTEL_CACHE_KEY) || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function savePersonIntelCache(cache) {
+  localStorage.setItem(PERSON_INTEL_CACHE_KEY, JSON.stringify(cache));
+}
+
+function personIntelCacheKey(founder) {
+  const url = (founder.primary_profile_url || '').trim().toLowerCase();
+  const name = (founder.full_name || '').trim().toLowerCase();
+  const company = (founder.current_company || '').trim().toLowerCase();
+  return `${url}|${name}|${company}`;
+}
+
+function markdownToSafeHtml(md) {
+  return escapeHtml(md || '').replace(/\\n/g, '<br>');
+}
+
+function renderPersonProfileReport(result, fallbackName) {
+  const profile = result?.profile_json || {};
+  const subject = profile.subject || {};
+  const sections = profile.sections || {};
+  const displayName = subject.full_name || fallbackName || 'Person Profile';
+  const imageUrl = subject.profile_image_url || '';
+  const metaParts = [
+    subject.role || '',
+    subject.current_company || '',
+    subject.location || '',
+  ].filter(Boolean);
+
+  // Derive evidence source breakdown (from diagnostics or from claims)
+  let evidenceSources = result?.diagnostics?.evidence_sources || {};
+  if (Object.keys(evidenceSources).length === 0 && (profile.claims || []).length) {
+    evidenceSources = {};
+    for (const c of profile.claims || []) {
+      for (const e of c.evidence || []) {
+        const st = e.source_type || 'unknown';
+        evidenceSources[st] = (evidenceSources[st] || 0) + 1;
+      }
+    }
+  }
+  const sourceLabels = {
+    apify_profile: 'Apify LinkedIn profile',
+    apify_posts: 'Apify LinkedIn posts',
+    user_text: 'User-provided text',
+    user_image_ocr: 'User-provided image (OCR)',
+    web_fallback: 'Web search fallback',
+  };
+  const sourceParts = Object.entries(evidenceSources)
+    .map(([k, n]) => (sourceLabels[k] || k) + (n > 1 ? ` (×${n})` : ''));
+
+  const sectionBlock = (title, bodyHtml) => `
+    <section class="person-report-section">
+      <h4 class="${title === 'TOP RISK' ? 'risk' : ''}">${title}</h4>
+      ${bodyHtml}
+    </section>
+  `;
+  const listBlock = (items) => `<ul>${(items || []).map((i) => `<li>${escapeHtml(i)}</li>`).join('')}</ul>`;
+
+  const apifyError = result?.diagnostics?.apify_error;
+  const dataSourcesHtml = sourceParts.length
+    ? `<div class="person-report-sources" style="font-size:0.85em;color:var(--text-dim);margin-top:0.5em">Data from: ${escapeHtml(sourceParts.join(', ') || 'none')}</div>`
+    : '';
+  const apifyErrorHtml = apifyError
+    ? `<div class="person-report-apify-error" style="font-size:0.85em;color:var(--orange);margin-top:0.25em">Apify failed: ${escapeHtml(apifyError)}</div>`
+    : '';
+
+  return `
+    <div class="person-report">
+      <div class="person-report-head">
+        ${imageUrl ? `<img class="person-report-avatar" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(displayName)}">` : ''}
+        <div>
+          <div class="person-report-name"><strong>${escapeHtml(displayName)}</strong></div>
+          <div class="person-report-meta">${escapeHtml(metaParts.join(' · ') || 'Public profile intelligence')}</div>
+          ${dataSourcesHtml}
+          ${apifyErrorHtml}
+        </div>
+      </div>
+      ${sectionBlock('INTERESTS & LIFESTYLE', `<p>${escapeHtml(sections.interests_lifestyle || 'Unknown')}</p>`)}
+      ${sectionBlock('KEY POINTS', listBlock(sections.key_points || []))}
+      ${sectionBlock('MORE DETAILS', `<p>${escapeHtml(sections.more_details || 'Unknown')}</p>`)}
+      ${sectionBlock('BIGGEST ACHIEVEMENTS', listBlock(sections.biggest_achievements || []))}
+      ${sectionBlock('VALUES & BELIEFS', `<p>${escapeHtml(sections.values_beliefs || 'Unknown')}</p>`)}
+      ${sectionBlock('COOLEST FACT', `<p>${escapeHtml(sections.coolest_fact || 'Unknown')}</p>`)}
+      ${sectionBlock('TOP RISK', `<p>${escapeHtml(sections.top_risk || 'Unknown')}</p>`)}
+    </div>
+  `;
+}
+
+function getTeamMembersForSlug(slug) {
+  if (!currentResults) return [];
+  const bySlug = currentResults.team_members_by_slug || currentResults.founders_by_slug || {};
+  if (currentResults.mode === 'single') {
+    return currentResults.team_members || currentResults.founders || [];
+  }
+  return bySlug[slug] || [];
+}
+
+function renderPersonIntelSection(slug, founders) {
+  const list = Array.isArray(founders) ? founders : [];
+  const memberCards = list.map((m, idx) => `
+    <button class="team-member-pill" data-person-member="${slug}" data-member-index="${idx}" title="${escapeHtml(m.role || '')}">
+      ${escapeHtml(m.full_name || `Team Member ${idx + 1}`)}${m.role ? ` · ${escapeHtml(m.role)}` : ''}
+    </button>
+  `).join('');
+  return `
+    <div class="person-intel-section" data-person-intel-section="${slug}">
+      <div class="person-intel-header">
+        <div class="person-intel-title">Team Members</div>
+      </div>
+      <div class="team-member-list">${memberCards || '<span class="person-intel-empty">No team members detected.</span>'}</div>
+      <div class="person-intel-empty">Select a team member to generate a report.</div>
+      <div class="person-intel-manual" data-person-intel-manual="${slug}">
+        <input type="text" data-person-url="${slug}" placeholder="Public profile URL (https://...)">
+        <input type="text" data-person-name="${slug}" placeholder="Full name (optional)">
+        <button data-person-submit="${slug}">Run profile</button>
+      </div>
+      <div class="person-intel-list" data-person-intel-list="${slug}"></div>
+    </div>
+  `;
+}
+
+function renderPersonIntelCards(slug) {
+  const container = document.querySelector(`[data-person-intel-list="${slug}"]`);
+  if (!container) return;
+  const state = personIntelState[slug];
+  if (!state || !state.entries || !state.entries.length) {
+    container.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = state.entries.map((entry) => {
+    const statusClass = (entry.status || '').toLowerCase();
+    const reportUi = entry.result?.profile_json
+      ? renderPersonProfileReport(entry.result, entry.full_name)
+      : (entry.result?.profile_markdown ? `<div class="person-intel-md">${markdownToSafeHtml(entry.result.profile_markdown)}</div>` : '');
+    const error = entry.error ? `<div class="person-intel-md" style="color:var(--red)">${escapeHtml(entry.error)}</div>` : '';
+    return `
+      <div class="person-intel-card">
+        <div class="person-intel-card-header">
+          <div class="person-intel-name">${escapeHtml(entry.full_name || 'Team Member')}</div>
+          <div class="person-intel-status ${statusClass}">${escapeHtml(entry.status || 'queued')}</div>
+        </div>
+        ${reportUi}
+        ${error}
+      </div>
+    `;
+  }).join('');
+}
+
+async function pollPersonIntelJob(slug, index) {
+  const entry = personIntelState?.[slug]?.entries?.[index];
+  if (!entry || !entry.job_id) return;
+
+  try {
+    const status = await api(`/api/person-profile/status/${entry.job_id}`, { timeoutMs: 10000, retries: 1 });
+    entry.status = status.status;
+    entry.error = status.error || null;
+    entry.result = status.result || null;
+    renderPersonIntelCards(slug);
+
+    if (status.status === 'done' && status.result?.profile_json) {
+      const cache = loadPersonIntelCache();
+      const key = personIntelCacheKey({
+        primary_profile_url: status.result.profile_json?.subject?.normalized_profile_url || '',
+        full_name: entry.full_name || status.result.profile_json?.subject?.full_name || '',
+        current_company: status.result.profile_json?.subject?.current_company || '',
+      });
+      cache[key] = status.result;
+      savePersonIntelCache(cache);
+      return;
+    }
+    if (status.status === 'error') return;
+    setTimeout(() => pollPersonIntelJob(slug, index), 1500);
+  } catch {
+    setTimeout(() => pollPersonIntelJob(slug, index), 2500);
+  }
+}
+
+async function startPersonIntelForMember(slug, member) {
+  if (!member) return;
+  const manualEl = document.querySelector(`[data-person-intel-manual="${slug}"]`);
+  const emptyEl = document.querySelector(`[data-person-intel-section="${slug}"] .person-intel-empty`);
+
+  if (!(member.primary_profile_url || '').trim()) {
+    if (manualEl) manualEl.style.display = 'flex';
+    if (emptyEl) emptyEl.textContent = `Profile URL missing for ${member.full_name || 'selected team member'}. Provide URL manually.`;
+    const nameInput = document.querySelector(`[data-person-name="${slug}"]`);
+    if (nameInput) nameInput.value = member.full_name || '';
+    return;
+  }
+
+  if (manualEl) manualEl.style.display = 'none';
+  if (emptyEl) emptyEl.style.display = 'none';
+
+  if (!personIntelState[slug]) personIntelState[slug] = { entries: [] };
+  const cache = loadPersonIntelCache();
+  const key = personIntelCacheKey(member);
+  const existingIndex = (personIntelState[slug].entries || []).findIndex(
+    (e) => (e.person_key || '') === (member.person_key || '')
+  );
+
+  if (cache[key]) {
+    const cachedEntry = {
+      full_name: member.full_name || 'Team Member',
+      role: member.role || '',
+      person_key: member.person_key || '',
+      status: 'done',
+      result: cache[key],
+      error: null,
+    };
+    if (existingIndex >= 0) personIntelState[slug].entries[existingIndex] = cachedEntry;
+    else personIntelState[slug].entries.unshift(cachedEntry);
+    renderPersonIntelCards(slug);
+    return;
+  }
+
+  const runningEntry = {
+    full_name: member.full_name || 'Team Member',
+    role: member.role || '',
+    person_key: member.person_key || '',
+    status: 'running',
+    result: null,
+    error: null,
+  };
+  if (existingIndex >= 0) personIntelState[slug].entries[existingIndex] = runningEntry;
+  else personIntelState[slug].entries.unshift(runningEntry);
+  renderPersonIntelCards(slug);
+
+  const resp = await api('/api/person-profile/jobs', {
+    method: 'POST',
+    body: JSON.stringify({
+      primary_profile_url: member.primary_profile_url,
+      full_name: member.full_name || undefined,
+      current_company: member.current_company || undefined,
+      role: member.role || undefined,
+      known_aliases: member.known_aliases || [],
+      company_slug: slug,
+      person_key: member.person_key || undefined,
+    }),
+    timeoutMs: 20000,
+    retries: 1,
+  });
+
+  const idx = (personIntelState[slug].entries || []).findIndex(
+    (e) => (e.person_key || '') === (member.person_key || '')
+  );
+  if (idx >= 0) {
+    personIntelState[slug].entries[idx].job_id = resp.job_id;
+    personIntelState[slug].entries[idx].status = 'running';
+    renderPersonIntelCards(slug);
+    pollPersonIntelJob(slug, idx);
+  }
+}
+
 function setSpinnerActive() {
   const spinner = document.querySelector('.spinner');
   if (spinner) spinner.style.borderTopColor = 'var(--green)';
@@ -1225,9 +1720,9 @@ function setSpinnerError() {
 function renderProgressFeed(log) {
   const feedEl = $('#progress-feed');
   if (!feedEl) return;
+  feedEl.style.display = 'block';
   if (!log || log.length === 0) {
-    feedEl.style.display = 'none';
-    feedEl.innerHTML = '';
+    feedEl.innerHTML = '<div class="progress-feed-line progress-feed-placeholder">Progress log will appear here as the analysis runs.</div>';
     return;
   }
   feedEl.innerHTML = log.map((msg) => {
@@ -1237,7 +1732,6 @@ function renderProgressFeed(log) {
     return div.outerHTML;
   }).join('');
   feedEl.scrollTop = feedEl.scrollHeight;
-  feedEl.style.display = 'block';
 }
 
 // ── Password ──
@@ -1254,6 +1748,8 @@ $('#login-form').addEventListener('submit', async (e) => {
     setCookie('session_id', sessionId);
     showScreen('upload-screen');
     checkWebSearchAvailable();
+    renderRecentRuns();
+    backfillRecentRunsWithLlm();
   } catch (err) {
     const msg = err.message === 'Wrong password' ? 'Wrong password. Try again.'
       : err.message || 'Connection error. Is the server running?';
@@ -1293,6 +1789,7 @@ async function resumeActiveJob() {
       status: data.status,
       progress: data.progress,
       results: data.results || null,
+      llm: data.llm ?? undefined,
     });
     if (data.status === 'done' && data.results) {
       renderResults(data.results);
@@ -1345,6 +1842,7 @@ async function openSavedRun(jobId) {
       if (data.authenticated) {
         checkWebSearchAvailable();
         renderRecentRuns();
+        backfillRecentRunsWithLlm();
         const resumed = await resumeActiveJob();
         if (!resumed) {
           showScreen('upload-screen');
@@ -1544,6 +2042,7 @@ async function pollStatus() {
       status: data.status,
       progress: data.progress || 'Processing...',
       results: data.results || null,
+      llm: data.llm ?? undefined,
     });
     const progressText = data.progress || 'Processing...';
     if (progressText === pollStatus.lastProgress && data.status !== 'done' && data.status !== 'error') {
@@ -1592,6 +2091,7 @@ async function pollStatus() {
 // ── Results ──
 function renderResults(r) {
   currentResults = r;
+  personIntelState = {};
   if (r.mode === 'batch') {
     renderBatchResults(r);
   } else {
@@ -1685,6 +2185,10 @@ function renderSingleResult(r) {
   const dimBars = r.ranking_result?.dimension_scores ? buildDimensionBars(r.ranking_result.dimension_scores) : '';
   const evidenceBlock = r.ranking_result?.dimension_scores ? buildEvidenceSnippets(r.ranking_result.dimension_scores) : '';
   const executiveSummaryBlock = buildExecutiveSummaryBlock(r.ranking_result);
+  const personIntelHtml = renderPersonIntelSection(
+    (r.startup_slug || r.company_name || ''),
+    r.team_members || r.founders || []
+  );
 
   let scoreRowHtml = `
     <div class="score-item"><div class="value green">${composite !== undefined ? composite : r.total_score}</div><div class="label">${composite !== undefined ? 'Composite' : 'Total Score'}</div></div>
@@ -1718,6 +2222,7 @@ function renderSingleResult(r) {
           ${conHtml || '<div class="arg-item">No contra arguments</div>'}
         </div>
       </div>
+      ${personIntelHtml}
     </div>
   `;
 }
@@ -1753,6 +2258,10 @@ function renderBatchResults(r) {
         ])
       : '';
     const executiveSummaryBlock = buildExecutiveSummaryBlock(row);
+    const personIntelHtml = renderPersonIntelSection(
+      (row.startup_slug || row.company_name || ''),
+      row.team_members || row.founders || []
+    );
 
     let prosHtml = '';
     for (let j = 1; j <= 3; j++) {
@@ -1796,6 +2305,7 @@ function renderBatchResults(r) {
             ${consHtml || '<div class="arg-item">No contra arguments</div>'}
           </div>
         </div>
+        ${personIntelHtml}
       </div>
     `;
   }).join('');
@@ -1934,7 +2444,108 @@ function hideArgumentsModal() {
   $('#arguments-modal-overlay').classList.remove('audit-modal-open');
 }
 
+let _progressLogRetryTimer = null;
+
+async function fetchAndRenderProgressLog(jobId) {
+  const contentEl = $('#progress-log-modal-content');
+  const overlay = $('#progress-log-modal-overlay');
+  if (!contentEl || !overlay.classList.contains('audit-modal-open')) return;
+  contentEl.textContent = 'Loading...';
+  contentEl.innerHTML = '';
+  try {
+    const data = await api(`/api/status/${jobId}`, { timeoutMs: 10000, retries: 3 });
+    if (_progressLogRetryTimer) {
+      clearTimeout(_progressLogRetryTimer);
+      _progressLogRetryTimer = null;
+    }
+    const log = data.progress_log || [];
+    const progress = data.progress || '';
+    if (log.length === 0) {
+      contentEl.textContent = progress || 'No progress log entries yet.';
+    } else {
+      contentEl.textContent = log.join('\n');
+    }
+  } catch (err) {
+    const msg = err?.message || 'Could not load progress log.';
+    const retryBtn = document.createElement('button');
+    retryBtn.className = 'btn-green';
+    retryBtn.textContent = 'Retry';
+    retryBtn.style.marginTop = '12px';
+    retryBtn.onclick = () => fetchAndRenderProgressLog(jobId);
+    contentEl.innerHTML = '';
+    contentEl.appendChild(document.createTextNode(msg + ' Retrying in 3s... '));
+    contentEl.appendChild(retryBtn);
+    _progressLogRetryTimer = setTimeout(() => fetchAndRenderProgressLog(jobId), 3000);
+  }
+}
+
+function hideProgressLogModal() {
+  if (_progressLogRetryTimer) {
+    clearTimeout(_progressLogRetryTimer);
+    _progressLogRetryTimer = null;
+  }
+  $('#progress-log-modal-overlay').classList.remove('audit-modal-open');
+}
+
+async function showProgressLogModal(jobId) {
+  $('#progress-log-modal-content').textContent = 'Loading...';
+  $('#progress-log-modal-content').dataset.jobLogId = jobId;
+  $('#progress-log-modal-overlay').classList.add('audit-modal-open');
+  await fetchAndRenderProgressLog(jobId);
+}
+
 $('#rankings-container').addEventListener('click', (e) => {
+  const memberBtn = e.target.closest('[data-person-member]');
+  if (memberBtn) {
+    const slug = memberBtn.getAttribute('data-person-member');
+    const idx = Number(memberBtn.getAttribute('data-member-index') || '-1');
+    const members = getTeamMembersForSlug(slug);
+    const member = idx >= 0 ? members[idx] : null;
+    if (slug && member) {
+      startPersonIntelForMember(slug, member).catch((err) => {
+        const section = document.querySelector(`[data-person-intel-section="${slug}"] .person-intel-empty`);
+        if (section) section.textContent = err?.message || 'Failed to start person profile job.';
+      });
+    }
+    return;
+  }
+
+  const submitBtn = e.target.closest('[data-person-submit]');
+  if (submitBtn) {
+    const slug = submitBtn.getAttribute('data-person-submit');
+    const urlInput = document.querySelector(`[data-person-url="${slug}"]`);
+    const nameInput = document.querySelector(`[data-person-name="${slug}"]`);
+    const url = (urlInput?.value || '').trim();
+    const name = (nameInput?.value || '').trim();
+    if (!url) {
+      if (urlInput) urlInput.focus();
+      return;
+    }
+    personIntelState[slug] = {
+      entries: [{ full_name: name || 'Person', status: 'running', result: null, error: null }],
+    };
+    renderPersonIntelCards(slug);
+    api('/api/person-profile/jobs', {
+      method: 'POST',
+      body: JSON.stringify({
+        primary_profile_url: url,
+        full_name: name || undefined,
+        current_company: slug,
+        company_slug: slug,
+      }),
+      timeoutMs: 20000,
+      retries: 1,
+    }).then((resp) => {
+      personIntelState[slug].entries[0].job_id = resp.job_id;
+      pollPersonIntelJob(slug, 0);
+    }).catch((err) => {
+      personIntelState[slug].entries[0].status = 'error';
+      personIntelState[slug].entries[0].error = err?.message || 'Failed to run profile job';
+      renderPersonIntelCards(slug);
+    });
+    return;
+  }
+
   const scoreItem = e.target.closest('.score-item.clickable');
   if (scoreItem) {
     const slug = scoreItem.getAttribute('data-slug');
@@ -1950,6 +2561,10 @@ $('#rankings-container').addEventListener('click', (e) => {
 });
 
 $('#audit-modal-close').addEventListener('click', hideAuditLog);
+$('#progress-log-modal-close').addEventListener('click', hideProgressLogModal);
+$('#progress-log-modal-overlay').addEventListener('click', (e) => {
+  if (e.target === $('#progress-log-modal-overlay')) hideProgressLogModal();
+});
 $('#audit-modal-overlay').addEventListener('click', (e) => {
   if (e.target === $('#audit-modal-overlay')) hideAuditLog();
 });
@@ -1961,6 +2576,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if ($('#audit-modal-overlay').classList.contains('audit-modal-open')) hideAuditLog();
     if ($('#arguments-modal-overlay').classList.contains('audit-modal-open')) hideArgumentsModal();
+    if ($('#progress-log-modal-overlay').classList.contains('audit-modal-open')) hideProgressLogModal();
   }
 });
 
