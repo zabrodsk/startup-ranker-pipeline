@@ -455,6 +455,32 @@
       font-size: 13px; color: var(--text-dim);
       line-height: 1.6;
     }
+    .processing-controls {
+      margin: 8px 0 0;
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+    }
+    .btn-process-control {
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-card);
+      color: var(--text-light);
+      border-radius: 8px;
+      font-size: 12px;
+      padding: 8px 12px;
+      cursor: pointer;
+      min-width: 88px;
+    }
+    .btn-process-control:hover { border-color: var(--text-gray); }
+    .btn-process-control.danger {
+      color: var(--red);
+      border-color: var(--red-border);
+      background: var(--red-bg);
+    }
+    .btn-process-control:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
     .progress-feed {
       margin-top: 16px;
       max-height: 240px;
@@ -526,7 +552,30 @@
     .rankings-label {
       font-size: 12px; font-weight: 600;
       color: var(--text-dim); letter-spacing: 2px;
+    }
+    .rankings-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
       margin-bottom: 16px;
+    }
+    .rankings-sort {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      letter-spacing: 1px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+    }
+    .rankings-sort select {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-light);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 12px;
     }
 
     .rank-card {
@@ -539,6 +588,12 @@
     .rank-top {
       display: flex; align-items: center; gap: 16px;
       margin-bottom: 16px; flex-wrap: wrap;
+    }
+    .rank-top-actions {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
     .rank-badge {
       display: inline-block;
@@ -574,7 +629,7 @@
     }
 
     .score-row {
-      display: flex; gap: 24px;
+      display: flex; gap: 12px;
       margin-bottom: 20px;
     }
     .score-item {
@@ -628,19 +683,23 @@
 
     .btn-audit-log {
       display: inline-flex; align-items: center; gap: 6px;
-      padding: 10px 16px;
+      padding: 4px 10px;
       background: none;
       border: 1px solid var(--border-subtle);
-      border-radius: 8px;
-      font-size: 12px; color: var(--text-light);
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      color: var(--text-light);
       cursor: pointer;
       transition: border-color 0.2s, color 0.2s;
+      min-height: 26px;
     }
     .btn-audit-log:hover {
       border-color: var(--text-gray);
       color: var(--text-light);
     }
-    .btn-audit-log svg { width: 14px; height: 14px; flex-shrink: 0; }
+    .btn-audit-log svg { width: 12px; height: 12px; flex-shrink: 0; }
 
     .audit-modal-overlay {
       display: none; position: fixed; inset: 0;
@@ -821,9 +880,21 @@
       .stats-row { flex-direction: column; }
       .args-row { flex-direction: column; }
       .score-row { flex-wrap: wrap; }
+      .rankings-row { flex-direction: column; align-items: flex-start; }
     }
 
     .dim-bars-container { margin: 12px 0 16px; }
+    .dim-bar-row.composite .dim-label {
+      color: var(--green);
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+    }
+    .dim-bar-row.composite .dim-value {
+      color: var(--green);
+      font-weight: 700;
+      width: 52px;
+    }
     .dim-bar-row {
       display: flex; align-items: center; gap: 12px;
       margin-bottom: 8px; font-size: 12px;
@@ -925,6 +996,8 @@
       align-items: center;
     }
     .person-intel-name { font-size: 13px; color: var(--text-light); }
+    .person-intel-name.is-toggle { cursor: pointer; }
+    .person-intel-name.is-toggle:hover { color: var(--green); }
     .person-intel-status {
       font-size: 11px;
       text-transform: uppercase;
@@ -933,6 +1006,7 @@
     }
     .person-intel-status.done { color: var(--green); }
     .person-intel-status.error { color: var(--red); }
+    .person-intel-status.done.is-toggle { cursor: pointer; }
     .person-intel-md {
       font-size: 12px;
       color: var(--text-mid);
@@ -1164,6 +1238,10 @@
       <div class="spinner"></div>
       <h2>Analyzing...</h2>
       <p class="status status-live" id="processing-status">Uploading files and starting analysis...</p>
+      <div class="processing-controls">
+        <button type="button" id="pause-btn" class="btn-process-control">Pause</button>
+        <button type="button" id="stop-btn" class="btn-process-control danger">Stop</button>
+      </div>
       <div id="progress-feed" class="progress-feed"></div>
       <p class="status-hint">Progress updates every few seconds. Each company takes 1–2 minutes.</p>
     </div>
@@ -1199,7 +1277,17 @@
     </div>
 
     <div class="stats-row" id="stats-row"></div>
-    <div class="rankings-label">RANKINGS</div>
+    <div class="rankings-row">
+      <div class="rankings-label">RANKINGS</div>
+      <label class="rankings-sort" id="rankings-sort-wrap" style="display:none">
+        Sort by
+        <select id="rankings-sort-select">
+          <option value="top_scored">TOP SCORED</option>
+          <option value="alphabetical">ALPHABETICAL</option>
+          <option value="from_specter">FROM SPECTER</option>
+        </select>
+      </label>
+    </div>
     <div id="rankings-container"></div>
   </div>
   <div class="footer">
@@ -1273,16 +1361,65 @@ const ACTIVE_JOB_KEY = 'active_job_id';
 const RECENT_RUNS_KEY = 'recent_runs_v1';
 const VC_STRATEGY_KEY = 'vc_investment_strategy';
 const PERSON_INTEL_CACHE_KEY = 'person_intel_cache_v3_harvest_only';
+const SHOW_PRO_CONTRA_ARGUMENTS = false;
+const SHOW_AVG_PRO_CONTRA_SCORES = false;
+const DEFAULT_RANKINGS_SORT = 'top_scored';
 let vcInvestmentStrategy = localStorage.getItem(VC_STRATEGY_KEY) || '';
 let personIntelState = {};
+let rankingsSortMode = DEFAULT_RANKINGS_SORT;
+let statusWatchdogTimer = null;
 
 function showScreen(id) {
   $$('.screen').forEach(s => s.classList.remove('active'));
   $(`#${id}`).classList.add('active');
+  if (id === 'processing-screen') startStatusWatchdog();
+  else stopStatusWatchdog();
 }
 
 function deepClone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function stopStatusWatchdog() {
+  if (statusWatchdogTimer) {
+    clearInterval(statusWatchdogTimer);
+    statusWatchdogTimer = null;
+  }
+}
+
+function startStatusWatchdog() {
+  if (statusWatchdogTimer) return;
+  statusWatchdogTimer = setInterval(async () => {
+    if (!currentJobId) return;
+    const activeScreenId = [...document.querySelectorAll('.screen')]
+      .find((screen) => screen.classList.contains('active'))?.id;
+    if (activeScreenId !== 'processing-screen') return;
+
+    try {
+      const data = await api(`/api/status/${currentJobId}`, { timeoutMs: 12000, retries: 0 });
+      if (data.status === 'done' && data.results) {
+        upsertRecentRun({
+          jobId: currentJobId,
+          status: data.status,
+          progress: data.progress || 'Analysis complete',
+          results: data.results || null,
+          llm: data.llm ?? undefined,
+        });
+        try {
+          renderResults(data.results);
+          showScreen('results-screen');
+          persistActiveJob(currentJobId);
+          setProcessingControls('done');
+          pollStatus.lastProgress = '';
+          pollStatus.stallTicks = 0;
+        } catch (renderErr) {
+          console.error('Watchdog: failed to render results:', renderErr);
+        }
+      }
+    } catch (_) {
+      // Intentionally ignore in watchdog; primary poll loop handles messaging.
+    }
+  }, 5000);
 }
 
 function setCookie(name, value, maxAgeSeconds = 60 * 60 * 24 * 14) {
@@ -1300,12 +1437,16 @@ function persistActiveJob(jobId) {
 }
 
 function getPersistedActiveJob() {
-  return localStorage.getItem(ACTIVE_JOB_KEY);
+  const v = localStorage.getItem(ACTIVE_JOB_KEY);
+  return (v && v !== 'null' && v !== 'undefined') ? v : null;
 }
 
 function loadRecentRuns() {
   try {
-    return JSON.parse(localStorage.getItem(RECENT_RUNS_KEY) || '[]');
+    const runs = JSON.parse(localStorage.getItem(RECENT_RUNS_KEY) || '[]');
+    const valid = runs.filter((r) => r.jobId && r.jobId !== 'null' && r.jobId !== 'undefined');
+    if (valid.length !== runs.length) saveRecentRuns(valid);
+    return valid;
   } catch {
     return [];
   }
@@ -1339,6 +1480,7 @@ async function backfillRecentRunsWithLlm() {
 }
 
 function upsertRecentRun(update) {
+  if (!update.jobId) return;
   const runs = loadRecentRuns();
   const idx = runs.findIndex((run) => run.jobId === update.jobId);
   const next = {
@@ -1383,13 +1525,15 @@ function renderRecentRuns() {
   section.style.display = 'flex';
   list.innerHTML = runs.map((run) => {
     const status = run.status || 'pending';
-    const actionLabel = status === 'done' ? 'Open results' : 'Resume';
+    const isUnavailable = status === 'error' && (run.progress || '').includes('no longer available');
+    const actionLabel = status === 'done' ? 'Open results' : (isUnavailable ? 'Unavailable' : 'Resume');
     const subtitle = run.progress || `Started ${formatRunTimestamp(run.createdAt)}`;
     const llmLine = run.llm ? `<div class="recent-run-llm">${escapeHtml(run.llm)}</div>` : '';
     const showViewLog = true;
     const viewLogBtn = showViewLog
       ? `<button class="recent-run-view-log" data-job-log="${run.jobId}">View log</button>`
       : '';
+    const openDisabled = isUnavailable ? ' disabled' : '';
     return `<div class="recent-run-card">
       <div class="recent-run-meta">
         <div class="recent-run-title">${getRunTitle(run)}</div>
@@ -1399,13 +1543,16 @@ function renderRecentRuns() {
       <div class="recent-run-actions">
         <span class="recent-run-status ${status}">${status}</span>
         ${viewLogBtn}
-        <button class="recent-run-open" data-job-open="${run.jobId}">${actionLabel}</button>
+        <button class="recent-run-open" data-job-open="${run.jobId}"${openDisabled}>${actionLabel}</button>
       </div>
     </div>`;
   }).join('');
 
   $$('[data-job-open]').forEach((btn) => {
-    btn.addEventListener('click', () => openSavedRun(btn.dataset.jobOpen));
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      openSavedRun(String(btn.dataset.jobOpen || ''));
+    });
   });
   $$('[data-job-log]').forEach((btn) => {
     btn.addEventListener('click', (e) => {
@@ -1583,20 +1730,22 @@ function renderPersonIntelCards(slug) {
     return;
   }
 
-  container.innerHTML = state.entries.map((entry) => {
+  container.innerHTML = state.entries.map((entry, idx) => {
     const statusClass = (entry.status || '').toLowerCase();
     const reportUi = entry.result?.profile_json
       ? renderPersonProfileReport(entry.result, entry.full_name)
       : (entry.result?.profile_markdown ? `<div class="person-intel-md">${markdownToSafeHtml(entry.result.profile_markdown)}</div>` : '');
     const error = entry.error ? `<div class="person-intel-md" style="color:var(--red)">${escapeHtml(entry.error)}</div>` : '';
+    const canToggle = statusClass === 'done' && !!(reportUi || error);
+    const isCollapsed = !!entry.collapsed;
     return `
       <div class="person-intel-card">
         <div class="person-intel-card-header">
-          <div class="person-intel-name">${escapeHtml(entry.full_name || 'Team Member')}</div>
-          <div class="person-intel-status ${statusClass}">${escapeHtml(entry.status || 'queued')}</div>
+          <div class="person-intel-name ${canToggle ? 'is-toggle' : ''}" ${canToggle ? `data-person-toggle="${slug}" data-person-entry-index="${idx}"` : ''}>${escapeHtml(entry.full_name || 'Team Member')}</div>
+          <div class="person-intel-status ${statusClass} ${canToggle ? 'is-toggle' : ''}" ${canToggle ? `data-person-toggle="${slug}" data-person-entry-index="${idx}"` : ''}>${escapeHtml(entry.status || 'queued')}</div>
         </div>
-        ${reportUi}
-        ${error}
+        ${isCollapsed ? '' : reportUi}
+        ${isCollapsed ? '' : error}
       </div>
     `;
   }).join('');
@@ -1734,6 +1883,34 @@ function renderProgressFeed(log) {
   feedEl.scrollTop = feedEl.scrollHeight;
 }
 
+function setProcessingControls(status) {
+  const pauseBtn = $('#pause-btn');
+  const stopBtn = $('#stop-btn');
+  if (!pauseBtn || !stopBtn) return;
+
+  const s = (status || '').toLowerCase();
+  const isDoneLike = s === 'done' || s === 'error' || s === 'stopped';
+  pauseBtn.disabled = isDoneLike;
+  stopBtn.disabled = isDoneLike;
+
+  if (s === 'paused') {
+    pauseBtn.textContent = 'Resume';
+  } else {
+    pauseBtn.textContent = 'Pause';
+  }
+}
+
+async function controlCurrentJob(action) {
+  if (!currentJobId) return;
+  await api(`/api/jobs/${currentJobId}/control`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+    timeoutMs: 15000,
+    retries: 0,
+  });
+}
+
 // ── Password ──
 $('#login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1779,6 +1956,7 @@ async function resumeActiveJob() {
   persistActiveJob(savedJobId);
   showScreen('processing-screen');
   setSpinnerActive();
+  setProcessingControls('running');
   renderProgressFeed([]);
   $('#processing-status').textContent = 'Reconnecting to your running analysis...';
 
@@ -1792,40 +1970,69 @@ async function resumeActiveJob() {
       llm: data.llm ?? undefined,
     });
     if (data.status === 'done' && data.results) {
-      renderResults(data.results);
-      showScreen('results-screen');
-      persistActiveJob(savedJobId);
-      return true;
+      try {
+        renderResults(data.results);
+        showScreen('results-screen');
+        persistActiveJob(savedJobId);
+        return true;
+      } catch (renderErr) {
+        console.error('resumeActiveJob: failed to render results:', renderErr);
+      }
     }
 
     if (data.status === 'error') {
       $('#processing-status').textContent = data.progress || 'Analysis failed.';
       setSpinnerError();
+      setProcessingControls('error');
       renderProgressFeed(data.progress_log || []);
+      return true;
+    }
+    if (data.status === 'stopped') {
+      $('#processing-status').textContent = data.progress || 'Analysis stopped.';
+      setSpinnerError();
+      setProcessingControls('stopped');
+      renderProgressFeed(data.progress_log || []);
+      persistActiveJob(null);
       return true;
     }
 
     $('#processing-status').textContent = data.progress || 'Resuming analysis...';
+    setProcessingControls(data.status || 'running');
     renderProgressFeed(data.progress_log || []);
     pollStatus.failures = 0;
     pollStatus();
     return true;
-  } catch {
+  } catch (err) {
     persistActiveJob(null);
+    const msg = (err?.message || '').toLowerCase();
+    const isGone = msg.includes('not found') || msg.includes('job');
+    if (isGone && savedJobId) {
+      upsertRecentRun({
+        jobId: savedJobId,
+        status: 'error',
+        progress: 'Run no longer available (server may have restarted)',
+      });
+      renderRecentRuns();
+    }
     showScreen('upload-screen');
     return false;
   }
 }
 
 async function openSavedRun(jobId) {
+  if (!jobId || jobId === 'null' || jobId === 'undefined') return;
   persistActiveJob(jobId);
 
   const runs = loadRecentRuns();
   const run = runs.find((r) => r.jobId === jobId);
   if (run?.status === 'done' && run.results) {
-    renderResults(run.results);
-    showScreen('results-screen');
-    return;
+    try {
+      renderResults(run.results);
+      showScreen('results-screen');
+      return;
+    } catch (renderErr) {
+      console.error('openSavedRun: failed to render cached results:', renderErr);
+    }
   }
 
   showScreen('processing-screen');
@@ -1970,6 +2177,7 @@ $('#analyze-btn').addEventListener('click', async () => {
 
   showScreen('processing-screen');
   setSpinnerActive();
+  setProcessingControls('running');
   renderProgressFeed([]);
   $('#processing-status').textContent = 'Uploading files...';
 
@@ -2030,13 +2238,19 @@ $('#analyze-btn').addEventListener('click', async () => {
 });
 
 async function pollStatus() {
+  if (!currentJobId) return;
   pollStatus.failures = pollStatus.failures || 0;
   pollStatus.lastProgress = pollStatus.lastProgress || '';
   pollStatus.stallTicks = pollStatus.stallTicks || 0;
   try {
     const data = await api(`/api/status/${currentJobId}`, { timeoutMs: 10000, retries: 0 });
     pollStatus.failures = 0;
-    setSpinnerActive();
+    if (data.status === 'error' || data.status === 'stopped') setSpinnerError();
+    else setSpinnerActive();
+    const isTerminal = data.status === 'done' || data.status === 'error' || data.status === 'stopped';
+    if (!isTerminal) {
+      setProcessingControls(data.status || 'running');
+    }
     upsertRecentRun({
       jobId: currentJobId,
       status: data.status,
@@ -2045,7 +2259,7 @@ async function pollStatus() {
       llm: data.llm ?? undefined,
     });
     const progressText = data.progress || 'Processing...';
-    if (progressText === pollStatus.lastProgress && data.status !== 'done' && data.status !== 'error') {
+    if (progressText === pollStatus.lastProgress && !isTerminal) {
       pollStatus.stallTicks += 1;
     } else {
       pollStatus.stallTicks = 0;
@@ -2059,14 +2273,36 @@ async function pollStatus() {
     renderProgressFeed(data.progress_log || []);
 
     if (data.status === 'done') {
-      renderResults(data.results);
-      showScreen('results-screen');
-      persistActiveJob(currentJobId);
-      pollStatus.lastProgress = '';
-      pollStatus.stallTicks = 0;
+      try {
+        renderResults(data.results);
+        showScreen('results-screen');
+        persistActiveJob(currentJobId);
+        setProcessingControls('done');
+        pollStatus.lastProgress = '';
+        pollStatus.stallTicks = 0;
+      } catch (renderErr) {
+        console.error('Failed to render results:', renderErr);
+        pollStatus._renderRetries = (pollStatus._renderRetries || 0) + 1;
+        if (pollStatus._renderRetries <= 3) {
+          $('#processing-status').textContent =
+            `Analysis complete — preparing results display (attempt ${pollStatus._renderRetries})... Error: ${renderErr?.message || renderErr}`;
+          setProcessingControls('running');
+          setTimeout(pollStatus, 3000);
+        } else {
+          $('#processing-status').textContent =
+            `Analysis complete but display failed: ${renderErr?.message || renderErr}. Please refresh the page.`;
+          setProcessingControls('done');
+        }
+      }
     } else if (data.status === 'error') {
       $('#processing-status').textContent = data.progress;
       setSpinnerError();
+      setProcessingControls('error');
+    } else if (data.status === 'stopped') {
+      $('#processing-status').textContent = data.progress || 'Analysis stopped by user.';
+      setSpinnerError();
+      setProcessingControls('stopped');
+      persistActiveJob(null);
     } else {
       setTimeout(pollStatus, 1500);
     }
@@ -2077,6 +2313,7 @@ async function pollStatus() {
       $('#processing-status').textContent =
         'This run ID is no longer available. Please start a new analysis.';
       persistActiveJob(null);
+      setProcessingControls('error');
       return;
     }
     pollStatus.failures += 1;
@@ -2090,6 +2327,9 @@ async function pollStatus() {
 
 // ── Results ──
 function renderResults(r) {
+  if (!r || typeof r !== 'object') {
+    throw new Error('Results payload is missing or invalid');
+  }
   currentResults = r;
   personIntelState = {};
   if (r.mode === 'batch') {
@@ -2104,13 +2344,54 @@ function getDimensionLabel(dim) {
   return DIMENSION_LABELS[dim] || (dim || '').replace(/_/g, ' ');
 }
 
-function buildDimensionBars(dimScores) {
+function _safeNameForSort(row) {
+  return (row?.company_name || row?.startup_slug || '').toString().trim();
+}
+
+function _safeCompositeForSort(row) {
+  const v = typeof row?.composite_score === 'number' ? row.composite_score : row?.total_score;
+  return typeof v === 'number' && Number.isFinite(v) ? v : Number.NEGATIVE_INFINITY;
+}
+
+function sortSummaryRows(rows, mode) {
+  const decorated = (rows || []).map((row, idx) => ({ row, idx }));
+  if (mode === 'alphabetical') {
+    decorated.sort((a, b) => {
+      const nameCmp = _safeNameForSort(a.row).localeCompare(_safeNameForSort(b.row), undefined, { sensitivity: 'base' });
+      return nameCmp !== 0 ? nameCmp : a.idx - b.idx;
+    });
+  } else if (mode === 'from_specter') {
+    decorated.sort((a, b) => {
+      const oa = typeof a.row?.specter_input_order === 'number' ? a.row.specter_input_order : a.idx;
+      const ob = typeof b.row?.specter_input_order === 'number' ? b.row.specter_input_order : b.idx;
+      return oa - ob;
+    });
+  } else {
+    decorated.sort((a, b) => {
+      const compDiff = _safeCompositeForSort(b.row) - _safeCompositeForSort(a.row);
+      if (compDiff !== 0) return compDiff;
+      const rankA = typeof a.row?.rank === 'number' ? a.row.rank : Number.POSITIVE_INFINITY;
+      const rankB = typeof b.row?.rank === 'number' ? b.row.rank : Number.POSITIVE_INFINITY;
+      if (rankA !== rankB) return rankA - rankB;
+      return a.idx - b.idx;
+    });
+  }
+  return decorated.map((item) => item.row);
+}
+
+function buildDimensionBars(dimScores, compositeScore = null) {
   if (!dimScores || !dimScores.length) return '';
-  return dimScores.map(d => {
+  let rows = '';
+  if (typeof compositeScore === 'number' && Number.isFinite(compositeScore)) {
+    const compositePct = Math.min(100, Math.max(0, Math.round(compositeScore)));
+    rows += `<div class="dim-bar-row composite"><span class="dim-label">Composite</span><div class="dim-bar-bg"><div class="dim-bar-fill" style="width:${compositePct}%"></div></div><span class="dim-value">${Number(compositeScore).toFixed(2)}</span></div>`;
+  }
+  rows += dimScores.map(d => {
     const pct = Math.min(100, Math.round(d.adjusted_score || 0));
     const label = getDimensionLabel(d.dimension);
     return `<div class="dim-bar-row"><span class="dim-label">${label}</span><div class="dim-bar-bg"><div class="dim-bar-fill" style="width:${pct}%"></div></div><span class="dim-value">${pct}</span></div>`;
   }).join('');
+  return rows;
 }
 
 function buildEvidenceSnippets(dimScores) {
@@ -2155,6 +2436,9 @@ function buildExecutiveSummaryBlock(rr) {
 }
 
 function renderSingleResult(r) {
+  const sortWrap = $('#rankings-sort-wrap');
+  if (sortWrap) sortWrap.style.display = 'none';
+
   $('#results-subtitle').textContent =
     `${r.company_name} — ${r.industry} · ${r.num_documents} documents · ${r.num_arguments} arguments`;
 
@@ -2182,23 +2466,22 @@ function renderSingleResult(r) {
     `<div class="arg-item"><span class="arg-score contra">${a.score}</span>${a.text}</div>`
   ).join('');
 
-  const dimBars = r.ranking_result?.dimension_scores ? buildDimensionBars(r.ranking_result.dimension_scores) : '';
-  const evidenceBlock = r.ranking_result?.dimension_scores ? buildEvidenceSnippets(r.ranking_result.dimension_scores) : '';
+  const dimBars = r.ranking_result?.dimension_scores ? buildDimensionBars(r.ranking_result.dimension_scores, composite !== undefined ? composite : r.total_score) : '';
   const executiveSummaryBlock = buildExecutiveSummaryBlock(r.ranking_result);
   const personIntelHtml = renderPersonIntelSection(
     (r.startup_slug || r.company_name || ''),
     r.team_members || r.founders || []
   );
-
-  let scoreRowHtml = `
-    <div class="score-item"><div class="value green">${composite !== undefined ? composite : r.total_score}</div><div class="label">${composite !== undefined ? 'Composite' : 'Total Score'}</div></div>
-    <div class="score-item clickable" data-type="pro" data-slug="${(r.startup_slug || r.company_name || '').replace(/"/g, '&quot;')}"><div class="value green">${r.avg_pro}</div><div class="label">Avg. Pro</div></div>
-    <div class="score-item clickable" data-type="contra" data-slug="${(r.startup_slug || r.company_name || '').replace(/"/g, '&quot;')}"><div class="value red">${r.avg_contra}</div><div class="label">Avg. Contra</div></div>
-    <button class="btn-audit-log" data-slug="${(r.startup_slug || r.company_name || '').replace(/"/g, '&quot;')}">
+  const auditSlug = (r.startup_slug || r.company_name || '').replace(/"/g, '&quot;');
+  const auditButtonHtml = `<button class="btn-audit-log" data-slug="${auditSlug}">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
       View log
-    </button>
-  `;
+    </button>`;
+
+  let scoreRowHtml = `
+    ${SHOW_AVG_PRO_CONTRA_SCORES ? `<div class="score-item clickable" data-type="pro" data-slug="${auditSlug}"><div class="value green">${r.avg_pro}</div><div class="label">Avg. Pro</div></div>` : ''}
+    ${SHOW_AVG_PRO_CONTRA_SCORES ? `<div class="score-item clickable" data-type="contra" data-slug="${auditSlug}"><div class="value red">${r.avg_contra}</div><div class="label">Avg. Contra</div></div>` : ''}
+  `.trim();
 
   $('#rankings-container').innerHTML = `
     <div class="rank-card">
@@ -2207,12 +2490,12 @@ function renderSingleResult(r) {
         <span class="rank-name">${r.company_name}</span>
         ${bucketLabel ? `<span class="bucket-badge bucket-${bucket.replace(/_/g,'-')}">${bucketLabel}</span>` : ''}
         <span class="decision-badge ${decClass}">${decText}</span>
+        <div class="rank-top-actions">${auditButtonHtml}</div>
       </div>
       ${dimBars ? `<div class="dim-bars-container">${dimBars}</div>` : ''}
       ${executiveSummaryBlock ? `<div class="executive-summary-container">${executiveSummaryBlock}</div>` : ''}
-      <div class="score-row">${scoreRowHtml}</div>
-      ${evidenceBlock ? `<div class="ranking-evidence-toggle"><button type="button" class="audit-expand-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">Show evidence snippets</button><div class="audit-expand-content" style="display:none">${evidenceBlock}</div></div>` : ''}
-      <div class="args-row">
+      ${scoreRowHtml ? `<div class="score-row">${scoreRowHtml}</div>` : ''}
+      ${SHOW_PRO_CONTRA_ARGUMENTS ? `<div class="args-row">
         <div class="args-col">
           <div class="title pro">TOP PRO ARGUMENTS</div>
           ${proHtml || '<div class="arg-item">No pro arguments</div>'}
@@ -2221,22 +2504,35 @@ function renderSingleResult(r) {
           <div class="title contra">TOP CONTRA ARGUMENTS</div>
           ${conHtml || '<div class="arg-item">No contra arguments</div>'}
         </div>
-      </div>
+      </div>` : ''}
       ${personIntelHtml}
     </div>
   `;
 }
 
 function renderBatchResults(r) {
-  const rows = r.summary_rows || [];
+  const sortWrap = $('#rankings-sort-wrap');
+  const sortSelect = $('#rankings-sort-select');
+  if (sortWrap) sortWrap.style.display = 'inline-flex';
+  if (sortSelect) {
+    const allowed = new Set(['top_scored', 'alphabetical', 'from_specter']);
+    if (!allowed.has(rankingsSortMode)) rankingsSortMode = DEFAULT_RANKINGS_SORT;
+    sortSelect.value = rankingsSortMode;
+  }
+
+  const sourceRows = r.summary_rows || [];
+  const rows = sortSummaryRows(sourceRows, rankingsSortMode);
   const skipped = r.num_skipped || 0;
   $('#results-subtitle').textContent =
     `${rows.length} companies ranked${skipped ? ` (${skipped} skipped)` : ''} — Specter batch analysis`;
 
-  const topComposite = rows.length > 0 && (typeof rows[0].composite_score === 'number') ? rows[0].composite_score : (rows.length > 0 ? rows[0].total_score : '—');
+  const topComposite = sourceRows.length > 0
+    ? sourceRows.reduce((best, row) => Math.max(best, _safeCompositeForSort(row)), Number.NEGATIVE_INFINITY)
+    : Number.NEGATIVE_INFINITY;
+  const topCompositeDisplay = Number.isFinite(topComposite) ? topComposite : '—';
   $('#stats-row').innerHTML = `
     <div class="stat-card"><div class="stat-value">${rows.length}</div><div class="stat-label">Companies Ranked</div></div>
-    <div class="stat-card"><div class="stat-value green">${topComposite}</div><div class="stat-label">Top Composite</div></div>
+    <div class="stat-card"><div class="stat-value green">${topCompositeDisplay}</div><div class="stat-label">Top Composite</div></div>
     <div class="stat-card"><div class="stat-value">${skipped}</div><div class="stat-label">Skipped</div></div>
     <div class="stat-card"><div class="stat-value">${(r.argument_rows || []).length}</div><div class="stat-label">Total Arguments</div></div>
   `;
@@ -2255,7 +2551,7 @@ function renderBatchResults(r) {
           { dimension: 'strategy_fit', adjusted_score: row.strategy_fit_score },
           { dimension: 'team', adjusted_score: row.team_score },
           { dimension: 'upside', adjusted_score: row.upside_score },
-        ])
+        ], composite)
       : '';
     const executiveSummaryBlock = buildExecutiveSummaryBlock(row);
     const personIntelHtml = renderPersonIntelSection(
@@ -2276,6 +2572,16 @@ function renderBatchResults(r) {
       if (t) consHtml += `<div class="arg-item"><span class="arg-score contra">${s}</span>${t}</div>`;
     }
 
+    const auditSlug = (row.startup_slug || row.company_name || '').replace(/"/g, '&quot;');
+    const auditButtonHtml = `<button class="btn-audit-log" data-slug="${auditSlug}">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+            View log
+          </button>`;
+    const scoreRowHtml = `
+          ${SHOW_AVG_PRO_CONTRA_SCORES ? `<div class="score-item clickable" data-type="pro" data-slug="${auditSlug}"><div class="value green">${row.avg_pro}</div><div class="label">Avg. Pro</div></div>` : ''}
+          ${SHOW_AVG_PRO_CONTRA_SCORES ? `<div class="score-item clickable" data-type="contra" data-slug="${auditSlug}"><div class="value red">${row.avg_contra}</div><div class="label">Avg. Contra</div></div>` : ''}
+    `.trim();
+
     return `
       <div class="rank-card">
         <div class="rank-top">
@@ -2283,19 +2589,12 @@ function renderBatchResults(r) {
           <span class="rank-name">${row.company_name || row.startup_slug}</span>
           ${bucketLabel ? `<span class="bucket-badge bucket-${bucket.replace(/_/g,'-')}">${bucketLabel}</span>` : ''}
           <span class="decision-badge ${decClass}">${decText}</span>
+          <div class="rank-top-actions">${auditButtonHtml}</div>
         </div>
         ${dimBars ? `<div class="dim-bars-container">${dimBars}</div>` : ''}
         ${executiveSummaryBlock ? `<div class="executive-summary-container">${executiveSummaryBlock}</div>` : ''}
-        <div class="score-row">
-          <div class="score-item"><div class="value green">${composite}</div><div class="label">${typeof row.composite_score === 'number' ? 'Composite' : 'Total Score'}</div></div>
-          <div class="score-item clickable" data-type="pro" data-slug="${(row.startup_slug || row.company_name || '').replace(/"/g, '&quot;')}"><div class="value green">${row.avg_pro}</div><div class="label">Avg. Pro</div></div>
-          <div class="score-item clickable" data-type="contra" data-slug="${(row.startup_slug || row.company_name || '').replace(/"/g, '&quot;')}"><div class="value red">${row.avg_contra}</div><div class="label">Avg. Contra</div></div>
-          <button class="btn-audit-log" data-slug="${(row.startup_slug || row.company_name || '').replace(/"/g, '&quot;')}">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-            View log
-          </button>
-        </div>
-        <div class="args-row">
+        ${scoreRowHtml ? `<div class="score-row">${scoreRowHtml}</div>` : ''}
+        ${SHOW_PRO_CONTRA_ARGUMENTS ? `<div class="args-row">
           <div class="args-col">
             <div class="title pro">TOP PRO ARGUMENTS</div>
             ${prosHtml || '<div class="arg-item">No pro arguments</div>'}
@@ -2304,7 +2603,7 @@ function renderBatchResults(r) {
             <div class="title contra">TOP CONTRA ARGUMENTS</div>
             ${consHtml || '<div class="arg-item">No contra arguments</div>'}
           </div>
-        </div>
+        </div>` : ''}
         ${personIntelHtml}
       </div>
     `;
@@ -2334,7 +2633,9 @@ function showAuditLog(slug) {
   let html = '';
   html += `<div class="audit-section"><div class="audit-section-title">Decision</div><div class="audit-section-body">`;
   html += `<div class="audit-decision-badge ${decClass}">${decText}</div>`;
-  html += `<div class="audit-decision-reason">Avg pro: ${avgPro} · Avg contra: ${avgContra} → total score ${totalScore}. Invest when pro > contra.</div>`;
+  html += SHOW_AVG_PRO_CONTRA_SCORES
+    ? `<div class="audit-decision-reason">Avg pro: ${avgPro} · Avg contra: ${avgContra} → total score ${totalScore}. Invest when pro > contra.</div>`
+    : `<div class="audit-decision-reason">Total score ${totalScore}.</div>`;
   html += `</div></div>`;
 
   html += `<div class="audit-section"><div class="audit-section-title">Evidence Used</div><div class="audit-section-body">`;
@@ -2488,6 +2789,7 @@ function hideProgressLogModal() {
 }
 
 async function showProgressLogModal(jobId) {
+  if (!jobId || jobId === 'null' || jobId === 'undefined') return;
   $('#progress-log-modal-content').textContent = 'Loading...';
   $('#progress-log-modal-content').dataset.jobLogId = jobId;
   $('#progress-log-modal-overlay').classList.add('audit-modal-open');
@@ -2495,6 +2797,18 @@ async function showProgressLogModal(jobId) {
 }
 
 $('#rankings-container').addEventListener('click', (e) => {
+  const toggleEl = e.target.closest('[data-person-toggle][data-person-entry-index]');
+  if (toggleEl) {
+    const slug = toggleEl.getAttribute('data-person-toggle');
+    const idx = Number(toggleEl.getAttribute('data-person-entry-index') || '-1');
+    const entry = personIntelState?.[slug]?.entries?.[idx];
+    if (entry && (entry.status || '').toLowerCase() === 'done') {
+      entry.collapsed = !entry.collapsed;
+      renderPersonIntelCards(slug);
+    }
+    return;
+  }
+
   const memberBtn = e.target.closest('[data-person-member]');
   if (memberBtn) {
     const slug = memberBtn.getAttribute('data-person-member');
@@ -2608,6 +2922,32 @@ $('#download-btn').addEventListener('click', () => {
   if (currentJobId) window.location.href = `/api/download/${currentJobId}`;
 });
 
+$('#pause-btn').addEventListener('click', async () => {
+  const btn = $('#pause-btn');
+  const action = (btn.textContent || '').toLowerCase().includes('resume') ? 'resume' : 'pause';
+  btn.disabled = true;
+  try {
+    await controlCurrentJob(action);
+    pollStatus();
+  } catch (err) {
+    $('#processing-status').textContent = err?.message || 'Failed to update job state.';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('#stop-btn').addEventListener('click', async () => {
+  const btn = $('#stop-btn');
+  btn.disabled = true;
+  try {
+    await controlCurrentJob('stop');
+    pollStatus();
+  } catch (err) {
+    $('#processing-status').textContent = err?.message || 'Failed to stop analysis.';
+    btn.disabled = false;
+  }
+});
+
 $('#new-analysis-btn').addEventListener('click', () => {
   uploadedFiles = [];
   renderFiles();
@@ -2622,6 +2962,13 @@ window.addEventListener('storage', (event) => {
   }
   if (event.key === ACTIVE_JOB_KEY && getPersistedActiveJob() && !currentJobId) {
     resumeActiveJob();
+  }
+});
+
+$('#rankings-sort-select').addEventListener('change', (e) => {
+  rankingsSortMode = e.target.value || DEFAULT_RANKINGS_SORT;
+  if (currentResults?.mode === 'batch') {
+    renderBatchResults(currentResults);
   }
 });
 </script>

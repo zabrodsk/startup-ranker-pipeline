@@ -22,6 +22,30 @@ load_dotenv()
 
 _DEFAULT_PROVIDER = "gemini"
 _DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
+_DEFAULT_TIMEOUT_SECONDS = 90.0
+_DEFAULT_MAX_RETRIES = 2
+
+
+def _read_positive_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+        return value if value > 0 else default
+    except Exception:
+        return default
+
+
+def _read_nonnegative_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+        return value if value >= 0 else default
+    except Exception:
+        return default
 
 
 def create_llm(temperature: float = 0.0) -> BaseChatModel:
@@ -41,15 +65,17 @@ def create_llm(temperature: float = 0.0) -> BaseChatModel:
 
     provider = os.getenv("LLM_PROVIDER", _DEFAULT_PROVIDER).lower()
     model = os.getenv("MODEL_NAME", _DEFAULT_MODEL)
+    timeout_s = _read_positive_float_env("LLM_REQUEST_TIMEOUT_SECONDS", _DEFAULT_TIMEOUT_SECONDS)
+    max_retries = _read_nonnegative_int_env("LLM_MAX_RETRIES", _DEFAULT_MAX_RETRIES)
 
     if provider == "gemini":
-        return wrap_llm(_create_gemini(model, temperature))
+        return wrap_llm(_create_gemini(model, temperature, timeout_s, max_retries))
     elif provider == "openai":
-        return wrap_llm(_create_openai(model, temperature))
+        return wrap_llm(_create_openai(model, temperature, timeout_s, max_retries))
     elif provider == "openrouter":
-        return wrap_llm(_create_openrouter(model, temperature))
+        return wrap_llm(_create_openrouter(model, temperature, timeout_s, max_retries))
     elif provider == "anthropic":
-        return wrap_llm(_create_anthropic(model, temperature))
+        return wrap_llm(_create_anthropic(model, temperature, timeout_s, max_retries))
     else:
         raise ValueError(
             f"Unknown LLM_PROVIDER '{provider}'. "
@@ -57,7 +83,12 @@ def create_llm(temperature: float = 0.0) -> BaseChatModel:
         )
 
 
-def _create_gemini(model: str, temperature: float) -> BaseChatModel:
+def _create_gemini(
+    model: str,
+    temperature: float,
+    timeout_s: float,
+    max_retries: int,
+) -> BaseChatModel:
     from langchain_google_genai import ChatGoogleGenerativeAI
 
     api_key = os.getenv("GOOGLE_API_KEY")
@@ -68,19 +99,36 @@ def _create_gemini(model: str, temperature: float) -> BaseChatModel:
         model=model,
         google_api_key=api_key,
         temperature=temperature,
+        timeout=timeout_s,
+        max_retries=max_retries,
     )
 
 
-def _create_openai(model: str, temperature: float) -> BaseChatModel:
+def _create_openai(
+    model: str,
+    temperature: float,
+    timeout_s: float,
+    max_retries: int,
+) -> BaseChatModel:
     from langchain_openai import ChatOpenAI
 
     if model == "gpt-5-mini":
         temperature = 1
 
-    return ChatOpenAI(model=model, temperature=temperature)
+    return ChatOpenAI(
+        model=model,
+        temperature=temperature,
+        request_timeout=timeout_s,
+        max_retries=max_retries,
+    )
 
 
-def _create_openrouter(model: str, temperature: float) -> BaseChatModel:
+def _create_openrouter(
+    model: str,
+    temperature: float,
+    timeout_s: float,
+    max_retries: int,
+) -> BaseChatModel:
     from langchain_openai import ChatOpenAI
 
     api_key = os.getenv("OPENAI_API_KEY")
@@ -95,10 +143,17 @@ def _create_openrouter(model: str, temperature: float) -> BaseChatModel:
         api_key=api_key,
         base_url=base_url,
         temperature=temperature,
+        request_timeout=timeout_s,
+        max_retries=max_retries,
     )
 
 
-def _create_anthropic(model: str, temperature: float) -> BaseChatModel:
+def _create_anthropic(
+    model: str,
+    temperature: float,
+    timeout_s: float,
+    max_retries: int,
+) -> BaseChatModel:
     from langchain_anthropic import ChatAnthropic
 
     api_key = os.getenv("ANTHROPIC_API_KEY")
@@ -109,4 +164,6 @@ def _create_anthropic(model: str, temperature: float) -> BaseChatModel:
         model=model,
         api_key=api_key,
         temperature=temperature,
+        default_request_timeout=timeout_s,
+        max_retries=max_retries,
     )

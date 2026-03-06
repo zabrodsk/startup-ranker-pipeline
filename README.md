@@ -161,6 +161,10 @@ Copy `.env.example` to `.env` and set:
 | `WEB_SEARCH_PROVIDER` | optional | `sonar` (Perplexity) or `brave` |
 | `MAX_PPLX_CALLS_PER_COMPANY` | optional | Per-company web-search cap (default: `100`) |
 | `WEB_SEARCH_TRIGGER` | optional | `answer` (default) or `no_chunks` |
+| `LLM_REQUEST_TIMEOUT_SECONDS` | optional | Per-request LLM timeout (default: `90`) |
+| `LLM_MAX_RETRIES` | optional | Max retries on transient LLM failures (default: `2`) |
+| `SUPABASE_URL` | optional | Supabase project URL for persistent storage |
+| `SUPABASE_SERVICE_ROLE_KEY` | optional | Supabase service-role key |
 | `LANGSMITH_API_KEY` | optional | LangSmith tracing |
 
 **Example for Gemini (free tier):**
@@ -178,6 +182,18 @@ LLM_PROVIDER=anthropic
 MODEL_NAME=claude-haiku-4-5-20251001
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
 ```
+
+---
+
+## Supabase (Optional)
+
+When configured, the app persists completed analyses to Supabase so results survive restarts and Excel files can be downloaded even after the temp directory is cleaned up.
+
+1. Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in `.env`
+2. Apply migrations from `supabase/migrations/` in order
+3. The app auto-creates the `analysis-exports` storage bucket on first use
+
+See [`supabase/README.md`](./supabase/README.md) for full setup details.
 
 ---
 
@@ -220,8 +236,13 @@ src/agent/
 
 web/
 ├── app.py                   # FastAPI backend
+├── db.py                    # Supabase persistence (optional)
 └── static/
     └── index.html           # Single-page UI
+
+supabase/
+├── README.md                # Setup instructions
+└── migrations/              # SQL schema migrations
 ```
 
 ---

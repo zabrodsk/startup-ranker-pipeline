@@ -7,7 +7,10 @@ Usage:
 
 import argparse
 import asyncio
+import contextlib
+import os
 import sys
+import time
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, Dict, List
@@ -27,6 +30,61 @@ from agent.llm import create_llm
 from agent.prompt_library.manager import get_prompt
 from agent.pipeline.stages.parallel_decomposition import decompose_all_questions
 from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
+
+
+def _read_positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        val = int(raw)
+        return val if val > 0 else default
+    except Exception:
+        return default
+
+
+SCORING_TIMEOUT_SECONDS = _read_positive_int_env("SCORING_TIMEOUT_SECONDS", 420)
+SCORING_HEARTBEAT_SECONDS = _read_positive_int_env("SCORING_HEARTBEAT_SECONDS", 20)
+
+
+async def _await_with_heartbeat(
+    coro: "asyncio.Future[Any]",
+    *,
+    timeout_seconds: int,
+    heartbeat_seconds: int,
+    on_heartbeat: Callable[[int, int], None] | None = None,
+) -> Any:
+    """Await a coroutine with periodic heartbeats and a hard wall-clock timeout.
+
+    The coroutine is executed in a worker thread (with its own event loop) so
+    timeout/heartbeat checks continue even if downstream libraries block.
+    """
+    if timeout_seconds <= 0:
+        return await coro
+
+    interval = max(1, heartbeat_seconds)
+    loop = asyncio.get_running_loop()
+
+    def _run_in_thread() -> Any:
+        return asyncio.run(coro)
+
+    task = loop.run_in_executor(None, _run_in_thread)
+    started = time.monotonic()
+
+    while True:
+        done, _ = await asyncio.wait({task}, timeout=interval)
+        if done:
+            return done.pop().result()
+
+        elapsed = int(time.monotonic() - started)
+        if on_heartbeat:
+            on_heartbeat(elapsed, timeout_seconds)
+
+        if elapsed >= timeout_seconds:
+            task.cancel()
+            raise TimeoutError(
+                f"Scoring step timed out after {timeout_seconds}s",
+            )
 
 
 def _ensure_str(val: Any) -> str:
@@ -178,16 +236,27 @@ async def evaluate_startup(
     _progress("[4/4] Generating arguments & scoring...")
     from agent.pipeline.graph import graph
 
-    final_state = await graph.ainvoke(
-        {
-            "company": company,
-            "config": config,
-            "all_qa_pairs": all_qa_pairs,
-            "prompt_overrides": prompt_overrides or {},
-            "vc_context": _ensure_str(vc_investment_strategy).strip() or "",
-            "slug": slug,
-        },
-        config={"recursion_limit": 100},
+    def _on_scoring_heartbeat(elapsed: int, timeout_s: int) -> None:
+        _progress(
+            f"[4/4] Generating arguments & scoring... "
+            f"({elapsed}s elapsed, timeout {timeout_s}s)",
+        )
+
+    final_state = await _await_with_heartbeat(
+        graph.ainvoke(
+            {
+                "company": company,
+                "config": config,
+                "all_qa_pairs": all_qa_pairs,
+                "prompt_overrides": prompt_overrides or {},
+                "vc_context": _ensure_str(vc_investment_strategy).strip() or "",
+                "slug": slug,
+            },
+            config={"recursion_limit": 100},
+        ),
+        timeout_seconds=SCORING_TIMEOUT_SECONDS,
+        heartbeat_seconds=SCORING_HEARTBEAT_SECONDS,
+        on_heartbeat=_on_scoring_heartbeat,
     )
 
     decision = final_state.get("final_decision", "unknown")
@@ -263,16 +332,27 @@ async def evaluate_from_specter(
     _progress("[3/3] Generating arguments & scoring...")
     from agent.pipeline.graph import graph
 
-    final_state = await graph.ainvoke(
-        {
-            "company": company,
-            "config": config,
-            "all_qa_pairs": all_qa_pairs,
-            "prompt_overrides": prompt_overrides or {},
-            "vc_context": _ensure_str(vc_investment_strategy).strip() or "",
-            "slug": slug,
-        },
-        config={"recursion_limit": 100},
+    def _on_scoring_heartbeat(elapsed: int, timeout_s: int) -> None:
+        _progress(
+            f"[3/3] Generating arguments & scoring... "
+            f"({elapsed}s elapsed, timeout {timeout_s}s)",
+        )
+
+    final_state = await _await_with_heartbeat(
+        graph.ainvoke(
+            {
+                "company": company,
+                "config": config,
+                "all_qa_pairs": all_qa_pairs,
+                "prompt_overrides": prompt_overrides or {},
+                "vc_context": _ensure_str(vc_investment_strategy).strip() or "",
+                "slug": slug,
+            },
+            config={"recursion_limit": 100},
+        ),
+        timeout_seconds=SCORING_TIMEOUT_SECONDS,
+        heartbeat_seconds=SCORING_HEARTBEAT_SECONDS,
+        on_heartbeat=_on_scoring_heartbeat,
     )
 
     decision = final_state.get("final_decision", "unknown")
