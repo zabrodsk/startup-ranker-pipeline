@@ -171,6 +171,10 @@ cython_debug/
 # Batch output
 results.xlsx
 *.xlsx
+output/
+test-results/
+node_modules/
+supabase/.temp/
 
 # macOS
 .DS_Store

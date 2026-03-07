@@ -1,6 +1,6 @@
-# Startup Ranker
+# Rockaway Deal Intelligence
 
-**LLM-based startup evaluation tool for Rockaway Capital**
+**LLM-based deal evaluation platform for Rockaway Capital**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
@@ -12,7 +12,7 @@
 
 ## Overview
 
-Startup Ranker helps investment teams evaluate and prioritize deal flow. Upload pitch decks, metrics, or Specter CSVs; optionally enable web search for extra context; and get structured scores, executive summaries, key points, red flags, and Excel exports.
+Rockaway Deal Intelligence helps investment teams evaluate and prioritize deal flow. Upload pitch decks, metrics, or Specter CSVs; optionally enable web search for extra context; and get structured scores, executive summaries, key points, red flags, and Excel exports.
 
 **Pipeline stages:**
 

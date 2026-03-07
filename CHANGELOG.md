@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.0.6] - 2026-03-07
+
+### Added
+
+- **Company-centric history** — New `company_runs` table and `company_key` for deduplication; grouped UI/history views by company
+  - `companies.company_key` — Normalized key from domain or name for cross-job deduplication
+  - `company_runs` — Per-company run records (job, decision, scores, result payload) for history
+  - `list_company_histories()` — API to list saved runs grouped by company with backfill from analyses
+  - New migration `20260306010000_company_runs.sql`
+- **Stop finalization** — When a job is stopped mid-run, partial results are now finalized (ranking + Excel export) instead of discarded
+  - `_finalize_stopped_results()` builds and persists partial results; user sees "Partial results ready — N/M companies ranked"
+- **Specter detection** — Improved detection via tabular header sniffing (company vs people markers) in addition to filename patterns
+- **Job list from Supabase** — `_list_jobs_for_ui()` merges in-memory jobs with saved Supabase jobs for unified history
+- **Railway ignore** — `.railwayignore` for deployment exclusions
+
+### Changed
+
+- **Rockaway Deal Intelligence** — App title and branding updated from "Startup Ranker"
+- Pause/resume flow — Only transition to `running` when status is actually `paused` (avoids redundant updates)
+- `_append_progress()` — New `allow_stopped` flag to append progress when job is stopped (for finalization messages)
+- Sample deal data — `deals/sample_startup/` replaced with `deals/sample_company/`
+
 ## [0.0.5] - 2026-03-06
 
 ### Added

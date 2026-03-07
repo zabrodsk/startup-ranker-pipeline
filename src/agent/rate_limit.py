@@ -44,7 +44,6 @@ class InvocationThrottle:
     ):
         self._state_lock = Lock()
         self._sync_semaphore = Semaphore(max(1, max_concurrent))
-        self._async_semaphore = asyncio.Semaphore(max(1, max_concurrent))
         self._min_interval_sec = max(0.0, min_interval_sec)
         self._start_jitter_sec = max(0.0, start_jitter_sec)
         self._next_allowed_at = 0.0
@@ -68,7 +67,11 @@ class InvocationThrottle:
             )
 
     async def acquire_async(self) -> None:
-        await self._async_semaphore.acquire()
+        # Use the process-wide threading semaphore for async callers too.
+        # This avoids binding a module-global asyncio.Semaphore to whichever
+        # event loop imported the module first, which breaks once analysis jobs
+        # run on dedicated worker-thread event loops.
+        await asyncio.to_thread(self._sync_semaphore.acquire)
         while True:
             delay = self._reserve_slot()
             if delay <= 0:
@@ -76,7 +79,7 @@ class InvocationThrottle:
             await asyncio.sleep(delay)
 
     def release_async(self) -> None:
-        self._async_semaphore.release()
+        self._sync_semaphore.release()
 
     def acquire_sync(self) -> None:
         self._sync_semaphore.acquire()

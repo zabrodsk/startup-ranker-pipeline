@@ -1,6 +1,6 @@
-"""Startup Ranker Web Application.
+"""Rockaway Deal Intelligence web application.
 
-FastAPI backend serving the Rockaway-styled UI with password protection.
+FastAPI backend serving the Rockaway-branded UI with password protection.
 The Gemini API key stays server-side only — never exposed to the client.
 """
 
@@ -56,7 +56,7 @@ from agent.person_intel.models import (
 )
 from agent.person_intel.service import PersonIntelService
 
-app = FastAPI(title="Startup Ranker", docs_url=None, redoc_url=None)
+app = FastAPI(title="Rockaway Deal Intelligence", docs_url=None, redoc_url=None)
 
 app.add_middleware(
     CORSMiddleware,
@@ -136,7 +136,7 @@ class AnalyzeRequest(BaseModel):
 
 class AnalysisStatus(BaseModel):
     job_id: str
-    status: str  # "pending" | "running" | "paused" | "stopped" | "done" | "error"
+    status: str  # "pending" | "running" | "stopped" | "done" | "error"
     progress: str = ""
     progress_log: list[str] = []
     results: Any = None
@@ -227,11 +227,11 @@ def _ensure_job_control(job_id: str) -> dict[str, bool]:
     )
 
 
-def _append_progress(job_id: str, msg: str) -> None:
+def _append_progress(job_id: str, msg: str, *, allow_stopped: bool = False) -> None:
     job = _jobs.get(job_id)
     if not job:
         return
-    if job.status == "stopped":
+    if job.status == "stopped" and not allow_stopped:
         return
     job.progress = msg
     log = getattr(job, "progress_log", []) or []
@@ -244,7 +244,7 @@ def _set_job_status(job_id: str, status: str, progress: str | None = None, sourc
     if not _jobs.get(job_id):
         return
     current = _jobs[job_id].status
-    if current == "stopped" and source != "control":
+    if current == "stopped" and source not in {"control", "stop_finalize"}:
         return
     _jobs[job_id].status = status
     if progress is not None:
@@ -295,14 +295,53 @@ async def _wait_if_paused(job_id: str) -> None:
         await asyncio.sleep(0.35)
 
     if paused_once and not _is_stop_requested(job_id) and _jobs.get(job_id):
-        _set_job_status(job_id, "running", source="wait_if_paused")
-        _append_progress(job_id, "Resumed by user.")
+        if _jobs[job_id].status == "paused":
+            _set_job_status(job_id, "running", source="wait_if_paused")
+            _append_progress(job_id, "Resumed by user.")
 
 
 async def _cooperate_with_job_control(job_id: str) -> None:
     _raise_if_stopped(job_id)
     await _wait_if_paused(job_id)
     _raise_if_stopped(job_id)
+
+
+def _finalize_stopped_results(
+    job_id: str,
+    upload_dir: Path,
+    results_list: list[dict],
+    *,
+    total: int,
+    source: str,
+) -> bool:
+    evaluated = [r for r in results_list if not r.get("skipped")]
+    if not evaluated:
+        return False
+
+    _build_results_payload(results_list, job_id, upload_dir)
+    message = (
+        "Stopped by user. Partial results ready — "
+        f"{len(evaluated)}/{total} companies ranked"
+        if total > 1
+        else "Stopped by user. Completed analysis is available."
+    )
+    _results_cache[job_id].setdefault("results", {})
+    _results_cache[job_id]["results"]["job_status"] = "stopped"
+    _results_cache[job_id]["results"]["job_message"] = message
+    _jobs[job_id].results = _results_cache[job_id]["results"]
+    _append_progress(job_id, "Finalizing partial results (ranking + Excel export)...", allow_stopped=True)
+    _append_progress(job_id, message, allow_stopped=True)
+    _set_job_status(job_id, "stopped", message, source="stop_finalize")
+    _persist_jobs()
+    _persist_results_to_db(job_id, results_list)
+    if db and db.is_configured():
+        db.upsert_job_control(
+            job_id,
+            pause_requested=False,
+            stop_requested=True,
+            last_action="stop",
+        )
+    return True
 
 
 def _persist_sessions() -> None:
@@ -413,6 +452,54 @@ def _load_jobs() -> None:
 _load_jobs()
 
 
+def _get_job_summary(job_id: str, job: AnalysisStatus) -> dict[str, Any]:
+    results = _results_cache.get(job_id, {}).get("results")
+    return {
+        "job_id": job_id,
+        "status": job.status,
+        "progress": job.progress,
+        "created_at": None,
+        "input_mode": results.get("mode") if isinstance(results, dict) else None,
+        "use_web_search": None,
+        "results": results,
+        "llm": _get_llm_display(),
+    }
+
+
+def _list_jobs_for_ui() -> list[dict[str, Any]]:
+    jobs_by_id: dict[str, dict[str, Any]] = {}
+
+    for job_id, job in _jobs.items():
+        jobs_by_id[job_id] = _get_job_summary(job_id, job)
+
+    if db and db.is_configured():
+        try:
+            for entry in db.list_saved_jobs():
+                job_id = entry.get("job_id")
+                if not job_id:
+                    continue
+                existing = jobs_by_id.get(job_id)
+                merged = {
+                    "job_id": job_id,
+                    "status": entry.get("status") or (existing or {}).get("status") or "pending",
+                    "progress": entry.get("progress") or (existing or {}).get("progress") or "",
+                    "created_at": entry.get("created_at") or (existing or {}).get("created_at"),
+                    "input_mode": entry.get("input_mode") or (existing or {}).get("input_mode"),
+                    "use_web_search": entry.get("use_web_search"),
+                    "results": entry.get("results") or (existing or {}).get("results"),
+                    "llm": (existing or {}).get("llm") or _get_llm_display(),
+                }
+                jobs_by_id[job_id] = merged
+        except Exception:
+            pass
+
+    def _sort_key(item: dict[str, Any]) -> tuple[str, str]:
+        created_at = str(item.get("created_at") or "")
+        return (created_at, item.get("job_id") or "")
+
+    return sorted(jobs_by_id.values(), key=_sort_key, reverse=True)
+
+
 def _check_session(session_id: str | None) -> bool:
     if not session_id:
         return False
@@ -511,19 +598,75 @@ async def web_search_available(session_id: str | None = Cookie(default=None)):
 
 
 def _detect_specter_csvs(upload_dir: Path, filenames: list[str]) -> dict | None:
-    """Check if uploaded files are a Specter company + people pair (CSV or Excel)."""
+    """Detect Specter uploads from filenames first, then tabular headers.
+
+    Returns a dict with a required ``companies`` path and an optional ``people`` path.
+    """
+    def _is_tabular(name: str) -> bool:
+        lower = name.lower()
+        return lower.endswith(".csv") or lower.endswith(".xlsx") or lower.endswith(".xls")
+
+    def _sniff_specter_kind(path: Path) -> str | None:
+        try:
+            if path.suffix.lower() in {".xlsx", ".xls"}:
+                df = pd.read_excel(path, nrows=3)
+            else:
+                df = pd.read_csv(path, nrows=3)
+        except Exception:
+            return None
+
+        headers = {str(col).strip().lower() for col in df.columns}
+        if not headers:
+            return None
+
+        company_markers = {
+            "company name",
+            "founders",
+            "founder highlights",
+            "industry",
+            "domain",
+        }
+        people_markers = {
+            "specter - person id",
+            "full name",
+            "current position title",
+            "current position company name",
+        }
+
+        if len(company_markers & headers) >= 2:
+            return "companies"
+        if len(people_markers & headers) >= 2:
+            return "people"
+        return None
+
     companies_file = None
     people_file = None
     for name in filenames:
         lower = name.lower()
-        if not (lower.endswith(".csv") or lower.endswith(".xlsx") or lower.endswith(".xls")):
+        if not _is_tabular(name):
             continue
         if "people" in lower:
             people_file = upload_dir / name
         elif "company" in lower or "comapny" in lower:
             companies_file = upload_dir / name
-    if companies_file and people_file:
-        return {"companies": str(companies_file), "people": str(people_file)}
+
+    # Fall back to inspecting headers so valid Specter exports still work even
+    # when filenames are generic or only the companies file is provided.
+    for name in filenames:
+        path = upload_dir / name
+        if not _is_tabular(name):
+            continue
+        kind = _sniff_specter_kind(path)
+        if kind == "companies" and not companies_file:
+            companies_file = path
+        elif kind == "people" and not people_file:
+            people_file = path
+
+    if companies_file:
+        payload = {"companies": str(companies_file)}
+        if people_file:
+            payload["people"] = str(people_file)
+        return payload
     return None
 
 
@@ -671,8 +814,8 @@ async def control_analysis_job(
     else:  # stop
         control["pause_requested"] = False
         control["stop_requested"] = True
-        _set_job_status(job_id, "stopped", source="control")
-        _append_progress(job_id, "Stopped by user.")
+        _append_progress(job_id, "Stopped by user.", allow_stopped=True)
+        _set_job_status(job_id, "stopped", "Stopped by user.", source="control")
 
     if db and db.is_configured():
         db.upsert_job_control(
@@ -713,7 +856,7 @@ def _build_results_payload(
 
     evaluated = [r for r in results_list if not r.get("skipped")]
 
-    if len(evaluated) == 1:
+    if len(results_list) == 1 and len(evaluated) == 1:
         r = evaluated[0]
         final_state = r["final_state"]
         company = r["company"]
@@ -883,16 +1026,17 @@ async def _run_analysis(
             files = _results_cache[job_id].get("files", [])
             if specter_detected:
                 specter_paths = specter_detected
-            elif len(files) >= 2:
+            elif len(files) >= 1:
                 specter_paths = {
                     "companies": str(upload_dir / files[0]["name"]),
-                    "people": str(upload_dir / files[1]["name"]),
                 }
+                if len(files) >= 2:
+                    specter_paths["people"] = str(upload_dir / files[1]["name"])
             else:
                 _set_job_status(
                     job_id,
                     "error",
-                    "Specter mode requires 2 files (company + people CSV/Excel).",
+                    "Specter mode requires at least 1 tabular file.",
                     source="run_analysis",
                 )
                 return
@@ -971,13 +1115,12 @@ async def _run_document_analysis(
         _set_job_status(job_id, "error", "No files found.", source="run_document_analysis")
         return
 
-    await _cooperate_with_job_control(job_id)
     if one_company or file_count == 1:
-        await _cooperate_with_job_control(job_id)
         started = time.perf_counter()
         result = await evaluate_startup(
             upload_dir, k=8, use_web_search=use_web_search,
             on_progress=_make_progress_callback(job_id),
+            on_cooperate=lambda: _cooperate_with_job_control(job_id),
             vc_investment_strategy=vc_investment_strategy,
         )
         latency_ms = int((time.perf_counter() - started) * 1000)
@@ -991,8 +1134,9 @@ async def _run_document_analysis(
                 "metadata": {"input_mode": "original" if one_company else "documents"},
             }
         )
-        await _cooperate_with_job_control(job_id)
         if result.get("skipped"):
+            if _is_stop_requested(job_id):
+                raise _JobStoppedError("Job stopped by user")
             _set_job_status(
                 job_id,
                 "error",
@@ -1002,8 +1146,22 @@ async def _run_document_analysis(
             return
         _append_progress(job_id, "Finalizing results (ranking + Excel export)...")
         _build_results_payload([result], job_id, upload_dir)
+        if _is_stop_requested(job_id):
+            _results_cache[job_id].setdefault("results", {})
+            _results_cache[job_id]["results"]["job_status"] = "stopped"
+            _results_cache[job_id]["results"]["job_message"] = "Stopped by user. Completed analysis is available."
+            _jobs[job_id].results = _results_cache[job_id]["results"]
+            _append_progress(job_id, "Stopped by user. Completed analysis is available.", allow_stopped=True)
+            _set_job_status(
+                job_id,
+                "stopped",
+                "Stopped by user. Completed analysis is available.",
+                source="stop_finalize",
+            )
+            _persist_jobs()
+            _persist_results_to_db(job_id, [result])
+            return
         _append_progress(job_id, "Finalizing complete.")
-        await _cooperate_with_job_control(job_id)
         _set_job_status(job_id, "done", "Analysis complete", source="run_document_analysis")
         _jobs[job_id].results = _results_cache[job_id]["results"]
         _persist_jobs()
@@ -1012,72 +1170,84 @@ async def _run_document_analysis(
 
     results_list: list[dict] = []
     total = file_count
-    for i, finfo in enumerate(files, 1):
-        await _cooperate_with_job_control(job_id)
-        fname = finfo["name"]
-        prefix = f"Analyzing {fname} ({i}/{total})"
-        _append_progress(job_id, f"{prefix} — Starting...")
-
-        doc_dir = upload_dir / _sanitize_slug(fname)
-        doc_dir.mkdir(exist_ok=True)
-        src = upload_dir / fname
-        if src.exists():
-            shutil.copy2(src, doc_dir / fname)
-
-        def make_progress(msg: str) -> None:
-            _raise_if_stopped(job_id)
-            full_msg = f"{prefix} — {msg}"
-            _append_progress(job_id, full_msg)
-
-        try:
-            started = time.perf_counter()
-            result = await evaluate_startup(
-                doc_dir, k=8, use_web_search=use_web_search,
-                on_progress=make_progress,
-                vc_investment_strategy=vc_investment_strategy,
-            )
-            latency_ms = int((time.perf_counter() - started) * 1000)
+    try:
+        for i, finfo in enumerate(files, 1):
             await _cooperate_with_job_control(job_id)
-            results_list.append(result)
-            _results_cache[job_id].setdefault("model_executions", []).append(
-                {
-                    **telemetry_base,
-                    "company_slug": result.get("slug"),
-                    "stage": "evaluate_startup",
-                    "latency_ms": latency_ms,
-                    "status": "done",
-                    "metadata": {"file_name": fname},
-                }
-            )
-        except _JobStoppedError:
-            raise
-        except Exception as exc:
-            import traceback
-            traceback.print_exc()
-            _results_cache[job_id].setdefault("model_executions", []).append(
-                {
-                    **telemetry_base,
-                    "company_slug": _sanitize_slug(fname),
-                    "stage": "evaluate_startup",
-                    "status": "error",
-                    "error_message": str(exc)[:500],
-                    "metadata": {"file_name": fname},
-                }
-            )
-            if db and db.is_configured():
-                db.insert_analysis_error(
-                    job_id,
-                    message=str(exc)[:1000],
-                    stage="evaluate_startup",
-                    error_type=type(exc).__name__,
-                    company_slug=_sanitize_slug(fname),
+            fname = finfo["name"]
+            prefix = f"Analyzing {fname} ({i}/{total})"
+            _append_progress(job_id, f"{prefix} — Starting...")
+
+            doc_dir = upload_dir / _sanitize_slug(fname)
+            doc_dir.mkdir(exist_ok=True)
+            src = upload_dir / fname
+            if src.exists():
+                shutil.copy2(src, doc_dir / fname)
+
+            def make_progress(msg: str) -> None:
+                _raise_if_stopped(job_id)
+                full_msg = f"{prefix} — {msg}"
+                _append_progress(job_id, full_msg)
+
+            try:
+                started = time.perf_counter()
+                result = await evaluate_startup(
+                    doc_dir, k=8, use_web_search=use_web_search,
+                    on_progress=make_progress,
+                    on_cooperate=lambda: _cooperate_with_job_control(job_id),
+                    vc_investment_strategy=vc_investment_strategy,
                 )
-            results_list.append({
-                "slug": _sanitize_slug(fname),
-                "skipped": True,
-                "error": str(exc)[:500],
-                "company_name": fname,
-            })
+                latency_ms = int((time.perf_counter() - started) * 1000)
+                await _cooperate_with_job_control(job_id)
+                results_list.append(result)
+                _results_cache[job_id].setdefault("model_executions", []).append(
+                    {
+                        **telemetry_base,
+                        "company_slug": result.get("slug"),
+                        "stage": "evaluate_startup",
+                        "latency_ms": latency_ms,
+                        "status": "done",
+                        "metadata": {"file_name": fname},
+                    }
+                )
+            except _JobStoppedError:
+                raise
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                _results_cache[job_id].setdefault("model_executions", []).append(
+                    {
+                        **telemetry_base,
+                        "company_slug": _sanitize_slug(fname),
+                        "stage": "evaluate_startup",
+                        "status": "error",
+                        "error_message": str(exc)[:500],
+                        "metadata": {"file_name": fname},
+                    }
+                )
+                if db and db.is_configured():
+                    db.insert_analysis_error(
+                        job_id,
+                        message=str(exc)[:1000],
+                        stage="evaluate_startup",
+                        error_type=type(exc).__name__,
+                        company_slug=_sanitize_slug(fname),
+                    )
+                results_list.append({
+                    "slug": _sanitize_slug(fname),
+                    "skipped": True,
+                    "error": str(exc)[:500],
+                    "company_name": fname,
+                })
+    except _JobStoppedError:
+        if _finalize_stopped_results(
+            job_id,
+            upload_dir,
+            results_list,
+            total=total,
+            source="run_document_analysis",
+        ):
+            return
+        raise
 
     evaluated = [r for r in results_list if not r.get("skipped")]
     if not evaluated:
@@ -1091,11 +1261,19 @@ async def _run_document_analysis(
         )
         return
 
-    await _cooperate_with_job_control(job_id)
     _append_progress(job_id, "Finalizing batch results (ranking + Excel export)...")
     _build_results_payload(results_list, job_id, upload_dir)
     _append_progress(job_id, "Finalizing complete.")
-    await _cooperate_with_job_control(job_id)
+    if _is_stop_requested(job_id):
+        if _finalize_stopped_results(
+            job_id,
+            upload_dir,
+            results_list,
+            total=total,
+            source="run_document_analysis",
+        ):
+            return
+        raise _JobStoppedError("Job stopped by user")
     _set_job_status(
         job_id,
         "done",
@@ -1120,7 +1298,10 @@ async def _run_specter_analysis(
     await _cooperate_with_job_control(job_id)
     _append_progress(job_id, "Parsing Specter CSV files...")
 
-    company_store_pairs = ingest_specter(specter["companies"], specter["people"])
+    company_store_pairs = ingest_specter(
+        specter["companies"],
+        specter.get("people"),
+    )
     parsed_total = len(company_store_pairs)
     print(f"Specter ingest: parsed {parsed_total} companies.")
 
@@ -1140,65 +1321,77 @@ async def _run_specter_analysis(
     results_list: list[dict] = []
 
     last_error: str | None = None
-    for i, (company, store) in enumerate(company_store_pairs, 1):
-        await _cooperate_with_job_control(job_id)
-        prefix = f"Evaluating {company.name} ({i}/{total})"
-        _append_progress(job_id, f"{prefix} — Starting...")
-
-        def make_specter_progress(p: str) -> None:
-            _raise_if_stopped(job_id)
-            full_msg = f"{prefix} — {p}"
-            _append_progress(job_id, full_msg)
-
-        try:
-            started = time.perf_counter()
-            result = await evaluate_from_specter(
-                company, store, k=8, use_web_search=use_web_search,
-                on_progress=make_specter_progress,
-                vc_investment_strategy=vc_investment_strategy,
-            )
-            latency_ms = int((time.perf_counter() - started) * 1000)
+    try:
+        for i, (company, store) in enumerate(company_store_pairs, 1):
             await _cooperate_with_job_control(job_id)
-            results_list.append(result)
-            _results_cache[job_id].setdefault("model_executions", []).append(
-                {
-                    **telemetry_base,
-                    "company_slug": result.get("slug"),
-                    "stage": "evaluate_from_specter",
-                    "latency_ms": latency_ms,
-                    "status": "done",
-                }
-            )
-        except _JobStoppedError:
-            raise
-        except Exception as exc:
-            import traceback
-            last_error = str(exc)
-            print(f"  ERROR evaluating {company.name}: {exc}")
-            traceback.print_exc()
-            _results_cache[job_id].setdefault("model_executions", []).append(
-                {
-                    **telemetry_base,
-                    "company_slug": store.startup_slug,
-                    "stage": "evaluate_from_specter",
-                    "status": "error",
-                    "error_message": str(exc)[:500],
-                }
-            )
-            if db and db.is_configured():
-                db.insert_analysis_error(
-                    job_id,
-                    message=str(exc)[:1000],
-                    stage="evaluate_from_specter",
-                    error_type=type(exc).__name__,
-                    company_slug=store.startup_slug,
+            prefix = f"Evaluating {company.name} ({i}/{total})"
+            _append_progress(job_id, f"{prefix} — Starting...")
+
+            def make_specter_progress(p: str) -> None:
+                _raise_if_stopped(job_id)
+                full_msg = f"{prefix} — {p}"
+                _append_progress(job_id, full_msg)
+
+            try:
+                started = time.perf_counter()
+                result = await evaluate_from_specter(
+                    company, store, k=8, use_web_search=use_web_search,
+                    on_progress=make_specter_progress,
+                    on_cooperate=lambda: _cooperate_with_job_control(job_id),
+                    vc_investment_strategy=vc_investment_strategy,
                 )
-            results_list.append({
-                "slug": store.startup_slug,
-                "skipped": True,
-                "error": str(exc)[:500],
-                "company_name": company.name,
-            })
+                latency_ms = int((time.perf_counter() - started) * 1000)
+                await _cooperate_with_job_control(job_id)
+                results_list.append(result)
+                _results_cache[job_id].setdefault("model_executions", []).append(
+                    {
+                        **telemetry_base,
+                        "company_slug": result.get("slug"),
+                        "stage": "evaluate_from_specter",
+                        "latency_ms": latency_ms,
+                        "status": "done",
+                    }
+                )
+            except _JobStoppedError:
+                raise
+            except Exception as exc:
+                import traceback
+                last_error = str(exc)
+                print(f"  ERROR evaluating {company.name}: {exc}")
+                traceback.print_exc()
+                _results_cache[job_id].setdefault("model_executions", []).append(
+                    {
+                        **telemetry_base,
+                        "company_slug": store.startup_slug,
+                        "stage": "evaluate_from_specter",
+                        "status": "error",
+                        "error_message": str(exc)[:500],
+                    }
+                )
+                if db and db.is_configured():
+                    db.insert_analysis_error(
+                        job_id,
+                        message=str(exc)[:1000],
+                        stage="evaluate_from_specter",
+                        error_type=type(exc).__name__,
+                        company_slug=store.startup_slug,
+                    )
+                results_list.append({
+                    "slug": store.startup_slug,
+                    "skipped": True,
+                    "error": str(exc)[:500],
+                    "company_name": company.name,
+                })
+    except _JobStoppedError:
+        if _finalize_stopped_results(
+            job_id,
+            upload_dir,
+            results_list,
+            total=total,
+            source="run_specter_analysis",
+        ):
+            return
+        raise
 
     evaluated = [r for r in results_list if not r.get("skipped")]
     if not evaluated:
@@ -1210,11 +1403,19 @@ async def _run_specter_analysis(
         _set_job_status(job_id, "error", msg, source="run_specter_analysis")
         return
 
-    await _cooperate_with_job_control(job_id)
     _append_progress(job_id, "Finalizing batch results (ranking + Excel export)...")
     _build_results_payload(results_list, job_id, upload_dir)
     _append_progress(job_id, "Finalizing complete.")
-    await _cooperate_with_job_control(job_id)
+    if _is_stop_requested(job_id):
+        if _finalize_stopped_results(
+            job_id,
+            upload_dir,
+            results_list,
+            total=total,
+            source="run_specter_analysis",
+        ):
+            return
+        raise _JobStoppedError("Job stopped by user")
     _set_job_status(
         job_id,
         "done",
@@ -1471,6 +1672,25 @@ async def get_analysis(job_id: str, session_id: str | None = Cookie(default=None
             return {"job_id": job_id, "results": loaded.get("results")}
 
     raise HTTPException(status_code=404, detail="Analysis not found")
+
+
+@app.get("/api/jobs")
+async def list_jobs(session_id: str | None = Cookie(default=None)):
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    return {"jobs": _list_jobs_for_ui()}
+
+
+@app.get("/api/company-runs")
+async def list_company_runs(session_id: str | None = Cookie(default=None)):
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    if not db or not db.is_configured():
+        return {"companies": []}
+
+    return {"companies": db.list_company_histories()}
 
 
 @app.get("/api/companies/{company_name}/analyses")

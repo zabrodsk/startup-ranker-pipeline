@@ -1,4 +1,4 @@
--- MVP Startup Ranker - Supabase schema for analysis persistence
+-- Rockaway Deal Intelligence - Supabase schema for analysis persistence
 -- Run via: supabase db push (or apply manually in Supabase SQL Editor)
 
 -- Companies: extracted/specter company metadata

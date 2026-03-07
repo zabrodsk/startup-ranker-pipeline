@@ -13,7 +13,7 @@ import sys
 import time
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Callable, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -159,6 +159,7 @@ async def evaluate_startup(
     config: Config | None = None,
     use_web_search: bool = False,
     on_progress: Callable[[str], None] | None = None,
+    on_cooperate: Callable[[], Awaitable[None]] | None = None,
     vc_investment_strategy: str | None = None,
     prompt_overrides: dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
@@ -212,6 +213,8 @@ async def evaluate_startup(
 
     # 3. Decompose questions & answer from evidence
     _progress("[3/4] Decomposing questions & gathering evidence...")
+    if on_cooperate:
+        await on_cooperate()
     temp_state = IterativeInvestmentStoryState(
         company=company,
         config=config,
@@ -227,6 +230,7 @@ async def evaluate_startup(
         question_trees, company, store, k=k,
         use_web_search=use_web_search,
         on_progress=_on_qa_progress,
+        on_cooperate=on_cooperate,
         vc_context=_ensure_str(vc_investment_strategy).strip() or "",
         prompt_overrides=prompt_overrides or {},
     )
@@ -278,6 +282,7 @@ async def evaluate_from_specter(
     config: Config | None = None,
     use_web_search: bool = False,
     on_progress: Callable[[str], None] | None = None,
+    on_cooperate: Callable[[], Awaitable[None]] | None = None,
     vc_investment_strategy: str | None = None,
     prompt_overrides: dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
@@ -309,6 +314,8 @@ async def evaluate_from_specter(
         print(f"         Team: {len(company.team)} member(s)")
 
     _progress("[2/3] Decomposing questions & gathering evidence...")
+    if on_cooperate:
+        await on_cooperate()
     temp_state = IterativeInvestmentStoryState(
         company=company,
         config=config,
@@ -324,6 +331,7 @@ async def evaluate_from_specter(
         question_trees, company, store, k=k,
         use_web_search=use_web_search,
         on_progress=_on_qa_progress,
+        on_cooperate=on_cooperate,
         vc_context=_ensure_str(vc_investment_strategy).strip() or "",
         prompt_overrides=prompt_overrides or {},
     )

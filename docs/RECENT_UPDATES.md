@@ -1,120 +1,71 @@
 # Recent Updates (Since Last Push)
 
-*Last push: v0.0.5 — Supabase persistence, job control, LLM reliability*
+*Last push: v0.0.6 — Company-centric history, stop finalization, Rockaway branding*
 
 ---
 
 ## Summary
 
-This document summarizes the main improvements since the last push to GitHub. **v0.0.5** adds **Supabase persistence** for analyses and telemetry, **job control** (pause/resume/stop), **scoring heartbeat & timeout**, and **LLM timeout/retry configuration** across all providers.
+This document summarizes the main improvements in **v0.0.6**. Key additions: **company-centric history** with `company_runs` table and grouped UI, **stop finalization** (partial results when stopping mid-run), improved **Specter detection** via header sniffing, and **Rockaway Deal Intelligence** branding.
 
 ---
 
-## Supabase Persistence (New)
+## Company-Centric History (New)
 
-Optional persistent storage that survives restarts and enables cross-session access to completed analyses.
+Per-company run history for grouped UI and history views across jobs.
 
-- **`web/db.py`** — Full Supabase client module with CRUD for jobs, analyses, companies, chunks, events, errors, model executions, source files, and person profile jobs
-- **Storage** — Excel exports uploaded to `analysis-exports` bucket; served from Storage when local file is missing
-- **Startup** — Completed jobs loaded from Supabase on app startup (in addition to local JSON)
-- **Migrations** — `supabase/migrations/20260306000000_extended_persistence.sql` adds 7 new tables
-
-### New API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/analyses/{job_id}` | GET | Return analysis results for a completed job |
-| `/api/companies/{company_name}/analyses` | GET | Return analyses for a company by name |
+- **`company_key`** — Normalized key on `companies` from domain or name for deduplication
+- **`company_runs`** — New table storing per-company run records (job_id, decision, scores, result payload)
+- **`list_company_histories()`** — API endpoint returning saved runs grouped by company; backfills from analyses when needed
+- **Migration** — `supabase/migrations/20260306010000_company_runs.sql`
 
 ### Setup
 
-See [`supabase/README.md`](../supabase/README.md) for project details and migration instructions.
+Apply migrations in order; see [`supabase/README.md`](../supabase/README.md).
 
 ---
 
-## Job Control (New)
+## Stop Finalization (New)
 
-Running analyses can now be paused, resumed, or stopped mid-run.
+When a job is stopped mid-run, partial results are now finalized instead of discarded:
 
-- **`POST /api/jobs/{job_id}/control`** — Accepts `{"action": "pause" | "resume" | "stop"}`
-- Cooperative checkpoints (`_cooperate_with_job_control()`) throughout the analysis pipeline check for pause/stop requests
-- Status model extended with `paused` and `stopped` states
-- Control state persisted to Supabase `job_controls` table when configured
-
----
-
-## Scoring Heartbeat & Timeout
-
-The LangGraph scoring step (argument generation + ranking) now runs inside `_await_with_heartbeat()`:
-
-- **Heartbeat** — Periodic progress updates every 20s (configurable via `SCORING_HEARTBEAT_SECONDS`)
-- **Timeout** — Hard wall-clock timeout of 420s (configurable via `SCORING_TIMEOUT_SECONDS`)
-- Prevents indefinite hangs from slow LLM responses or network issues
+- Ranking and Excel export run for completed companies
+- User sees "Partial results ready — N/M companies ranked"
+- `_finalize_stopped_results()` builds and persists partial results; `allow_stopped` flag on progress helpers allows messages during finalization
 
 ---
 
-## LLM Timeout & Retry Configuration
+## Specter Detection
 
-All four LLM providers (Gemini, OpenAI, OpenRouter, Anthropic) now accept:
+Improved detection of Specter company + people CSV/Excel pairs:
 
-| Env Var | Default | Description |
-|---------|---------|-------------|
-| `LLM_REQUEST_TIMEOUT_SECONDS` | `90` | Per-request timeout passed to the provider client |
-| `LLM_MAX_RETRIES` | `2` | Max retries on transient failures |
+- **Header sniffing** — Checks tabular headers for company markers (`company name`, `founders`, `industry`, `domain`) vs people markers
+- Works when filenames alone do not indicate Specter format
 
 ---
 
-## Runtime Version Tags
+## Rockaway Deal Intelligence Branding
 
-New env vars persisted with each job for traceability:
-
-- `APP_VERSION` (default: `dev`)
-- `PROMPT_VERSION` (default: `v1`)
-- `PIPELINE_VERSION` (default: `v1`)
-- `SCHEMA_VERSION` (default: `20260306000000`)
-
----
-
-## Model Execution Telemetry
-
-Per-company LLM call metadata tracked in the `model_executions` table:
-
-- Provider, model, request timeout, max retries
-- Latency (ms), token counts (prompt/completion/total)
-- Status (`done` / `error`), error messages
+- App title and branding updated from "Startup Ranker"
+- FastAPI app title: "Rockaway Deal Intelligence"
 
 ---
 
 ## Other Changes
 
-### Threading Model
-
-Analysis jobs now run in a dedicated thread (`threading.Thread`) to keep the FastAPI event loop responsive for pause/resume/stop controls.
-
-### Progress Reporting
-
-Refactored through `_append_progress()` and `_set_job_status()` helpers with optional DB persistence and stop-guard logic.
-
-### Source File Metadata
-
-Uploaded files now include `mime_type`, `sha256`, and `local_path` in the upload response and `source_files` table.
-
-### Dependencies
-
-- `supabase>=2.0.0` added to `pyproject.toml`
+- **Job list** — `_list_jobs_for_ui()` merges in-memory jobs with Supabase saved jobs for unified history
+- **Pause/resume** — Only transitions to `running` when status is actually `paused`
+- **Sample data** — `deals/sample_startup/` replaced with `deals/sample_company/`
+- **Railway** — `.railwayignore` added for deployment exclusions
 
 ---
 
-## Files Changed (v0.0.5)
+## Files Changed (v0.0.6)
 
 | File | Summary |
 |------|---------|
-| `web/db.py` | **New** — Supabase persistence module |
-| `supabase/` | **New** — README + migrations for extended schema |
-| `web/app.py` | Job control, Supabase integration, threading, telemetry |
-| `web/static/index.html` | UI updates for job control and new features |
-| `src/agent/batch.py` | Heartbeat/timeout wrapper, cooperative job control |
-| `src/agent/llm.py` | Timeout and retry config for all providers |
-| `.env.example` | Supabase, version tags, session/job store paths |
-| `pyproject.toml` | `supabase>=2.0.0` dependency |
-| `CHANGELOG.md` | v0.0.5 entry |
+| `web/db.py` | Company runs, company_key, list_company_histories, backfill logic |
+| `web/app.py` | Stop finalization, job list merge, Specter sniffing |
+| `web/static/index.html` | Company-centric history UI, grouped runs |
+| `supabase/migrations/20260306010000_company_runs.sql` | **New** — company_runs table, company_key |
+| `CHANGELOG.md` | v0.0.6 entry |

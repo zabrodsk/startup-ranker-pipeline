@@ -518,19 +518,19 @@ def _build_person_detail_chunk(
 
 def ingest_specter(
     companies_csv: str | Path,
-    people_csv: str | Path,
+    people_csv: str | Path | None = None,
 ) -> list[tuple[Company, EvidenceStore]]:
     """Parse Specter CSVs and return (Company, EvidenceStore) pairs.
 
     Args:
         companies_csv: Path to the specter-company-signals CSV.
-        people_csv: Path to the specter-people-signals CSV.
+        people_csv: Optional path to the specter-people-signals CSV.
 
     Returns:
         List of (Company, EvidenceStore) tuples, one per company row.
     """
     companies_df = _read_tabular(companies_csv)
-    people_map = load_people(people_csv)
+    people_map = load_people(people_csv) if people_csv else {}
 
     results: list[tuple[Company, EvidenceStore]] = []
 

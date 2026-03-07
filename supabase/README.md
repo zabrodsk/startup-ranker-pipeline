@@ -1,10 +1,10 @@
 # Supabase Schema
 
-Persistent storage for Startup Ranker analyses.
+Persistent storage for Rockaway Deal Intelligence analyses.
 
 ## Project (created via MCP)
 
-- **Project:** MVP Startup Ranker  
+- **Project:** Rockaway Deal Intelligence  
 - **ID:** ykxtuqcfhpauddnbxqyq  
 - **URL:** https://ykxtuqcfhpauddnbxqyq.supabase.co  
 - **Region:** eu-central-1  
@@ -20,7 +20,8 @@ Persistent storage for Startup Ranker analyses.
 3. Migrations to apply:
    - `20250304000000_init_schema.sql`
    - `20260306000000_extended_persistence.sql`
-   Tables include companies, jobs, pitch_decks, chunks, analyses, analysis_events, job_controls, job_status_history, analysis_errors, source_files, model_executions, person_profile_jobs.
+   - `20260306010000_company_runs.sql`
+   Tables include companies, jobs, pitch_decks, chunks, analyses, analysis_events, job_controls, job_status_history, analysis_errors, source_files, model_executions, person_profile_jobs, company_runs.
 4. The app auto-creates the `analysis-exports` bucket on first persist. Or create it manually in [Storage](https://supabase.com/dashboard/project/ykxtuqcfhpauddnbxqyq/storage/buckets).
 
 ## Behavior

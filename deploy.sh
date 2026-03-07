@@ -2,7 +2,7 @@
 set -e
 
 echo "╔══════════════════════════════════════════════╗"
-echo "║    Startup Ranker — Cloudflare Deploy        ║"
+echo "║ Rockaway Deal Intelligence — Cloudflare Deploy ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 

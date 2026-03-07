@@ -1,7 +1,7 @@
 [project]
-name = "agent"
+name = "rockaway-deal-intelligence"
 version = "0.0.3"
-description = "Starter template for making a new agent LangGraph."
+description = "Rockaway Deal Intelligence for startup evaluation and deal screening."
 authors = [
     { name = "William Fu-Hinthorn", email = "13333726+hinthornw@users.noreply.github.com" },
 ]

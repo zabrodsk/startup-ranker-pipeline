@@ -3,13 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Startup Ranker — Rockaway Capital</title>
-  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <title>Rockaway Deal Intelligence</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
       --bg-dark: #0A0A0A;
+      --bg-deep: #060816;
+      --bg-panel: rgba(10, 14, 28, 0.88);
       --bg-card: #111111;
       --bg-card-hover: #161616;
       --border: #1A1A1A;
@@ -17,6 +19,9 @@
       --green: #00D26A;
       --green-bg: #0A2E14;
       --green-border: rgba(0, 210, 106, 0.2);
+      --green-surface-subtle: color-mix(in srgb, var(--green) 8%, transparent);
+      --green-surface-muted: color-mix(in srgb, var(--green) 12%, transparent);
+      --green-border-strong: color-mix(in srgb, var(--green) 25%, transparent);
       --red: #FF6B6B;
       --red-bg: #2E1A0A;
       --red-border: rgba(255, 107, 107, 0.2);
@@ -26,20 +31,81 @@
       --text-gray: #808080;
       --text-dim: #555555;
       --text-dark: #333333;
-      --font-display: 'Playfair Display', Georgia, serif;
       --font-body: 'Inter', -apple-system, sans-serif;
+      --screen-transition-ms: 420ms;
+      --ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+      --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.18);
+      --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.20);
+      --shadow-lg: 0 16px 32px rgba(0, 0, 0, 0.22);
+      --shadow-glow: 0 12px 40px rgba(0, 210, 106, 0.10);
+      --radius-sm: 4px;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+      --radius-xl: 16px;
+      --radius-full: 999px;
+      --border-hover: rgba(255, 255, 255, 0.12);
+      --bg-surface: rgba(255, 255, 255, 0.03);
+      --strategy: #5be7c4;
+      --strategy-bg: rgba(91, 231, 196, 0.14);
+      --team: #ffb347;
+      --team-bg: rgba(255, 179, 71, 0.16);
+      --potential: #7c8cff;
+      --potential-bg: rgba(124, 140, 255, 0.16);
+      --color-warn: #f6c344;
+      --color-warn-bg: rgba(246, 195, 68, 0.08);
+      --color-warn-border: rgba(246, 195, 68, 0.3);
+      --blue-accent: #1A88FF;
+      --blue-border-accent: rgba(26, 136, 255, 0.24);
+      --blue-surface-subtle: rgba(6, 43, 76, 0.48);
     }
 
     body {
       font-family: var(--font-body);
-      background: var(--bg-dark);
+      background: linear-gradient(180deg, var(--bg-deep) 0%, var(--bg-dark) 100%);
       color: var(--text-white);
       min-height: 100vh;
       -webkit-font-smoothing: antialiased;
+      position: relative;
+      overflow: hidden;
     }
 
-    .screen { display: none; min-height: 100vh; flex-direction: column; }
-    .screen.active { display: flex; }
+    .screen {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      min-height: 100vh;
+      flex-direction: column;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transform: translateY(20px) scale(0.985);
+      filter: blur(10px);
+      transition:
+        opacity var(--screen-transition-ms) var(--ease-standard),
+        transform var(--screen-transition-ms) var(--ease-standard),
+        filter var(--screen-transition-ms) ease,
+        visibility 0s linear var(--screen-transition-ms);
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+    .screen.active,
+    .screen.leaving {
+      visibility: visible;
+    }
+    .screen.active {
+      opacity: 1;
+      pointer-events: auto;
+      transform: translateY(0) scale(1);
+      filter: blur(0);
+      transition-delay: 0s;
+    }
+    .screen.leaving {
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(-12px) scale(0.992);
+      filter: blur(8px);
+      transition-delay: 0s;
+    }
 
     /* ── Header ── */
     .header {
@@ -53,23 +119,44 @@
     }
     .logo { display: flex; align-items: center; gap: 12px; text-decoration: none; }
     .logo-icon {
-      width: 28px; height: 28px;
+      width: 46px;
+      height: 46px;
+      border-radius: var(--radius-lg);
       background: var(--green);
-      border-radius: 6px;
-      display: flex; align-items: center; justify-content: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: var(--shadow-sm);
+      flex-shrink: 0;
     }
-    .logo-icon svg { width: 16px; height: 16px; stroke: var(--bg-dark); }
-    .logo-text {
-      font-size: 14px; font-weight: 400;
-      letter-spacing: 4px; color: var(--text-white);
-      text-transform: lowercase;
+    .logo-icon svg {
+      width: 26px;
+      height: 26px;
+      fill: #07291c;
+    }
+    .logo-lockup {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+    .logo-name {
+      font-size: 24px;
+      font-weight: 700;
+      line-height: 1;
+      color: var(--text-white);
+    }
+    .logo-subtitle {
+      margin-top: 4px;
+      font-size: 13px;
+      color: var(--text-mid);
+      letter-spacing: 0.15px;
     }
     .header-right { display: flex; align-items: center; gap: 16px; }
     .btn-ghost {
       display: flex; align-items: center; gap: 8px;
       padding: 8px 20px;
       border: 1px solid var(--text-dark);
-      border-radius: 6px;
+      border-radius: var(--radius-md);
       background: none;
       color: var(--text-gray);
       font: 13px var(--font-body);
@@ -78,44 +165,224 @@
     }
     .btn-ghost:hover { border-color: var(--text-gray); color: var(--text-light); }
     .btn-ghost svg { width: 14px; height: 14px; }
+    .btn-ghost.is-active {
+      border-color: var(--green-border-strong);
+      background: var(--green-surface-subtle);
+      color: var(--text-white);
+    }
 
     /* ── Password Screen ── */
     #password-screen {
       align-items: center; justify-content: center;
-      background: var(--bg-dark);
+      padding: 32px;
+      background: linear-gradient(180deg, rgba(8, 10, 18, 0.95) 0%, rgba(6, 7, 12, 0.98) 100%);
+    }
+    .login-shell {
+      width: min(1120px, 100%);
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(360px, 420px);
+      gap: 28px;
+      align-items: stretch;
+    }
+    .login-stage,
+    .password-card {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: var(--bg-panel);
+      backdrop-filter: blur(18px);
+      box-shadow: var(--shadow-glow);
+    }
+    .login-stage {
+      border-radius: var(--radius-xl);
+      padding: 44px;
+      min-height: 560px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .login-stage::before,
+    .password-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, rgba(255,255,255,0.03), transparent 50%);
+      pointer-events: none;
+    }
+    .login-stage-top {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .login-eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      width: fit-content;
+      padding: 10px 14px;
+      border-radius: var(--radius-full);
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1.4px;
+      text-transform: uppercase;
+      color: #d7dcff;
+    }
+    .login-eyebrow::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px rgba(0, 210, 106, 0.25);
+    }
+    .login-stage h1 {
+      max-width: 560px;
+      font-family: var(--font-body);
+      font-size: clamp(48px, 6vw, 76px);
+      line-height: 0.94;
+      letter-spacing: -1.6px;
+    }
+    .login-stage p {
+      max-width: 520px;
+      font-size: 16px;
+      line-height: 1.7;
+      color: var(--text-light);
+    }
+    .login-orbital {
+      position: absolute;
+      border-radius: var(--radius-full);
+      filter: blur(2px);
+      pointer-events: none;
+    }
+    .login-orbital.one {
+      width: 240px;
+      height: 240px;
+      right: -60px;
+      top: -48px;
+      background: radial-gradient(circle, rgba(124, 140, 255, 0.18), transparent 68%);
+    }
+    .login-orbital.two {
+      width: 320px;
+      height: 320px;
+      left: -100px;
+      bottom: -120px;
+      background: radial-gradient(circle, rgba(0, 210, 106, 0.09), transparent 70%);
+    }
+    .login-signal-grid {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .login-signal {
+      padding: 18px;
+      border-radius: var(--radius-xl);
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.06);
+      min-height: 132px;
+      transition: transform 0.28s var(--ease-standard), border-color 0.28s ease, box-shadow 0.28s ease;
+    }
+    .login-signal:hover {
+      transform: translateY(-4px);
+      border-color: rgba(255,255,255,0.14);
+      box-shadow: var(--shadow-md);
+    }
+    .login-signal-label {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--text-gray);
+    }
+    .login-signal-value {
+      margin-top: 18px;
+      font-family: var(--font-body);
+      font-size: 34px;
+      line-height: 1;
+    }
+    .login-signal-copy {
+      margin-top: 10px;
+      font-size: 13px;
+      line-height: 1.55;
+      color: var(--text-mid);
     }
     .password-card {
-      width: 400px;
-      padding: 48px;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      background: var(--bg-card);
-      text-align: center;
+      width: 100%;
+      padding: 36px;
+      border-radius: var(--radius-xl);
+      text-align: left;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
     }
-    .password-card .logo { justify-content: center; margin-bottom: 32px; }
+    .password-card .logo {
+      justify-content: flex-start;
+      margin-bottom: 32px;
+      position: relative;
+      z-index: 1;
+    }
+    .password-meta {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 28px;
+    }
+    .password-kicker {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1.3px;
+      text-transform: uppercase;
+      color: #c4caef;
+    }
     .password-card h2 {
-      font-family: var(--font-display);
-      font-size: 24px; font-weight: 700;
-      margin-bottom: 8px;
+      font-family: var(--font-body);
+      font-size: 38px;
+      line-height: 1;
+      font-weight: 700;
     }
     .password-card p {
-      font-size: 14px; color: var(--text-gray);
-      margin-bottom: 32px;
+      font-size: 14px;
+      color: var(--text-gray);
+      line-height: 1.6;
+      margin-bottom: 0;
+    }
+    #login-form {
+      position: relative;
+      z-index: 1;
+    }
+    .password-field-label {
+      display: block;
+      margin-bottom: 10px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--text-gray);
     }
     .password-input {
       width: 100%;
-      padding: 14px 16px;
-      background: var(--bg-dark);
-      border: 1px solid var(--border-subtle);
-      border-radius: 8px;
+      padding: 16px 18px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: var(--radius-lg);
       color: var(--text-white);
-      font: 15px var(--font-body);
-      text-align: center;
-      letter-spacing: 8px;
+      font: 600 16px var(--font-body);
+      text-align: left;
+      letter-spacing: 3px;
       outline: none;
-      transition: border-color 0.2s;
+      transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
     }
-    .password-input:focus { border-color: var(--green); }
+    .password-input:focus {
+      border-color: rgba(0, 210, 106, 0.55);
+      transform: translateY(-1px);
+    }
     .password-input::placeholder { letter-spacing: 2px; color: var(--text-dim); }
     .password-error {
       color: var(--red);
@@ -126,19 +393,32 @@
     .btn-green {
       display: inline-flex;
       align-items: center; justify-content: center; gap: 10px;
-      padding: 14px 40px;
+      padding: 15px 40px;
       background: var(--green);
-      border: none; border-radius: 8px;
+      border: none; border-radius: var(--radius-md);
       color: var(--bg-dark);
       font: 600 15px var(--font-body);
       cursor: pointer;
-      transition: opacity 0.2s;
+      transition: opacity 0.2s, transform 0.2s, box-shadow 0.2s;
       width: 100%;
       margin-top: 16px;
+      box-shadow: var(--shadow-glow);
     }
-    .btn-green:hover { opacity: 0.9; }
+    .btn-green:hover {
+      opacity: 0.97;
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-md);
+    }
     .btn-green:disabled { opacity: 0.5; cursor: not-allowed; }
     .btn-green svg { width: 18px; height: 18px; }
+    .password-footnote {
+      position: relative;
+      z-index: 1;
+      margin-top: 18px;
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--text-dim);
+    }
 
     /* ── Upload Screen ── */
     .main-content {
@@ -150,7 +430,7 @@
     }
     .hero-text { text-align: center; max-width: 700px; }
     .hero-text h1 {
-      font-family: var(--font-display);
+      font-family: var(--font-body);
       font-size: 52px; font-weight: 700;
       line-height: 1.1;
       margin-bottom: 16px;
@@ -164,7 +444,7 @@
       width: 640px;
       padding: 48px;
       border: 1px dashed var(--text-dark);
-      border-radius: 12px;
+      border-radius: var(--radius-lg);
       background: var(--bg-card);
       text-align: center;
       cursor: pointer;
@@ -176,9 +456,9 @@
     }
     .upload-icon {
       width: 52px; height: 52px;
-      border-radius: 26px;
+      border-radius: var(--radius-xl);
       background: var(--bg-dark);
-      border: 1px solid #2A2A2A;
+      border: 1px solid var(--border-subtle);
       display: flex; align-items: center; justify-content: center;
       margin: 0 auto 20px;
     }
@@ -206,7 +486,7 @@
       display: flex;
       background: var(--bg-card);
       border: 1px solid var(--border-subtle);
-      border-radius: 10px;
+      border-radius: var(--radius-md);
       padding: 4px;
       gap: 4px;
     }
@@ -215,7 +495,7 @@
       padding: 12px 16px;
       background: transparent;
       border: none;
-      border-radius: 8px;
+      border-radius: var(--radius-md);
       color: var(--text-gray);
       font: 600 13px var(--font-body);
       cursor: pointer;
@@ -226,7 +506,7 @@
       color: var(--text-light);
     }
     .input-mode-option.active {
-      background: rgba(0, 255, 135, 0.12);
+      background: var(--green-surface-muted);
       border: 1px solid var(--green-border);
       color: var(--green);
     }
@@ -246,7 +526,7 @@
       padding: 12px 14px;
       background: var(--bg-card);
       border: 1px solid var(--border-subtle);
-      border-radius: 8px;
+      border-radius: var(--radius-md);
       color: var(--text-light);
       font: 14px var(--font-body);
       resize: vertical;
@@ -279,7 +559,7 @@
       padding: 14px 16px;
       background: var(--bg-card);
       border: 1px solid var(--border-subtle);
-      border-radius: 10px;
+      border-radius: var(--radius-md);
       transition: border-color 0.2s;
     }
     .web-search-toggle:has(input:checked) {
@@ -297,7 +577,7 @@
     }
     .toggle-slider {
       position: absolute; inset: 0;
-      background: var(--border-subtle); border-radius: 22px;
+      background: var(--border-subtle); border-radius: var(--radius-full);
       transition: background 0.2s;
     }
     .toggle-slider::before {
@@ -307,7 +587,7 @@
       transition: transform 0.2s, background 0.2s;
     }
     .toggle-switch input:checked + .toggle-slider {
-      background: rgba(0,255,135,0.25);
+      background: var(--green-border-strong);
     }
     .toggle-switch input:checked + .toggle-slider::before {
       transform: translateX(18px);
@@ -327,7 +607,7 @@
       padding: 0 16px; height: 48px;
       background: var(--bg-card);
       border: 1px solid var(--border-subtle);
-      border-radius: 8px;
+      border-radius: var(--radius-md);
       margin-bottom: 8px;
     }
     .file-left { display: flex; align-items: center; gap: 12px; }
@@ -357,10 +637,15 @@
       color: var(--text-gray); letter-spacing: 1px;
       text-transform: uppercase;
     }
+    .recent-runs-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
     .recent-run-card {
       background: var(--bg-card);
       border: 1px solid var(--border-subtle);
-      border-radius: 10px;
+      border-radius: var(--radius-md);
       padding: 14px 16px;
       display: flex;
       justify-content: space-between;
@@ -404,24 +689,362 @@
       letter-spacing: 0.8px;
       text-transform: uppercase;
       padding: 5px 8px;
-      border-radius: 999px;
+      border-radius: var(--radius-full);
       border: 1px solid var(--border-subtle);
       color: var(--text-gray);
       background: var(--bg-dark);
     }
-    .recent-run-status.running { color: var(--green); border-color: var(--green-border); background: rgba(0,255,135,0.08); }
+    .recent-run-status.running { color: var(--green); border-color: var(--green-border); background: var(--green-surface-subtle); }
     .recent-run-status.done { color: var(--text-light); }
     .recent-run-status.error { color: var(--red); border-color: var(--red-border); background: rgba(255,107,107,0.08); }
     .recent-run-open, .recent-run-view-log {
       background: none;
       border: 1px solid var(--text-dark);
       color: var(--text-light);
-      border-radius: 8px;
+      border-radius: var(--radius-md);
       padding: 8px 12px;
       font-size: 12px;
       cursor: pointer;
     }
     .recent-run-open:hover, .recent-run-view-log:hover { border-color: var(--text-gray); }
+    .recent-run-open:disabled, .recent-run-view-log:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .saved-jobs-window {
+      min-height: 180px;
+    }
+    .saved-jobs-empty {
+      border: 1px dashed var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 24px;
+      color: var(--text-dim);
+      text-align: center;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .analysis-screen-content {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding: 28px 32px 36px;
+    }
+    .analysis-history-section {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .analysis-history-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 6px;
+    }
+    .analysis-history-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-gray);
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+    }
+    .analysis-history-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .info-screen-content {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      padding: 28px 32px 36px;
+    }
+    .info-layout {
+      display: grid;
+      grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+      gap: 20px;
+      align-items: start;
+    }
+    .info-sidebar,
+    .info-panel {
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-xl);
+      background: rgba(255,255,255,0.02);
+      box-shadow: var(--shadow-sm);
+    }
+    .info-sidebar {
+      padding: 18px;
+      position: sticky;
+      top: 0;
+    }
+    .info-sidebar-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-gray);
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+    }
+    .info-sidebar-copy {
+      margin-top: 10px;
+      color: var(--text-mid);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .info-nav {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 18px;
+    }
+    .info-nav-btn {
+      width: 100%;
+      justify-content: flex-start;
+      text-align: left;
+    }
+    .info-panel {
+      padding: 28px;
+      display: flex;
+      flex-direction: column;
+      gap: 22px;
+    }
+    .info-hero {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .info-kicker {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--green);
+      letter-spacing: 1.4px;
+      text-transform: uppercase;
+    }
+    .info-hero h1 {
+      font-size: 34px;
+      line-height: 1.05;
+      letter-spacing: -0.8px;
+    }
+    .info-hero p {
+      max-width: 760px;
+      color: var(--text-light);
+      font-size: 15px;
+      line-height: 1.75;
+    }
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .info-card {
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: var(--radius-lg);
+      background: rgba(255,255,255,0.025);
+      padding: 18px;
+    }
+    .info-card h3 {
+      font-size: 14px;
+      margin-bottom: 10px;
+    }
+    .info-card p,
+    .info-card li {
+      color: var(--text-mid);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+    .info-card ul {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .info-card li::before {
+      content: '•';
+      color: var(--green);
+      margin-right: 8px;
+    }
+    .info-step-list {
+      display: grid;
+      gap: 12px;
+    }
+    .info-step {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      gap: 14px;
+      align-items: start;
+      padding: 16px 18px;
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: var(--radius-lg);
+      background: rgba(255,255,255,0.025);
+    }
+    .info-step-number {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--green-surface-muted);
+      border: 1px solid var(--green-border-strong);
+      color: var(--green);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .info-step h3 {
+      font-size: 15px;
+      margin-bottom: 6px;
+    }
+    .info-step p {
+      color: var(--text-mid);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+    .info-inline-code {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 6px;
+      border-radius: 6px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: var(--text-light);
+      font-size: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .saved-companies-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .saved-companies-toolbar label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-dim);
+      font-size: 12px;
+      letter-spacing: 0.7px;
+      text-transform: uppercase;
+    }
+    .saved-companies-toolbar select {
+      background: var(--bg-card);
+      color: var(--text-light);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 8px 10px;
+      font-size: 12px;
+    }
+    .saved-company-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .saved-company-card {
+      border: 1px solid transparent;
+      border-radius: var(--radius-lg);
+      background: transparent;
+      padding: 10px 14px;
+    }
+    .saved-company-header {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+    }
+    .saved-company-main {
+      min-width: 0;
+    }
+    .saved-company-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-light);
+      margin-bottom: 2px;
+    }
+    .saved-company-summary {
+      font-size: 12px;
+      color: var(--text-dim);
+      line-height: 1.3;
+    }
+    .saved-company-score {
+      min-width: 44px;
+      text-align: right;
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-light);
+      letter-spacing: 0.2px;
+    }
+    .saved-company-score.is-empty {
+      color: var(--text-dim);
+      font-weight: 600;
+    }
+    .saved-company-runs {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(255,255,255,0.06);
+    }
+    .saved-company-run {
+      width: 100%;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      padding: 7px 10px;
+      border-radius: var(--radius-md);
+      border: 1px solid rgba(255,255,255,0.04);
+      background: rgba(0,0,0,0.18);
+      color: var(--text-light);
+      text-align: left;
+      cursor: pointer;
+      transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+    }
+    .saved-company-run:hover {
+      transform: translateX(2px);
+      border-color: var(--blue-border-accent);
+      background: rgba(6, 43, 76, 0.5);
+    }
+    .saved-company-run.selected {
+      border-color: var(--blue-border-accent);
+      background: rgba(6, 43, 76, 0.68);
+    }
+    .saved-company-run-main {
+      min-width: 0;
+    }
+    .saved-company-run-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-white);
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+    .saved-company-run-summary {
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--text-dim);
+      line-height: 1.35;
+    }
+    .saved-company-run-score {
+      min-width: 56px;
+      text-align: right;
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-light);
+    }
+    .saved-company-run-score.is-empty {
+      color: var(--text-dim);
+      font-weight: 600;
+    }
+    .saved-jobs-meta {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      color: var(--text-dim);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+    }
 
     input[type="file"] { display: none; }
 
@@ -429,34 +1052,37 @@
     #processing-screen { align-items: center; justify-content: center; }
     .processing-card {
       text-align: center;
-      max-width: 500px;
+      width: min(100%, 640px);
+      padding: 12px 0;
     }
-    .spinner {
-      width: 48px; height: 48px;
-      border: 3px solid var(--border);
-      border-top-color: var(--green);
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-      margin: 0 auto 24px;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
     .processing-card h2 {
-      font-family: var(--font-display);
-      font-size: 28px; margin-bottom: 12px;
+      font-family: var(--font-body);
+      font-size: 36px;
+      margin-bottom: 12px;
+      letter-spacing: -0.6px;
     }
     .processing-card .status {
-      font-size: 15px; color: var(--text-gray);
+      font-size: 15px;
+      color: var(--text-gray);
     }
     .processing-card .status.status-live {
-      font-size: 16px; color: var(--text-light);
-      min-height: 24px; margin: 16px 0 8px;
+      font-size: 16px;
+      color: var(--text-light);
+      min-height: 24px;
+      margin: 0 0 10px;
     }
-    .processing-card .status-hint {
-      font-size: 13px; color: var(--text-dim);
-      line-height: 1.6;
+    .processing-company-meta {
+      min-height: 20px;
+      margin-bottom: 18px;
+      font-size: 14px;
+      color: var(--blue-accent);
+      letter-spacing: 0.2px;
+    }
+    .processing-company-meta:empty {
+      display: none;
     }
     .processing-controls {
-      margin: 8px 0 0;
+      margin: 0 0 24px;
       display: flex;
       justify-content: center;
       gap: 10px;
@@ -465,59 +1091,183 @@
       border: 1px solid var(--border-subtle);
       background: var(--bg-card);
       color: var(--text-light);
-      border-radius: 8px;
-      font-size: 12px;
-      padding: 8px 12px;
+      border-radius: var(--radius-lg);
+      font-size: 13px;
+      padding: 14px 22px;
       cursor: pointer;
-      min-width: 88px;
+      min-width: 160px;
+      transition: border-color 0.2s, transform 0.2s, opacity 0.2s;
     }
-    .btn-process-control:hover { border-color: var(--text-gray); }
+    .btn-process-control:hover {
+      border-color: var(--text-gray);
+      transform: translateY(-1px);
+    }
     .btn-process-control.danger {
-      color: var(--red);
-      border-color: var(--red-border);
-      background: var(--red-bg);
+      color: #ff4f43;
+      border-color: rgba(255, 79, 67, 0.22);
+      background: rgba(76, 18, 14, 0.92);
     }
     .btn-process-control:disabled {
       opacity: 0.5;
       cursor: not-allowed;
+      transform: none;
     }
-    .progress-feed {
-      margin-top: 16px;
-      max-height: 240px;
-      overflow-y: auto;
-      background: var(--bg-dark);
-      border: 1px solid var(--border-subtle);
-      border-radius: 8px;
-      padding: 12px;
+    .progress-bar-wrap {
+      width: 100%;
+      margin: 0 auto 22px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+    }
+    .progress-bar-track {
+      width: 100%;
+      height: 12px;
+      background: var(--border-subtle);
+      border-radius: var(--radius-full);
+      overflow: hidden;
+      position: relative;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      border-radius: var(--radius-full);
+      background: var(--green);
+      width: 0%;
+      transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+    }
+    .progress-bar-fill.indeterminate {
+      width: 40%;
+      animation: indeterminate 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+    .progress-bar-fill::after {
+      content: '';
+      position: absolute; inset: 0;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent);
+      animation: shimmer 2s ease-in-out infinite;
+    }
+    .progress-bar-fill.error {
+      background: var(--red);
+      animation: none;
+    }
+    .progress-bar-fill.done {
+      width: 100% !important;
+      animation: none;
+    }
+    .progress-bar-fill.done::after { animation: none; opacity: 0; }
+    .progress-bar-pct {
       font-size: 12px;
-      font-family: var(--font-body);
+      font-weight: 500;
       color: var(--text-dim);
+      letter-spacing: 0.5px;
+      min-height: 16px;
+      display: none;
+    }
+    @keyframes indeterminate {
+      0%   { margin-left: 0%;   width: 30%; }
+      50%  { margin-left: 35%;  width: 40%; }
+      100% { margin-left: 70%;  width: 30%; }
+    }
+    @keyframes shimmer {
+      0%   { transform: translateX(-100%); }
+      100% { transform: translateX(100%); }
+    }
+    .processing-card .status-hint {
+      margin-top: 26px;
+      font-size: 13px; color: var(--text-dim);
+      line-height: 1.6;
+    }
+    .processing-stage-list {
+      margin-top: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(15, 15, 18, 0.92);
+      border-radius: 18px;
+      overflow: hidden;
       text-align: left;
+      box-shadow: var(--shadow-md);
     }
-    .progress-feed-line {
-      padding: 2px 0;
-      border-bottom: 1px solid var(--border);
+    .processing-stage-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      min-height: 54px;
+      padding: 14px 20px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      transition: background 0.2s ease, color 0.2s ease;
+      color: rgba(255, 255, 255, 0.3);
     }
-    .progress-feed-line:last-child { border-bottom: none; }
-    .progress-feed-placeholder { color: var(--text-dim); font-style: italic; }
-    .processing-steps {
-      margin-top: 32px; text-align: left;
-      display: flex; flex-direction: column; gap: 12px;
+    .processing-stage-row:last-child {
+      border-bottom: none;
     }
-    .step {
-      display: flex; align-items: center; gap: 12px;
-      font-size: 14px; color: var(--text-dim);
+    .processing-stage-row.is-done {
+      color: var(--text-white);
     }
-    .step.active { color: var(--green); }
-    .step.done { color: var(--text-gray); }
-    .step-dot {
-      width: 8px; height: 8px;
+    .processing-stage-row.is-active {
+      color: var(--blue-accent);
+      background: rgba(255, 255, 255, 0.01);
+    }
+    .processing-stage-indicator {
+      width: 22px;
+      height: 22px;
       border-radius: 50%;
-      background: var(--text-dim);
       flex-shrink: 0;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.07);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
     }
-    .step.active .step-dot { background: var(--green); box-shadow: 0 0 8px var(--green); }
-    .step.done .step-dot { background: var(--text-gray); }
+    .processing-stage-row.is-done .processing-stage-indicator {
+      border-color: rgba(0, 210, 106, 0.45);
+      background: rgba(0, 210, 106, 0.08);
+    }
+    .processing-stage-row.is-upcoming .processing-stage-indicator {
+      background: rgba(255, 255, 255, 0.10);
+      border-color: rgba(255, 255, 255, 0.06);
+    }
+    .processing-stage-row.is-active .processing-stage-indicator {
+      border-color: rgba(26, 136, 255, 0.35);
+      background: rgba(26, 136, 255, 0.08);
+      box-shadow: 0 0 0 4px rgba(26, 136, 255, 0.06);
+    }
+    .processing-stage-check {
+      width: 10px;
+      height: 6px;
+      border-left: 2px solid var(--green);
+      border-bottom: 2px solid var(--green);
+      transform: rotate(-45deg) translateY(-1px);
+    }
+    .processing-stage-spinner {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      border: 2px solid rgba(26, 136, 255, 0.2);
+      border-top-color: var(--blue-accent);
+      border-right-color: var(--blue-accent);
+      animation: processingSpin 0.8s linear infinite;
+    }
+    .processing-stage-row.is-active .processing-stage-indicator::after {
+      content: '';
+      position: absolute;
+      inset: -3px;
+      border-radius: 50%;
+      border: 1px solid rgba(26, 136, 255, 0.18);
+      animation: processingPulse 1.6s ease-out infinite;
+    }
+    .processing-stage-label {
+      font-size: 15px;
+      line-height: 1.35;
+      letter-spacing: 0.1px;
+    }
+    @keyframes processingSpin {
+      to { transform: rotate(360deg); }
+    }
+    @keyframes processingPulse {
+      0% { transform: scale(0.9); opacity: 0.65; }
+      70% { transform: scale(1.18); opacity: 0; }
+      100% { transform: scale(1.18); opacity: 0; }
+    }
 
     /* ── Results Screen ── */
     .results-body { flex: 1; padding: 48px; }
@@ -526,24 +1276,26 @@
       margin-bottom: 40px;
     }
     .results-title h1 {
-      font-family: var(--font-display);
+      font-family: var(--font-body);
       font-size: 32px; font-weight: 700;
     }
     .results-title p { font-size: 14px; color: var(--text-gray); margin-top: 8px; }
 
     .stats-row {
-      display: flex; gap: 16px;
-      margin-bottom: 40px;
+      display: none;
+      gap: 16px;
+      margin-bottom: 0;
     }
     .stat-card {
       flex: 1;
       padding: 24px;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 10px;
+      background: var(--bg-surface);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow-md);
     }
     .stat-value {
-      font-family: var(--font-display);
+      font-family: var(--font-body);
       font-size: 36px; font-weight: 700;
     }
     .stat-value.green { color: var(--green); }
@@ -573,17 +1325,18 @@
       background: var(--bg-card);
       border: 1px solid var(--border-subtle);
       color: var(--text-light);
-      border-radius: 6px;
+      border-radius: var(--radius-md);
       padding: 6px 10px;
       font-size: 12px;
     }
 
     .rank-card {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 12px;
+      background: var(--bg-surface);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: var(--radius-xl);
       padding: 28px;
       margin-bottom: 16px;
+      box-shadow: var(--shadow-lg);
     }
     .rank-top {
       display: flex; align-items: center; gap: 16px;
@@ -598,8 +1351,8 @@
     .rank-badge {
       display: inline-block;
       padding: 4px 12px;
-      border-radius: 4px;
-      font: bold 12px var(--font-body);
+      border-radius: var(--radius-sm);
+      font: 700 12px var(--font-body);
     }
     .rank-badge.first { background: var(--green); color: var(--bg-dark); }
     .rank-badge.other {
@@ -608,13 +1361,13 @@
       color: var(--text-gray);
     }
     .rank-name {
-      font-family: var(--font-display);
+      font-family: var(--font-body);
       font-size: 22px; font-weight: 700;
     }
     .decision-badge {
       padding: 4px 12px;
-      border-radius: 4px;
-      font: bold 11px var(--font-body);
+      border-radius: var(--radius-sm);
+      font: 700 11px var(--font-body);
       letter-spacing: 1px;
     }
     .decision-badge.invest {
@@ -634,11 +1387,12 @@
     }
     .score-item {
       padding: 12px 20px;
-      background: var(--bg-dark);
-      border-radius: 8px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: var(--radius-lg);
     }
     .score-item .value {
-      font-family: var(--font-display);
+      font-family: var(--font-body);
       font-size: 28px; font-weight: 700;
     }
     .score-item .value.green { color: var(--green); }
@@ -666,7 +1420,7 @@
       font-size: 11px; font-weight: 600;
       display: inline-block;
       padding: 2px 6px;
-      border-radius: 3px;
+      border-radius: var(--radius-sm);
       margin-right: 6px;
     }
     .arg-score.pro { background: var(--green-bg); color: var(--green); }
@@ -686,7 +1440,7 @@
       padding: 4px 10px;
       background: none;
       border: 1px solid var(--border-subtle);
-      border-radius: 6px;
+      border-radius: var(--radius-md);
       font-size: 11px;
       font-weight: 700;
       letter-spacing: 0.8px;
@@ -712,7 +1466,7 @@
     .audit-modal-panel {
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: 12px;
+      border-radius: var(--radius-lg);
       max-width: 700px; width: 100%;
       max-height: 85vh;
       overflow-y: auto;
@@ -724,18 +1478,204 @@
       margin-bottom: 24px;
     }
     .audit-modal-title {
-      font-family: var(--font-display);
+      font-family: var(--font-body);
       font-size: 20px; font-weight: 700;
     }
     .audit-modal-close {
       background: none; border: 1px solid var(--border-subtle);
       color: var(--text-light);
       padding: 8px 12px;
-      border-radius: 8px;
+      border-radius: var(--radius-md);
       font-size: 12px;
       cursor: pointer;
     }
     .audit-modal-close:hover { border-color: var(--text-gray); }
+    .companies-page {
+      height: 100%;
+      display: grid;
+      grid-template-columns: minmax(280px, 20%) minmax(0, 1fr);
+      gap: 0;
+      min-height: 0;
+    }
+    .companies-screen-toolbar {
+      justify-content: space-between;
+    }
+    .companies-page-sidebar {
+      border-right: 1px solid var(--border);
+      padding: 0;
+      overflow: auto;
+      min-height: 0;
+      background: var(--bg-surface);
+    }
+    .companies-sidebar-shell {
+      min-height: 100%;
+      display: flex;
+      flex-direction: column;
+    }
+    .companies-sidebar-head {
+      padding: 26px 24px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .companies-sidebar-head-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .companies-sidebar-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-white);
+    }
+    .companies-sidebar-count {
+      min-width: 40px;
+      height: 40px;
+      padding: 0 12px;
+      border-radius: var(--radius-full);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0.45);
+      border: 1px solid rgba(255,255,255,0.06);
+      color: var(--text-light);
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .companies-sidebar-sort {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      width: fit-content;
+      color: var(--text-gray);
+      font-size: 12px;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+    }
+    .companies-sidebar-sort-icon {
+      font-size: 18px;
+      line-height: 1;
+      color: var(--text-dim);
+    }
+    .companies-sidebar-sort-select {
+      appearance: none;
+      background: transparent;
+      border: none;
+      color: var(--text-gray);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      outline: none;
+      cursor: pointer;
+      padding-right: 18px;
+    }
+    .companies-sidebar-sort-select:hover,
+    .companies-sidebar-sort-select:focus {
+      color: var(--text-light);
+    }
+    .companies-sidebar-search-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+    .companies-sidebar-search-icon {
+      position: absolute;
+      left: 10px;
+      font-size: 16px;
+      color: var(--text-dim);
+      pointer-events: none;
+      line-height: 1;
+    }
+    .companies-sidebar-search-input {
+      width: 100%;
+      background: rgba(0,0,0,0.3);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: var(--radius-md);
+      color: var(--text-light);
+      font-size: 13px;
+      padding: 7px 32px 7px 30px;
+      outline: none;
+      transition: border-color 0.18s;
+    }
+    .companies-sidebar-search-input::placeholder {
+      color: var(--text-dim);
+    }
+    .companies-sidebar-search-input:focus {
+      border-color: var(--blue-border-accent);
+      color: var(--text-white);
+    }
+    .companies-sidebar-search-clear {
+      position: absolute;
+      right: 8px;
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      font-size: 11px;
+      cursor: pointer;
+      padding: 2px 4px;
+      line-height: 1;
+    }
+    .companies-sidebar-search-clear:hover {
+      color: var(--text-light);
+    }
+    .companies-sidebar-count-total {
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-dim);
+    }
+    .companies-page-list {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 0 10px 14px;
+    }
+    .companies-page-detail {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      padding: 8px 0 8px 24px;
+    }
+    .companies-page-empty {
+      min-height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 15px;
+      line-height: 1.6;
+      border: 1px dashed var(--border-subtle);
+      border-radius: var(--radius-xl);
+      padding: 32px;
+      background: rgba(255,255,255,0.01);
+    }
+    .companies-page-sidebar .saved-company-card {
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s, transform 0.18s ease;
+    }
+    .companies-page-sidebar .saved-company-card:hover,
+    .companies-page-sidebar .saved-company-card.selected {
+      border-color: var(--blue-border-accent);
+      background: linear-gradient(180deg, rgba(6, 43, 76, 0.92) 0%, rgba(8, 38, 66, 0.92) 100%);
+      transform: translateY(-1px);
+    }
+    .companies-page-sidebar .saved-company-card.selected .saved-company-name,
+    .companies-page-sidebar .saved-company-card.selected .saved-company-score {
+      color: var(--text-white);
+    }
+    .companies-page-detail .results-title-row {
+      margin-bottom: 20px;
+    }
+    .companies-page-detail .saved-run-subtitle {
+      margin-top: 6px;
+    }
+    .companies-screen-content {
+      flex: 1;
+      min-height: 0;
+      padding: 16px 24px 24px;
+    }
     .progress-log-modal-content {
       max-height: 400px; overflow-y: auto; font-size: 12px; font-family: monospace;
       white-space: pre-wrap; padding: 12px; color: var(--text-dim);
@@ -750,14 +1690,14 @@
     .audit-section-body {
       background: var(--bg-dark);
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: var(--radius-md);
       padding: 16px;
     }
     .audit-decision-badge {
       display: inline-block;
       padding: 4px 12px;
-      border-radius: 4px;
-      font: bold 11px var(--font-body);
+      border-radius: var(--radius-sm);
+      font: 700 11px var(--font-body);
       letter-spacing: 1px;
       margin-bottom: 8px;
     }
@@ -789,7 +1729,7 @@
       font-size: 11px;
       background: var(--bg-card);
       border: 1px solid var(--border-subtle);
-      border-radius: 999px;
+      border-radius: var(--radius-full);
       margin: 2px 4px 2px 0;
       color: var(--text-dim);
     }
@@ -817,7 +1757,7 @@
     }
     .audit-arg-type {
       font-size: 11px; font-weight: 600;
-      padding: 2px 8px; border-radius: 4px;
+      padding: 2px 8px; border-radius: var(--radius-sm);
     }
     .audit-arg-type.pro { background: var(--green-bg); color: var(--green); }
     .audit-arg-type.contra { background: var(--red-bg); color: var(--red); }
@@ -832,7 +1772,7 @@
       background: transparent;
       border: 1px solid var(--border-subtle);
       color: var(--text-light);
-      border-radius: 8px;
+      border-radius: var(--radius-md);
       padding: 8px 12px;
       font-size: 12px;
       cursor: pointer;
@@ -840,7 +1780,7 @@
     .settings-tab-btn.active {
       border-color: var(--green);
       color: var(--green);
-      background: rgba(0, 210, 106, 0.08);
+      background: var(--green-surface-subtle);
     }
     .settings-tab-panel { display: none; }
     .settings-tab-panel.active { display: block; }
@@ -854,7 +1794,7 @@
     .settings-badge {
       font-size: 11px;
       border: 1px solid var(--border-subtle);
-      border-radius: 999px;
+      border-radius: var(--radius-full);
       padding: 4px 8px;
       color: var(--text-dim);
       background: var(--bg-dark);
@@ -865,9 +1805,9 @@
       background: var(--green-bg);
     }
     .settings-badge.warn {
-      color: #f6c344;
-      border-color: rgba(246, 195, 68, 0.3);
-      background: rgba(246, 195, 68, 0.08);
+      color: var(--color-warn);
+      border-color: var(--color-warn-border);
+      background: var(--color-warn-bg);
     }
     @media (max-width: 768px) {
       .header { padding: 0 20px; }
@@ -881,6 +1821,13 @@
       .args-row { flex-direction: column; }
       .score-row { flex-wrap: wrap; }
       .rankings-row { flex-direction: column; align-items: flex-start; }
+      .recent-run-card { align-items: flex-start; flex-direction: column; }
+      .recent-run-actions { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
+      .companies-sidebar-head { padding-left: 18px; padding-right: 18px; }
+      .saved-company-card { padding: 16px; }
+      .companies-page { grid-template-columns: 1fr; }
+      .companies-page-sidebar { border-right: none; border-bottom: 1px solid var(--border); max-height: 42vh; }
+      .companies-page-detail { padding: 20px 0 0; }
     }
 
     .dim-bars-container { margin: 12px 0 16px; }
@@ -898,31 +1845,62 @@
     .dim-bar-row {
       display: flex; align-items: center; gap: 12px;
       margin-bottom: 8px; font-size: 12px;
+      --dim-color: var(--green);
+      --dim-color-bg: var(--green-bg);
     }
     .dim-label {
       width: 100px; color: var(--text-gray);
       text-transform: capitalize;
     }
     .dim-bar-bg {
-      flex: 1; height: 6px; background: var(--bg-dark);
-      border-radius: 3px; overflow: hidden;
+      flex: 1;
+      height: 10px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: var(--radius-full);
+      overflow: hidden;
+      position: relative;
     }
     .dim-bar-fill {
-      height: 100%; background: var(--green);
-      border-radius: 3px; transition: width 0.3s;
+      height: 100%;
+      background: linear-gradient(90deg, color-mix(in srgb, var(--dim-color) 58%, white 42%) 0%, var(--dim-color) 100%);
+      border-radius: var(--radius-full);
+      transition: width 0.3s;
+      position: relative;
+      transform-origin: left center;
+      box-shadow: 0 0 8px color-mix(in srgb, var(--dim-color) 20%, transparent);
     }
+    .dim-bar-fill::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+      animation: shimmerSweep 2.4s linear infinite;
+      mix-blend-mode: screen;
+    }
+    .dim-bar-row.strategy-fit { --dim-color: var(--strategy); --dim-color-bg: var(--strategy-bg); }
+    .dim-bar-row.team { --dim-color: var(--team); --dim-color-bg: var(--team-bg); }
+    .dim-bar-row.upside { --dim-color: var(--potential); --dim-color-bg: var(--potential-bg); }
+    .dim-bar-row.composite { --dim-color: var(--green); --dim-color-bg: var(--green-bg); }
     .dim-value { width: 28px; text-align: right; color: var(--text-mid); }
     .bucket-badge {
-      padding: 4px 10px; border-radius: 6px;
+      padding: 4px 10px; border-radius: var(--radius-md);
       font-size: 11px; font-weight: 600; text-transform: uppercase;
     }
     .bucket-badge.bucket-priority-review { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
-    .bucket-badge.bucket-watchlist { background: rgba(200,180,80,0.12); color: #c8b450; border: 1px solid rgba(200,180,80,0.3); }
+    .bucket-badge.bucket-watchlist {
+      background: color-mix(in srgb, var(--color-warn) 12%, transparent);
+      color: var(--color-warn);
+      border: 1px solid var(--color-warn-border);
+    }
     .bucket-badge.bucket-low-priority { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
-    .ranking-evidence-section { padding: 12px; background: var(--bg-dark); border-radius: 8px; font-size: 13px; }
+    .ranking-evidence-section { padding: 12px; background: var(--bg-dark); border-radius: var(--radius-md); font-size: 13px; }
     .evidence-dim { margin-bottom: 8px; }
     .executive-summary-container { margin: 12px 0 16px; font-size: 13px; }
     .executive-summary-block .dim-summary { margin-bottom: 8px; line-height: 1.5; }
+    .executive-summary-block .audit-section-title {
+      color: var(--green);
+    }
     .executive-summary-block .key-points-list,
     .executive-summary-block .red-flags-list { margin: 6px 0 0; padding-left: 18px; }
     .executive-summary-block .key-points-list li { margin-bottom: 4px; }
@@ -931,7 +1909,7 @@
     .person-intel-section {
       margin-top: 16px;
       border: 1px solid var(--border-subtle);
-      border-radius: 10px;
+      border-radius: var(--radius-md);
       padding: 14px;
       background: var(--bg-dark);
     }
@@ -964,7 +1942,7 @@
       border: 1px solid var(--border-subtle);
       background: var(--bg-card);
       color: var(--text-light);
-      border-radius: 999px;
+      border-radius: var(--radius-full);
       padding: 7px 10px;
       font-size: 12px;
       cursor: pointer;
@@ -974,7 +1952,7 @@
     .team-member-pill:hover {
       border-color: var(--green-border);
       color: var(--green);
-      background: rgba(0,255,135,0.08);
+      background: var(--green-surface-subtle);
     }
     .person-intel-list {
       display: flex;
@@ -984,7 +1962,7 @@
     }
     .person-intel-card {
       border: 1px solid var(--border-subtle);
-      border-radius: 8px;
+      border-radius: var(--radius-md);
       padding: 10px 12px;
       background: var(--bg-card);
     }
@@ -1039,7 +2017,7 @@
     }
     .person-report-name {
       font-size: 22px;
-      font-weight: 800;
+      font-weight: 700;
       color: var(--text-white);
       letter-spacing: 0.2px;
       line-height: 1.1;
@@ -1049,11 +2027,23 @@
       color: var(--text-dim);
       margin-top: 4px;
     }
+    .person-report-sources,
+    .person-report-error {
+      font-size: 0.85em;
+    }
+    .person-report-sources {
+      color: var(--text-dim);
+      margin-top: 0.5em;
+    }
+    .person-report-error {
+      color: var(--color-warn);
+      margin-top: 0.25em;
+    }
     .person-report-section {
       margin: 10px 0;
       padding: 8px 10px;
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: var(--radius-md);
       background: var(--bg-dark);
     }
     .person-report-section h4 {
@@ -1091,7 +2081,7 @@
     }
     .person-intel-manual input {
       padding: 8px 10px;
-      border-radius: 6px;
+      border-radius: var(--radius-md);
       border: 1px solid var(--border-subtle);
       background: var(--bg-card);
       color: var(--text-light);
@@ -1100,33 +2090,316 @@
     }
     .person-intel-manual button {
       padding: 8px 10px;
-      border-radius: 6px;
+      border-radius: var(--radius-md);
       border: 1px solid var(--green-border);
-      background: rgba(0,255,135,0.12);
+      background: var(--green-surface-muted);
       color: var(--green);
       font-size: 12px;
       cursor: pointer;
+    }
+    .rank-card--failed {
+      border-color: rgba(255, 107, 107, 0.28);
+    }
+    .failed-companies-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      color: var(--text-dim);
+    }
+    .failed-company-name {
+      color: var(--text-white);
+    }
+
+    /* ═══════════════════ ANIMATIONS ═══════════════════ */
+
+    /* ── Fade-up entrance for staggered children ── */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to   { opacity: 1; }
+    }
+    @keyframes scaleIn {
+      from { opacity: 0; transform: scale(0.95); }
+      to   { opacity: 1; transform: scale(1); }
+    }
+    @keyframes slideInRight {
+      from { opacity: 0; transform: translateX(20px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+    @keyframes pulseGlow {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(0, 210, 106, 0); }
+      50%      { box-shadow: 0 0 12px 2px rgba(0, 210, 106, 0.12); }
+    }
+    @keyframes countUp {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes growBar {
+      from { transform: scaleX(0); opacity: 0.4; }
+      to { transform: scaleX(1); opacity: 1; }
+    }
+    @keyframes shimmerSweep {
+      from { transform: translateX(-100%); }
+      to { transform: translateX(200%); }
+    }
+
+    /* Entry animations for key elements */
+    .screen.active .login-stage {
+      animation: fadeUp 0.7s var(--ease-standard) 0.04s both;
+    }
+    .screen.active .password-card {
+      animation: scaleIn 0.6s var(--ease-standard) 0.1s both;
+    }
+    .screen.active .login-signal:nth-child(1) { animation: fadeUp 0.55s var(--ease-standard) 0.2s both; }
+    .screen.active .login-signal:nth-child(2) { animation: fadeUp 0.55s var(--ease-standard) 0.28s both; }
+    .screen.active .login-signal:nth-child(3) { animation: fadeUp 0.55s var(--ease-standard) 0.36s both; }
+    .screen.active .hero-text {
+      animation: fadeUp 0.6s cubic-bezier(0.4, 0, 0.2, 1) 0.1s both;
+    }
+    .screen.active .upload-zone {
+      animation: fadeUp 0.6s cubic-bezier(0.4, 0, 0.2, 1) 0.2s both;
+    }
+    .screen.active .input-mode-section {
+      animation: fadeUp 0.5s cubic-bezier(0.4, 0, 0.2, 1) 0.3s both;
+    }
+    .screen.active .instructions-section {
+      animation: fadeUp 0.5s cubic-bezier(0.4, 0, 0.2, 1) 0.35s both;
+    }
+    .screen.active .recent-runs-section {
+      animation: fadeUp 0.5s cubic-bezier(0.4, 0, 0.2, 1) 0.4s both;
+    }
+    .screen.active .files-section {
+      animation: fadeUp 0.5s cubic-bezier(0.4, 0, 0.2, 1) 0.35s both;
+    }
+    .screen.active .processing-card {
+      animation: fadeUp 0.6s cubic-bezier(0.4, 0, 0.2, 1) 0.15s both;
+    }
+    .screen.active .header {
+      animation: fadeIn 0.4s cubic-bezier(0.4, 0, 0.2, 1) 0.05s both;
+    }
+
+    /* Results/companies staggered entrance */
+    .screen.active .results-title-row {
+      animation: fadeUp 0.5s cubic-bezier(0.4, 0, 0.2, 1) 0.1s both;
+    }
+
+    /* Individual cards animate on entry */
+    .screen.active .rank-card {
+      animation: fadeUp 0.55s var(--ease-standard) both;
+    }
+    .screen.active .recent-run-card {
+      animation: fadeUp 0.35s var(--ease-standard) both;
+    }
+    .screen.active .dim-bar-row:nth-child(1) .dim-bar-fill { animation: growBar 0.8s var(--ease-standard) 0.1s both; }
+    .screen.active .dim-bar-row:nth-child(2) .dim-bar-fill { animation: growBar 0.8s var(--ease-standard) 0.18s both; }
+    .screen.active .dim-bar-row:nth-child(3) .dim-bar-fill { animation: growBar 0.8s var(--ease-standard) 0.26s both; }
+    .screen.active .dim-bar-row:nth-child(4) .dim-bar-fill { animation: growBar 0.8s var(--ease-standard) 0.34s both; }
+
+    /* Processing stage rows slide in */
+    .processing-stage-row {
+      animation: slideInRight 0.3s cubic-bezier(0.4, 0, 0.2, 1) both;
+    }
+
+    /* ── Micro-interactions ── */
+
+    /* Logo hover glow */
+    .logo-icon {
+      transition: box-shadow 0.3s ease, transform 0.2s ease;
+    }
+    .logo:hover .logo-icon {
+      box-shadow: 0 0 10px rgba(0, 210, 106, 0.15);
+      transform: scale(1.05);
+    }
+
+    /* Button press effect */
+    .btn-green, .btn-ghost, .btn-process-control {
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .btn-green:active {
+      transform: scale(0.97);
+    }
+    .btn-ghost:active, .btn-process-control:active {
+      transform: scale(0.97);
+    }
+
+    /* Card hover lift */
+    .rank-card {
+      transition: border-color 0.2s, transform 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+                  box-shadow 0.2s ease;
+    }
+    .rank-card:hover {
+      transform: translateY(-3px);
+      box-shadow: var(--shadow-lg);
+      border-color: rgba(255,255,255,0.14);
+    }
+    .stat-card {
+      transition: border-color 0.2s, transform 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+                  box-shadow 0.2s ease;
+    }
+    .stat-card:hover {
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-md);
+      border-color: rgba(255,255,255,0.14);
+    }
+
+    /* Upload zone drag pulse */
+    .upload-zone.dragover {
+      animation: pulseGlow 1.5s ease-in-out infinite;
+    }
+
+    /* Recent run card hover */
+    .recent-run-card {
+      transition: border-color 0.2s, background 0.2s, transform 0.15s ease;
+    }
+    .recent-run-card:hover {
+      transform: translateY(-1px);
+      background: var(--bg-card-hover);
+    }
+
+    /* Badge pulse on appear */
+    .decision-badge, .bucket-badge, .recent-run-status {
+      animation: scaleIn 0.3s cubic-bezier(0.4, 0, 0.2, 1) both;
+    }
+
+    /* Smooth focus rings */
+    .password-input:focus, .instructions-input:focus {
+      box-shadow: 0 0 0 3px rgba(0, 210, 106, 0.15);
+    }
+
+    /* Team member pill hover bounce */
+    .team-member-pill {
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .team-member-pill:hover {
+      transform: translateY(-2px);
+    }
+
+    /* Companies sidebar card selection */
+    .companies-page-sidebar .saved-company-card {
+      transition: border-color 0.2s, background 0.2s, transform 0.15s ease;
+    }
+    .companies-page-sidebar .saved-company-card:hover {
+      transform: translateX(2px);
+    }
+
+    /* Score item hover */
+    .score-item.clickable {
+      transition: background 0.2s, transform 0.15s ease;
+    }
+    .score-item.clickable:hover {
+      transform: translateY(-1px);
+      border-color: rgba(255,255,255,0.14);
+      box-shadow: var(--shadow-md);
+    }
+    .dim-bar-row:hover .dim-label,
+    .dim-bar-row:hover .dim-value {
+      color: color-mix(in srgb, var(--dim-color) 78%, white 22%);
+    }
+    .dim-bar-row:hover .dim-bar-bg {
+      border-color: color-mix(in srgb, var(--dim-color) 30%, rgba(255,255,255,0.06));
+      background: color-mix(in srgb, var(--dim-color-bg) 55%, rgba(255,255,255,0.02));
+    }
+
+    @media (max-width: 980px) {
+      #password-screen { padding: 20px; }
+      .login-shell { grid-template-columns: 1fr; }
+      .login-stage { min-height: unset; padding: 28px; }
+      .password-card { max-width: none; }
+    }
+    @media (max-width: 640px) {
+      .login-stage h1 { font-size: 42px; }
+      .login-signal-grid { grid-template-columns: 1fr; }
+      .password-card { padding: 24px; }
+      .password-card h2 { font-size: 32px; }
+      .password-input { letter-spacing: 2px; }
+      .info-screen-content { padding: 20px; }
+      .info-layout,
+      .info-grid {
+        grid-template-columns: 1fr;
+      }
+      .info-sidebar {
+        position: static;
+      }
+      .info-panel {
+        padding: 22px;
+      }
     }
   </style>
 </head>
 <body>
 
 <!-- ═══════════════════ PASSWORD SCREEN ═══════════════════ -->
-<div id="password-screen" class="screen active">
-  <div class="password-card">
-    <div class="logo">
-      <div class="logo-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+<div id="password-screen" class="screen">
+  <div class="login-shell">
+    <section class="login-stage">
+      <span class="login-orbital one"></span>
+      <span class="login-orbital two"></span>
+      <div class="login-stage-top">
+        <div class="logo">
+          <div class="logo-icon">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="3" y="12" width="4" height="8" rx="1.2"></rect>
+              <rect x="10" y="7" width="4" height="13" rx="1.2"></rect>
+              <rect x="17" y="3" width="4" height="17" rx="1.2"></rect>
+            </svg>
+          </div>
+          <div class="logo-lockup">
+            <div class="logo-name">Rockaway</div>
+            <div class="logo-subtitle">Deal Intelligence</div>
+          </div>
+        </div>
+        <div class="login-eyebrow">Private investor workflow</div>
+        <h1>Screen deals with signal, not noise.</h1>
+        <p>Upload company materials, surface ranked conviction across strategy fit, team, and upside, then move from intake to decision with a sharper audit trail.</p>
       </div>
-      <span class="logo-text">startup ranker</span>
+      <div class="login-signal-grid">
+        <div class="login-signal">
+          <div class="login-signal-label">Strategy Fit</div>
+          <div class="login-signal-value">01</div>
+          <div class="login-signal-copy">Investment logic scored against your core thesis.</div>
+        </div>
+        <div class="login-signal">
+          <div class="login-signal-label">Team Read</div>
+          <div class="login-signal-value">02</div>
+          <div class="login-signal-copy">Founder and execution indicators pulled into one frame.</div>
+        </div>
+        <div class="login-signal">
+          <div class="login-signal-label">Upside</div>
+          <div class="login-signal-value">03</div>
+          <div class="login-signal-copy">Composite scoring with visible red flags and supporting evidence.</div>
+        </div>
+      </div>
+    </section>
+    <div class="password-card">
+      <div class="logo">
+        <div class="logo-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="12" width="4" height="8" rx="1.2"></rect>
+            <rect x="10" y="7" width="4" height="13" rx="1.2"></rect>
+            <rect x="17" y="3" width="4" height="17" rx="1.2"></rect>
+          </svg>
+        </div>
+        <div class="logo-lockup">
+          <div class="logo-name">Rockaway</div>
+          <div class="logo-subtitle">Deal Intelligence</div>
+        </div>
+      </div>
+      <div class="password-meta">
+        <span class="password-kicker">Secure access</span>
+        <h2>Enter workspace</h2>
+        <p>Protected internal interface for reviewing pipelines, company runs, and portfolio screening output.</p>
+      </div>
+      <form id="login-form">
+        <label class="password-field-label" for="password-input">Password</label>
+        <input type="password" class="password-input" id="password-input" placeholder="Enter password" maxlength="20" autofocus>
+        <div class="password-error" id="password-error"></div>
+        <button type="submit" class="btn-green">Unlock</button>
+      </form>
+      <div class="password-footnote">This session stays local to your browser and is validated against the server before any analysis routes are opened.</div>
     </div>
-    <h2>Access Required</h2>
-    <p>Enter the password to continue</p>
-    <form id="login-form">
-      <input type="password" class="password-input" id="password-input" placeholder="••••" maxlength="20" autofocus>
-      <div class="password-error" id="password-error"></div>
-      <button type="submit" class="btn-green">Enter</button>
-    </form>
   </div>
 </div>
 
@@ -1135,13 +2408,22 @@
   <div class="header">
     <a class="logo" href="/">
       <div class="logo-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3" y="12" width="4" height="8" rx="1.2"></rect>
+          <rect x="10" y="7" width="4" height="13" rx="1.2"></rect>
+          <rect x="17" y="3" width="4" height="17" rx="1.2"></rect>
+        </svg>
       </div>
-      <span class="logo-text">startup ranker</span>
+      <div class="logo-lockup">
+        <div class="logo-name">Rockaway</div>
+        <div class="logo-subtitle">Deal Intelligence</div>
+      </div>
     </a>
     <div class="header-right">
-      <span style="font-size:13px;color:var(--text-gray)">How it works</span>
-      <span style="font-size:13px;color:var(--text-gray)">Documentation</span>
+      <button type="button" class="btn-ghost" id="info-open-how-upload">How it works</button>
+      <button type="button" class="btn-ghost" id="info-open-docs-upload">Documentation</button>
+      <button type="button" class="btn-ghost" id="analysis-open-upload">Analysis</button>
+      <button type="button" class="btn-ghost" id="saved-jobs-open-upload">Companies</button>
       <span id="settings-open" style="font-size:13px;color:var(--text-gray);cursor:pointer;display:inline-flex;align-items:center" title="Settings">
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px">
     <circle cx="12" cy="12" r="3"/>
@@ -1182,19 +2464,12 @@
       <textarea id="instructions-input" class="instructions-input" rows="2" placeholder="e.g. Only rank the first 3 companies, focus on B2B SaaS, ignore companies outside Europe..."></textarea>
     </div>
 
-    <div class="recent-runs-section" id="recent-runs-section">
-      <div class="recent-runs-header">
-        <span class="label">Recent runs</span>
-      </div>
-      <div id="recent-runs-list"></div>
-    </div>
-
     <div class="files-section" id="files-section" style="display:none">
       <div class="files-header">
         <span class="label">Uploaded files</span>
         <button class="clear" id="clear-files">Clear all</button>
       </div>
-      <div id="specter-badge" style="display:none;margin-bottom:12px;padding:10px 14px;background:rgba(0,255,135,0.08);border:1px solid rgba(0,255,135,0.25);border-radius:8px;font-size:13px;color:var(--green);">
+      <div id="specter-badge" style="display:none;margin-bottom:12px;padding:10px 14px;background:var(--green-surface-subtle);border:1px solid var(--green-border-strong);border-radius:var(--radius-md);font-size:13px;color:var(--green);">
         <strong>Specter mode detected</strong> — company & people CSVs will be parsed as structured data. All companies will be ranked in batch.
       </div>
       <div id="files-list"></div>
@@ -1223,26 +2498,119 @@
   </div>
 </div>
 
+<div id="info-screen" class="screen">
+  <div class="header">
+    <a class="logo" href="/">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3" y="12" width="4" height="8" rx="1.2"></rect>
+          <rect x="10" y="7" width="4" height="13" rx="1.2"></rect>
+          <rect x="17" y="3" width="4" height="17" rx="1.2"></rect>
+        </svg>
+      </div>
+      <div class="logo-lockup">
+        <div class="logo-name">Rockaway</div>
+        <div class="logo-subtitle">Deal Intelligence</div>
+      </div>
+    </a>
+    <div class="header-right">
+      <button type="button" class="btn-ghost" id="info-show-how-btn">How it works</button>
+      <button type="button" class="btn-ghost" id="info-show-docs-btn">Documentation</button>
+    </div>
+  </div>
+  <div id="info-screen-content" class="info-screen-content"></div>
+</div>
+
+<div id="analysis-screen" class="screen">
+  <div class="header">
+    <a class="logo" href="/">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3" y="12" width="4" height="8" rx="1.2"></rect>
+          <rect x="10" y="7" width="4" height="13" rx="1.2"></rect>
+          <rect x="17" y="3" width="4" height="17" rx="1.2"></rect>
+        </svg>
+      </div>
+      <div class="logo-lockup">
+        <div class="logo-name">Rockaway</div>
+        <div class="logo-subtitle">Deal Intelligence</div>
+      </div>
+    </a>
+    <div class="header-right">
+      <button type="button" class="btn-ghost is-active" aria-current="page">Analysis</button>
+      <button type="button" class="btn-ghost" id="analysis-refresh-btn">Refresh</button>
+      <button class="btn-ghost" id="new-analysis-btn-history">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        New Analysis
+      </button>
+    </div>
+  </div>
+  <div id="analysis-screen-content" class="analysis-screen-content"></div>
+</div>
+
+<div id="companies-screen" class="screen active">
+  <div class="header companies-screen-toolbar">
+    <a class="logo" href="/">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3" y="12" width="4" height="8" rx="1.2"></rect>
+          <rect x="10" y="7" width="4" height="13" rx="1.2"></rect>
+          <rect x="17" y="3" width="4" height="17" rx="1.2"></rect>
+        </svg>
+      </div>
+      <div class="logo-lockup">
+        <div class="logo-name">Rockaway</div>
+        <div class="logo-subtitle">Deal Intelligence</div>
+      </div>
+    </a>
+    <div class="header-right">
+      <button type="button" class="btn-ghost" id="analysis-open-companies">Analysis</button>
+      <button type="button" class="btn-ghost" id="companies-refresh-btn">Refresh</button>
+      <button class="btn-ghost" id="new-analysis-btn-companies">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        New Analysis
+      </button>
+    </div>
+  </div>
+  <div id="companies-screen-content" class="companies-screen-content"></div>
+</div>
+
 <!-- ═══════════════════ PROCESSING SCREEN ═══════════════════ -->
 <div id="processing-screen" class="screen">
   <div class="header">
     <a class="logo" href="/">
       <div class="logo-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3" y="12" width="4" height="8" rx="1.2"></rect>
+          <rect x="10" y="7" width="4" height="13" rx="1.2"></rect>
+          <rect x="17" y="3" width="4" height="17" rx="1.2"></rect>
+        </svg>
       </div>
-      <span class="logo-text">startup ranker</span>
+      <div class="logo-lockup">
+        <div class="logo-name">Rockaway</div>
+        <div class="logo-subtitle">Deal Intelligence</div>
+      </div>
     </a>
+    <div class="header-right">
+      <button type="button" class="btn-ghost" id="analysis-open-processing">Analysis</button>
+      <button type="button" class="btn-ghost" id="saved-jobs-open-processing">Companies</button>
+    </div>
   </div>
   <div style="flex:1;display:flex;align-items:center;justify-content:center">
     <div class="processing-card">
-      <div class="spinner"></div>
       <h2>Analyzing...</h2>
       <p class="status status-live" id="processing-status">Uploading files and starting analysis...</p>
+      <p class="processing-company-meta" id="processing-company-meta"></p>
       <div class="processing-controls">
-        <button type="button" id="pause-btn" class="btn-process-control">Pause</button>
-        <button type="button" id="stop-btn" class="btn-process-control danger">Stop</button>
+        <button type="button" id="stop-btn" class="btn-process-control danger">Stop Analysis</button>
       </div>
-      <div id="progress-feed" class="progress-feed"></div>
+      <div class="progress-bar-wrap">
+        <div class="progress-bar-track">
+          <div class="progress-bar-fill indeterminate" id="progress-bar-fill"></div>
+        </div>
+        <span class="progress-bar-pct" id="progress-bar-pct"></span>
+      </div>
+      <div id="processing-stage-list" class="processing-stage-list"></div>
       <p class="status-hint">Progress updates every few seconds. Each company takes 1–2 minutes.</p>
     </div>
   </div>
@@ -1253,11 +2621,20 @@
   <div class="header">
     <a class="logo" href="/">
       <div class="logo-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3" y="12" width="4" height="8" rx="1.2"></rect>
+          <rect x="10" y="7" width="4" height="13" rx="1.2"></rect>
+          <rect x="17" y="3" width="4" height="17" rx="1.2"></rect>
+        </svg>
       </div>
-      <span class="logo-text">startup ranker</span>
+      <div class="logo-lockup">
+        <div class="logo-name">Rockaway</div>
+        <div class="logo-subtitle">Deal Intelligence</div>
+      </div>
     </a>
     <div class="header-right">
+      <button class="btn-ghost" id="analysis-open-results">Analysis</button>
+      <button type="button" class="btn-ghost" id="saved-jobs-open-results">Companies</button>
       <button class="btn-ghost" id="new-analysis-btn">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         New Analysis
@@ -1291,7 +2668,7 @@
     <div id="rankings-container"></div>
   </div>
   <div class="footer">
-    <span>Powered by Rockaway Capital</span>
+    <span>Rockaway Deal Intelligence</span>
     <span class="engine">DIALECTIC Evaluation Engine v1.0</span>
   </div>
 </div>
@@ -1348,6 +2725,7 @@
   </div>
 </div>
 
+
 <script>
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -1364,16 +2742,70 @@ const PERSON_INTEL_CACHE_KEY = 'person_intel_cache_v3_harvest_only';
 const SHOW_PRO_CONTRA_ARGUMENTS = false;
 const SHOW_AVG_PRO_CONTRA_SCORES = false;
 const DEFAULT_RANKINGS_SORT = 'top_scored';
+const DEFAULT_SAVED_COMPANY_SORT = 'top_scored';
 let vcInvestmentStrategy = localStorage.getItem(VC_STRATEGY_KEY) || '';
 let personIntelState = {};
 let rankingsSortMode = DEFAULT_RANKINGS_SORT;
 let statusWatchdogTimer = null;
+let savedJobsCache = [];
+let savedCompaniesCache = [];
+let savedCompanySortMode = DEFAULT_SAVED_COMPANY_SORT;
+let savedCompanySearch = '';
+let savedCompanySearchDebounce = null;
+let selectedCompanyKey = null;
+let selectedCompanyJobId = null;
+/** Set of company_key that have runs collapsed (hidden). Empty = all expanded. */
+let companyRunsCollapsed = new Set();
+let companiesPageJustOpened = false;
+let previousScreenBeforeCompanies = 'upload-screen';
+let previousScreenBeforeAnalysis = 'upload-screen';
+let previousScreenBeforeInfo = 'upload-screen';
+let activeInfoPage = 'how-it-works';
+let screenTransitionToken = 0;
+let renderedTeamMembersBySlug = {};
+
+function _finalizeVisibleScreens(activeId) {
+  $$('.screen').forEach((screen) => {
+    if (screen.id === activeId) {
+      screen.classList.add('active');
+      screen.classList.remove('leaving');
+      return;
+    }
+    screen.classList.remove('active', 'leaving');
+  });
+}
 
 function showScreen(id) {
-  $$('.screen').forEach(s => s.classList.remove('active'));
-  $(`#${id}`).classList.add('active');
+  const nextScreen = $(`#${id}`);
+  if (!nextScreen) return;
+  const currentScreen = document.querySelector('.screen.active');
+  if (currentScreen?.id === id) return;
+
+  screenTransitionToken += 1;
+  const token = screenTransitionToken;
+
+  if (!currentScreen) {
+    _finalizeVisibleScreens(id);
+  } else {
+    currentScreen.classList.remove('active');
+    currentScreen.classList.add('leaving');
+    nextScreen.classList.remove('leaving');
+    requestAnimationFrame(() => {
+      if (token !== screenTransitionToken) return;
+      nextScreen.classList.add('active');
+    });
+    window.setTimeout(() => {
+      if (token !== screenTransitionToken) return;
+      _finalizeVisibleScreens(id);
+    }, 460);
+  }
+
   if (id === 'processing-screen') startStatusWatchdog();
   else stopStatusWatchdog();
+}
+
+function getActiveScreenId() {
+  return [...document.querySelectorAll('.screen')].find((screen) => screen.classList.contains('active'))?.id || null;
 }
 
 function deepClone(value) {
@@ -1405,6 +2837,7 @@ function startStatusWatchdog() {
           results: data.results || null,
           llm: data.llm ?? undefined,
         });
+        setProgressDone();
         try {
           renderResults(data.results);
           showScreen('results-screen');
@@ -1493,6 +2926,7 @@ function upsertRecentRun(update) {
   runs.unshift(next);
   saveRecentRuns(runs);
   renderRecentRuns();
+  renderSavedJobsWindow();
 }
 
 function formatRunTimestamp(ts) {
@@ -1511,10 +2945,105 @@ function getRunTitle(run) {
   return run.results?.company_name || run.title || `Run ${run.jobId}`;
 }
 
+function getRunModeLabel(run) {
+  const raw = String(run.input_mode || run.results?.mode || '').trim().toLowerCase();
+  if (!raw) return '';
+  if (raw === 'pitchdeck') return 'Pitch deck';
+  if (raw === 'specter') return 'Specter';
+  if (raw === 'original') return 'Original';
+  if (raw === 'batch') return 'Batch';
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
+function mergeSavedAndRecentRuns() {
+  const merged = new Map();
+
+  for (const run of savedJobsCache) {
+    if (!run?.jobId) continue;
+    merged.set(run.jobId, { ...run });
+  }
+
+  for (const run of loadRecentRuns()) {
+    if (!run?.jobId) continue;
+    merged.set(run.jobId, {
+      ...(merged.get(run.jobId) || {}),
+      ...run,
+      createdAt: run.createdAt || merged.get(run.jobId)?.createdAt || null,
+      updatedAt: run.updatedAt || merged.get(run.jobId)?.updatedAt || null,
+      results: run.results || merged.get(run.jobId)?.results || null,
+    });
+  }
+
+  return Array.from(merged.values()).sort((a, b) => {
+    const aTs = new Date(a.createdAt || a.updatedAt || 0).getTime();
+    const bTs = new Date(b.createdAt || b.updatedAt || 0).getTime();
+    return bTs - aTs;
+  });
+}
+
+function renderSavedJobCards(runs, { limit = null, emptyText = 'No saved jobs found yet.' } = {}) {
+  const rows = limit ? runs.slice(0, limit) : runs;
+  if (!rows.length) {
+    return `<div class="saved-jobs-empty">${escapeHtml(emptyText)}</div>`;
+  }
+
+  return rows.map((run) => {
+    const status = run.status || 'pending';
+    const isUnavailable = status === 'error' && (run.progress || '').includes('no longer available');
+    const hasResults = !!run.results;
+    const actionLabel = (status === 'done' || (status === 'stopped' && hasResults))
+      ? 'Open results'
+      : (isUnavailable ? 'Unavailable' : 'Open');
+    const createdLine = formatRunTimestamp(run.createdAt || run.updatedAt);
+    const modeLabel = getRunModeLabel(run);
+    const metaBits = [
+      createdLine ? `Saved ${createdLine}` : '',
+      modeLabel,
+      run.useWebSearch === true ? 'Web search on' : '',
+      run.jobId ? `Job ${run.jobId}` : '',
+    ].filter(Boolean);
+    const subtitle = run.progress || createdLine || 'Saved analysis';
+    const llmLine = run.llm ? `<div class="recent-run-llm">${escapeHtml(run.llm)}</div>` : '';
+    const metaLine = metaBits.length
+      ? `<div class="saved-jobs-meta">${metaBits.map((bit) => `<span>${escapeHtml(bit)}</span>`).join('')}</div>`
+      : '';
+    const openDisabled = isUnavailable ? ' disabled' : '';
+    return `<div class="recent-run-card">
+      <div class="recent-run-meta">
+        <div class="recent-run-title">${escapeHtml(getRunTitle(run))}</div>
+        <div class="recent-run-subtitle">${escapeHtml(subtitle)}</div>
+        ${metaLine}
+        ${llmLine}
+      </div>
+      <div class="recent-run-actions">
+        <span class="recent-run-status ${status}">${escapeHtml(status)}</span>
+        <button class="recent-run-view-log" data-job-log="${escapeHtml(run.jobId)}">View log</button>
+        <button class="recent-run-open" data-job-open="${escapeHtml(run.jobId)}"${openDisabled}>${escapeHtml(actionLabel)}</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function bindSavedJobActions(root = document) {
+  root.querySelectorAll('[data-job-open]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      openSavedRun(String(btn.dataset.jobOpen || ''));
+    });
+  });
+  root.querySelectorAll('[data-job-log]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      showProgressLogModal(btn.dataset.jobLog);
+    });
+  });
+}
+
 function renderRecentRuns() {
   const section = $('#recent-runs-section');
   const list = $('#recent-runs-list');
-  const runs = loadRecentRuns();
+  if (!section || !list) return;
+  const runs = mergeSavedAndRecentRuns();
 
   if (!runs.length) {
     section.style.display = 'none';
@@ -1523,43 +3052,617 @@ function renderRecentRuns() {
   }
 
   section.style.display = 'flex';
-  list.innerHTML = runs.map((run) => {
-    const status = run.status || 'pending';
-    const isUnavailable = status === 'error' && (run.progress || '').includes('no longer available');
-    const actionLabel = status === 'done' ? 'Open results' : (isUnavailable ? 'Unavailable' : 'Resume');
-    const subtitle = run.progress || `Started ${formatRunTimestamp(run.createdAt)}`;
-    const llmLine = run.llm ? `<div class="recent-run-llm">${escapeHtml(run.llm)}</div>` : '';
-    const showViewLog = true;
-    const viewLogBtn = showViewLog
-      ? `<button class="recent-run-view-log" data-job-log="${run.jobId}">View log</button>`
+  list.innerHTML = renderSavedJobCards(runs, {
+    limit: 6,
+    emptyText: 'No saved jobs found yet.',
+  });
+  bindSavedJobActions(list);
+}
+
+function renderSavedJobsWindow() {
+  // Recent-run state still reuses this updater, but Companies now lives on its own screen.
+}
+
+function getInfoContentEl() {
+  return $('#info-screen-content');
+}
+
+function renderInfoScreen(page = activeInfoPage) {
+  activeInfoPage = page === 'documentation' ? 'documentation' : 'how-it-works';
+  const content = getInfoContentEl();
+  if (!content) return;
+
+  const howItWorksHtml = `
+    <div class="info-hero">
+      <div class="info-kicker">Workflow</div>
+      <h1>How Rockaway Deal Intelligence works</h1>
+      <p>The product turns raw deal materials into a ranked decision view. Upload source files, choose the correct intake mode, let the engine score each company, then review structured outputs with saved run history and company-level drilldowns.</p>
+    </div>
+    <div class="info-step-list">
+      <div class="info-step">
+        <div class="info-step-number">01</div>
+        <div>
+          <h3>Upload source material</h3>
+          <p>Add pitch decks, PDFs, spreadsheets, notes, or Specter exports. In <span class="info-inline-code">Pitch deck</span> and <span class="info-inline-code">Original</span> mode, each file is treated as a company input. In <span class="info-inline-code">Specter</span> mode, company and people CSVs are parsed as one structured batch.</p>
+        </div>
+      </div>
+      <div class="info-step">
+        <div class="info-step-number">02</div>
+        <div>
+          <h3>Pick the right analysis mode</h3>
+          <p>Use mode selection to control how files are interpreted. Optional instructions let you narrow the run, for example by geography, sector, or the number of companies to rank.</p>
+        </div>
+      </div>
+      <div class="info-step">
+        <div class="info-step-number">03</div>
+        <div>
+          <h3>Run scoring and monitor progress</h3>
+          <p>The processing screen shows live status updates while the backend evaluates strategy fit, team quality, and upside. If web search is enabled, it only fills evidence gaps when uploaded documents do not contain enough information.</p>
+        </div>
+      </div>
+      <div class="info-step">
+        <div class="info-step-number">04</div>
+        <div>
+          <h3>Review ranked output</h3>
+          <p>Completed runs land in Analysis Results with ranking, dimension bars, summaries, and downloadable Excel output. Past runs remain accessible from the Analysis page, and the Companies page aggregates every saved company with per-run detail.</p>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const documentationHtml = `
+    <div class="info-hero">
+      <div class="info-kicker">Reference</div>
+      <h1>Documentation</h1>
+      <p>This workspace has three operating surfaces: <span class="info-inline-code">New Analysis</span> for intake, <span class="info-inline-code">Analysis</span> for saved runs, and <span class="info-inline-code">Companies</span> for company-centric history. The notes below summarize supported inputs, controls, and outputs.</p>
+    </div>
+    <div class="info-grid">
+      <div class="info-card">
+        <h3>Supported files</h3>
+        <ul>
+          <li>PDF, PPTX, DOCX, XLSX, XLS, CSV, TXT, and Markdown uploads are accepted.</li>
+          <li>Specter company and people CSV exports are supported for structured batch ranking.</li>
+          <li>Mixed uploads are allowed, but Specter mode expects the corresponding CSV exports.</li>
+        </ul>
+      </div>
+      <div class="info-card">
+        <h3>Input modes</h3>
+        <ul>
+          <li><strong>Pitch deck</strong> is optimized for one company per file.</li>
+          <li><strong>Specter</strong> parses company and people exports into one batch analysis run.</li>
+          <li><strong>Original</strong> preserves the uploaded content more directly for evaluation.</li>
+        </ul>
+      </div>
+      <div class="info-card">
+        <h3>Outputs</h3>
+        <ul>
+          <li>Runs produce rankings, dimension scores, decision labels, summaries, and download-ready Excel output.</li>
+          <li>Saved runs are visible in Analysis history and can be reopened later.</li>
+          <li>Companies view groups all historical runs under each company for side-by-side review.</li>
+        </ul>
+      </div>
+      <div class="info-card">
+        <h3>Controls</h3>
+        <ul>
+          <li>Additional instructions let you constrain ranking scope or add investor context.</li>
+          <li>Web search is optional and used only as a fallback when source files lack evidence.</li>
+          <li>The processing screen supports stopping a run while progress events continue to stream.</li>
+        </ul>
+      </div>
+    </div>
+  `;
+
+  content.innerHTML = `
+    <div class="info-layout">
+      <aside class="info-sidebar">
+        <div class="info-sidebar-title">Info Pages</div>
+        <div class="info-sidebar-copy">Use these pages as the quick product reference for new users and internal reviewers.</div>
+        <div class="info-nav">
+          <button type="button" class="btn-ghost info-nav-btn${activeInfoPage === 'how-it-works' ? ' is-active' : ''}" data-info-page="how-it-works">How it works</button>
+          <button type="button" class="btn-ghost info-nav-btn${activeInfoPage === 'documentation' ? ' is-active' : ''}" data-info-page="documentation">Documentation</button>
+        </div>
+      </aside>
+      <section class="info-panel">
+        ${activeInfoPage === 'documentation' ? documentationHtml : howItWorksHtml}
+      </section>
+    </div>
+  `;
+
+  $('#info-show-how-btn')?.classList.toggle('is-active', activeInfoPage === 'how-it-works');
+  $('#info-show-docs-btn')?.classList.toggle('is-active', activeInfoPage === 'documentation');
+
+  content.querySelectorAll('[data-info-page]').forEach((el) => {
+    el.addEventListener('click', () => renderInfoScreen(el.dataset.infoPage || 'how-it-works'));
+  });
+}
+
+function getAnalysisContentEl() {
+  return $('#analysis-screen-content');
+}
+
+function renderAnalysisHistoryScreen() {
+  const content = getAnalysisContentEl();
+  if (!content) return;
+
+  const runs = mergeSavedAndRecentRuns();
+  const cardsHtml = renderSavedJobCards(runs, {
+    emptyText: 'No saved analyses found yet.',
+  });
+
+  content.innerHTML = `
+    <div class="analysis-history-section">
+      <div class="analysis-history-head">
+        <div class="analysis-history-title">Analysis</div>
+        <div class="analysis-history-actions">
+          <span class="settings-badge">${runs.length} saved</span>
+        </div>
+      </div>
+      ${cardsHtml}
+    </div>
+  `;
+
+  bindSavedJobActions(content);
+}
+
+function getSavedCompanySortLabel(mode) {
+  if (mode === 'alphabetical') return 'Alphabetical';
+  if (mode === 'strategy_fit') return 'Strategy Fit';
+  if (mode === 'team') return 'Team';
+  if (mode === 'upside') return 'Potential';
+  return 'Top Scored';
+}
+
+function getCompanyDimScores(company) {
+  const latestRun = (company.runs || [])[0] || {};
+  const result = latestRun.results || {};
+  const ranking = result.ranking_result || {};
+  const summary = (result.summary_rows || [])[0] || {};
+  const dimScores = {};
+  // 1. dimension_scores array (single-mode runs with full ranking)
+  if (ranking.dimension_scores?.length) {
+    for (const d of ranking.dimension_scores) {
+      dimScores[d.dimension] = d.adjusted_score ?? d.score ?? null;
+    }
+  }
+  // 2. Flat keys on ranking_result (batch-mode runs)
+  if (dimScores.strategy_fit == null && ranking.strategy_fit_score != null) dimScores.strategy_fit = ranking.strategy_fit_score;
+  if (dimScores.team == null && ranking.team_score != null) dimScores.team = ranking.team_score;
+  if (dimScores.upside == null && ranking.upside_score != null) dimScores.upside = ranking.upside_score;
+  // 3. Fallback to summary_rows[0]
+  if (dimScores.strategy_fit == null && summary.strategy_fit_score != null) dimScores.strategy_fit = summary.strategy_fit_score;
+  if (dimScores.team == null && summary.team_score != null) dimScores.team = summary.team_score;
+  if (dimScores.upside == null && summary.upside_score != null) dimScores.upside = summary.upside_score;
+  return dimScores;
+}
+
+function filterSavedCompanies(companies) {
+  const query = savedCompanySearch.trim().toLowerCase();
+  if (!query) return companies;
+  return companies.filter((company) => {
+    const name = String(company.company_name || company.company_key || '').toLowerCase();
+    return name.includes(query);
+  });
+}
+
+function sortSavedCompanies(companies) {
+  const list = [...companies];
+  if (savedCompanySortMode === 'alphabetical') {
+    list.sort((a, b) => String(a.company_name || '').localeCompare(String(b.company_name || '')));
+    return list;
+  }
+  if (savedCompanySortMode === 'strategy_fit' || savedCompanySortMode === 'team' || savedCompanySortMode === 'upside') {
+    const dim = savedCompanySortMode;
+    list.sort((a, b) => {
+      const aScore = Number(getCompanyDimScores(a)[dim] ?? -999999);
+      const bScore = Number(getCompanyDimScores(b)[dim] ?? -999999);
+      return bScore - aScore;
+    });
+    return list;
+  }
+  list.sort((a, b) => {
+    const aScore = Number(a.latest_score ?? a.latest_total_score ?? -999999);
+    const bScore = Number(b.latest_score ?? b.latest_total_score ?? -999999);
+    if (aScore !== bScore) return bScore - aScore;
+    const aTs = new Date(a.latest_run_at || 0).getTime();
+    const bTs = new Date(b.latest_run_at || 0).getTime();
+    return bTs - aTs;
+  });
+  return list;
+}
+
+function getSelectedCompanyState(companies) {
+  const ordered = companies || [];
+  let company = ordered.find((item) => item.company_key === selectedCompanyKey) || null;
+  if (!company && ordered.length) {
+    company = ordered[0];
+    selectedCompanyKey = company.company_key;
+  }
+  let run = company?.runs?.find((item) => item.job_id === selectedCompanyJobId) || null;
+  if (!run && company?.runs?.length) {
+    run = company.runs[0];
+    selectedCompanyJobId = run.job_id || null;
+  }
+  return { company, run };
+}
+
+function getCompanyDetailArgumentHtml(result, type) {
+  const fromPayload = type === 'pro' ? (result.pro_arguments || []) : (result.contra_arguments || []);
+  if (fromPayload.length) {
+    return fromPayload.map((arg) => {
+      const score = arg.score ?? '';
+      const text = arg.text || arg.content || '';
+      return `<div class="arg-item"><span class="arg-score ${type}">${escapeHtml(String(score))}</span>${escapeHtml(text)}</div>`;
+    }).join('');
+  }
+
+  const summary = (result.summary_rows || [])[0] || {};
+  let html = '';
+  for (let i = 1; i <= 3; i++) {
+    const text = summary[`top_${type}_${i}`];
+    const score = summary[`top_${type}_${i}_score`];
+    if (!text) continue;
+    html += `<div class="arg-item"><span class="arg-score ${type}">${escapeHtml(String(score ?? ''))}</span>${escapeHtml(text)}</div>`;
+  }
+  return html;
+}
+
+function renderCompanyDetail(company, run) {
+  const result = run?.results || {};
+  const summary = (result.summary_rows || [])[0] || {};
+  const ranking = result.ranking_result || {};
+  const companyName = result.company_name || company?.company_name || 'Unknown company';
+  const companySlug = result.startup_slug || summary.startup_slug || company?.company_key || companyName;
+  const subtitleBits = [
+    formatRunTimestamp(run?.created_at),
+    run?.mode ? getRunModeLabel({ input_mode: run.mode }) : '',
+    run?.job_id ? `Job ${run.job_id}` : '',
+    getLlmLabel(result, run?.llm),
+  ].filter(Boolean);
+  const rank = summary.rank ?? ranking.rank ?? '';
+  const composite = ranking.composite_score ?? run?.composite_score ?? summary.composite_score ?? result.total_score ?? run?.total_score ?? '—';
+  const decisionRaw = (result.decision || run?.decision || summary.decision || '').toLowerCase();
+  const isInvest = decisionRaw.includes('invest') && !decisionRaw.includes('not');
+  const decClass = isInvest ? 'invest' : 'pass';
+  const decText = isInvest ? 'INVEST' : (decisionRaw ? String(result.decision || run?.decision || summary.decision).toUpperCase() : 'SAVED');
+  const bucket = ranking.bucket || run?.bucket || summary.bucket || '';
+  const bucketLabel = bucket === 'priority_review' ? 'Priority Review' : bucket === 'watchlist' ? 'Watchlist' : bucket ? 'Low Priority' : '';
+  const dimBars = ranking.dimension_scores?.length
+    ? buildDimensionBars(ranking.dimension_scores, typeof composite === 'number' ? composite : null)
+    : ((summary.strategy_fit_score !== undefined && summary.team_score !== undefined && summary.upside_score !== undefined)
+      ? buildDimensionBars([
+          { dimension: 'strategy_fit', adjusted_score: summary.strategy_fit_score },
+          { dimension: 'team', adjusted_score: summary.team_score },
+          { dimension: 'upside', adjusted_score: summary.upside_score },
+        ], typeof composite === 'number' ? composite : null)
+      : '');
+  const executiveSummaryBlock = buildExecutiveSummaryBlock(Object.keys(ranking).length ? ranking : summary);
+  const proHtml = getCompanyDetailArgumentHtml(result, 'pro');
+  const contraHtml = getCompanyDetailArgumentHtml(result, 'contra');
+  const personIntelHtml = renderPersonIntelSection(
+    companySlug,
+    result.team_members || result.founders || summary.team_members || summary.founders || []
+  );
+  const auditSlug = String(companySlug).replace(/"/g, '&quot;');
+  const auditButtonHtml = `<button class="btn-audit-log" data-slug="${auditSlug}">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+      View log
+    </button>`;
+
+  currentResults = result;
+
+  return `
+    <div class="results-title-row">
+      <div class="results-title">
+        <h1>${escapeHtml(companyName)}</h1>
+        <p>${escapeHtml(subtitleBits.join(' • '))}</p>
+      </div>
+      <button class="recent-run-open" data-job-open="${escapeHtml(run?.job_id || '')}">Open full run</button>
+    </div>
+    <div class="rank-card">
+      <div class="rank-top">
+        ${rank ? `<span class="rank-badge first">#${escapeHtml(String(rank))}</span>` : ''}
+        <span class="rank-name">${escapeHtml(companyName)}</span>
+        ${bucketLabel ? `<span class="bucket-badge bucket-${bucket.replace(/_/g, '-')}">${bucketLabel}</span>` : ''}
+        <span class="decision-badge ${decClass}">${escapeHtml(decText)}</span>
+        <div class="rank-top-actions">${auditButtonHtml}</div>
+      </div>
+      ${dimBars ? `<div class="dim-bars-container">${dimBars}</div>` : ''}
+      ${executiveSummaryBlock ? `<div class="executive-summary-container">${executiveSummaryBlock}</div>` : ''}
+      ${SHOW_PRO_CONTRA_ARGUMENTS && (proHtml || contraHtml) ? `<div class="args-row">
+        <div class="args-col">
+          <div class="title pro">TOP PRO ARGUMENTS</div>
+          ${proHtml || '<div class="arg-item">No pro arguments</div>'}
+        </div>
+        <div class="args-col">
+          <div class="title contra">TOP CONTRA ARGUMENTS</div>
+          ${contraHtml || '<div class="arg-item">No contra arguments</div>'}
+        </div>
+      </div>` : ''}
+      ${personIntelHtml}
+    </div>
+  `;
+}
+
+function selectCompanyRun(companyKey, jobId = null) {
+  selectedCompanyKey = companyKey;
+  selectedCompanyJobId = jobId;
+  renderSavedCompaniesWindow();
+}
+
+function getCompaniesContentEl() {
+  return $('#companies-screen-content');
+}
+
+function renderSavedCompaniesWindow() {
+  const content = getCompaniesContentEl();
+  if (!content) return;
+
+  const companies = filterSavedCompanies(sortSavedCompanies(savedCompaniesCache));
+  if (companiesPageJustOpened && companies.length > 0) {
+    companies.forEach((c) => companyRunsCollapsed.add(c.company_key));
+    companiesPageJustOpened = false;
+  }
+
+  // Save sidebar scroll position before re-render
+  const sidebar = content.querySelector('.companies-page-sidebar');
+  const savedScrollTop = sidebar ? sidebar.scrollTop : 0;
+
+  const totalCount = savedCompaniesCache.length;
+  if (!savedCompaniesCache.length) {
+    content.innerHTML = '<div class="saved-jobs-empty">PLEASE WAIT....Database is loading</div>';
+    return;
+  }
+
+  const { company: activeCompany, run: activeRun } = getSelectedCompanyState(companies);
+  const sidebarHtml = companies.map((company) => {
+    const latestRun = (company.runs || [])[0] || {};
+    const latestScore = latestRun.composite_score ?? latestRun.total_score;
+    const runs = company.runs || [];
+    const runCount = (company.runs || []).length;
+    const isSelected = company.company_key === activeCompany?.company_key;
+    const latestMode = latestRun.mode ? getRunModeLabel({ input_mode: latestRun.mode }) : '';
+    const summaryBits = [
+      `${runCount} run${runCount === 1 ? '' : 's'}`,
+      latestMode,
+    ].filter(Boolean);
+    const scoreDisplay = latestScore === null || latestScore === undefined || latestScore === ''
+      ? '—'
+      : Number(latestScore).toFixed(1);
+    const isExpanded = !companyRunsCollapsed.has(company.company_key);
+    const runsHtml = isExpanded && runs.length
+      ? `<div class="saved-company-runs">${runs.map((run, index) => {
+          const runScore = run.composite_score ?? run.total_score;
+          const runScoreDisplay = runScore === null || runScore === undefined || runScore === ''
+            ? '—'
+            : Number(runScore).toFixed(1);
+          const runBits = [
+            formatRunTimestamp(run.created_at),
+            run.mode ? getRunModeLabel({ input_mode: run.mode }) : '',
+            run.job_id ? `Job ${run.job_id}` : '',
+            getLlmLabel(run?.results, run?.llm),
+          ].filter(Boolean);
+          const isActiveRun = run.job_id === activeRun?.job_id;
+          return `<button type="button" class="saved-company-run${isActiveRun ? ' selected' : ''}" data-company-run-open="${escapeHtml(company.company_key)}" data-job-id="${escapeHtml(run.job_id || '')}">
+            <div class="saved-company-run-main">
+              <div class="saved-company-run-title">Run ${runs.length - index}</div>
+              <div class="saved-company-run-summary">${escapeHtml(runBits.join('  •  '))}</div>
+            </div>
+            <div class="saved-company-run-score${runScoreDisplay === '—' ? ' is-empty' : ''}">${escapeHtml(runScoreDisplay)}</div>
+          </button>`;
+        }).join('')}</div>`
       : '';
-    const openDisabled = isUnavailable ? ' disabled' : '';
-    return `<div class="recent-run-card">
-      <div class="recent-run-meta">
-        <div class="recent-run-title">${getRunTitle(run)}</div>
-        <div class="recent-run-subtitle">${subtitle}</div>
-        ${llmLine}
+
+    return `<div class="saved-company-card${isSelected ? ' selected' : ''}" data-company-select="${escapeHtml(company.company_key)}">
+      <div class="saved-company-header">
+        <div class="saved-company-main">
+          <div class="saved-company-name">${escapeHtml(company.company_name || 'Unknown company')}</div>
+          <div class="saved-company-summary">${escapeHtml(summaryBits.join('  •  '))}</div>
+        </div>
+        <div class="saved-company-score${scoreDisplay === '—' ? ' is-empty' : ''}">${escapeHtml(scoreDisplay)}</div>
       </div>
-      <div class="recent-run-actions">
-        <span class="recent-run-status ${status}">${status}</span>
-        ${viewLogBtn}
-        <button class="recent-run-open" data-job-open="${run.jobId}"${openDisabled}>${actionLabel}</button>
-      </div>
+      ${runsHtml}
     </div>`;
   }).join('');
 
-  $$('[data-job-open]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      if (btn.disabled) return;
-      openSavedRun(String(btn.dataset.jobOpen || ''));
+  const detailHtml = activeCompany && activeRun
+    ? renderCompanyDetail(activeCompany, activeRun)
+    : '<div class="companies-page-empty">Select a company on the left to view its scoring.</div>';
+
+  content.innerHTML = `<div class="companies-page">
+    <div class="companies-page-sidebar">
+      <div class="companies-sidebar-shell">
+        <div class="companies-sidebar-head">
+          <div class="companies-sidebar-head-row">
+            <div class="companies-sidebar-title">Companies</div>
+            <div class="companies-sidebar-count">${companies.length}${companies.length !== totalCount ? `<span class="companies-sidebar-count-total"> / ${totalCount}</span>` : ''}</div>
+          </div>
+          <div class="companies-sidebar-search-wrap">
+            <span class="companies-sidebar-search-icon">⌕</span>
+            <input id="companies-search-input" class="companies-sidebar-search-input" type="text" placeholder="Search companies…" autocomplete="off" value="${escapeHtml(savedCompanySearch)}">
+            ${savedCompanySearch ? `<button class="companies-sidebar-search-clear" id="companies-search-clear" title="Clear">✕</button>` : ''}
+          </div>
+          <label class="companies-sidebar-sort" for="companies-sort-select">
+            <span class="companies-sidebar-sort-icon">⇅</span>
+            <select id="companies-sort-select" class="companies-sidebar-sort-select">
+              <option value="top_scored">TOP SCORED</option>
+              <option value="alphabetical">ALPHABETICAL</option>
+              <option value="strategy_fit">STRATEGY FIT</option>
+              <option value="team">TEAM</option>
+              <option value="upside">POTENTIAL</option>
+            </select>
+          </label>
+        </div>
+        <div class="companies-page-list">${sidebarHtml}</div>
+      </div>
+    </div>
+    <div class="companies-page-detail">${detailHtml}</div>
+  </div>`;
+
+  // Restore sidebar scroll position after re-render
+  const newSidebar = content.querySelector('.companies-page-sidebar');
+  if (newSidebar) newSidebar.scrollTop = savedScrollTop;
+
+  bindSavedJobActions(content);
+  const sortSelect = content.querySelector('#companies-sort-select');
+  if (sortSelect) {
+    sortSelect.value = savedCompanySortMode;
+    sortSelect.addEventListener('change', (event) => {
+      savedCompanySortMode = event.target.value || DEFAULT_SAVED_COMPANY_SORT;
+      renderSavedCompaniesWindow();
+    });
+  }
+  const searchInput = content.querySelector('#companies-search-input');
+  if (searchInput) {
+    searchInput.addEventListener('input', (event) => {
+      savedCompanySearch = event.target.value;
+      const cursorPos = searchInput.selectionStart;
+      clearTimeout(savedCompanySearchDebounce);
+      savedCompanySearchDebounce = setTimeout(() => {
+        renderSavedCompaniesWindow();
+        const newInput = getCompaniesContentEl()?.querySelector('#companies-search-input');
+        if (newInput) {
+          newInput.focus();
+          newInput.setSelectionRange(cursorPos, cursorPos);
+        }
+        savedCompanySearchDebounce = null;
+      }, 150);
+    });
+    if (savedCompanySearch) {
+      searchInput.focus();
+      searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+    }
+  }
+  const searchClear = content.querySelector('#companies-search-clear');
+  if (searchClear) {
+    searchClear.addEventListener('click', () => {
+      savedCompanySearch = '';
+      renderSavedCompaniesWindow();
+    });
+  }
+  content.querySelectorAll('[data-company-select]').forEach((el) => {
+    el.addEventListener('click', (event) => {
+      const key = el.dataset.companySelect || '';
+      if (companyRunsCollapsed.has(key)) {
+        companyRunsCollapsed.delete(key);
+        selectCompanyRun(key, null);
+      } else {
+        companyRunsCollapsed.add(key);
+        renderSavedCompaniesWindow();
+      }
     });
   });
-  $$('[data-job-log]').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      showProgressLogModal(btn.dataset.jobLog);
+  content.querySelectorAll('[data-company-run-open]').forEach((el) => {
+    el.addEventListener('click', (event) => {
+      event.stopPropagation();
+      selectCompanyRun(el.dataset.companyRunOpen || '', el.dataset.jobId || null);
     });
   });
+}
+
+async function fetchSavedJobs({ silent = true } = {}) {
+  try {
+    const data = await api('/api/jobs', { timeoutMs: 12000, retries: 1 });
+    savedJobsCache = (data.jobs || []).map((job) => ({
+      jobId: job.job_id,
+      status: job.status || 'pending',
+      progress: job.progress || '',
+      createdAt: job.created_at || null,
+      input_mode: job.input_mode || null,
+      useWebSearch: job.use_web_search === true,
+      results: job.results || null,
+      llm: job.llm || null,
+    }));
+    renderRecentRuns();
+    renderSavedJobsWindow();
+    renderAnalysisHistoryScreen();
+    return savedJobsCache;
+  } catch (err) {
+    if (!silent) {
+      const message = `<div class="saved-jobs-empty">${escapeHtml(err.message || 'Failed to load saved jobs.')}</div>`;
+      const activeScreenId = getActiveScreenId();
+      if (activeScreenId === 'analysis-screen') {
+        const content = getAnalysisContentEl();
+        if (content) content.innerHTML = message;
+      } else {
+        const content = getCompaniesContentEl();
+        if (content) content.innerHTML = message;
+      }
+    }
+    return [];
+  }
+}
+
+async function fetchSavedCompanies({ silent = true } = {}) {
+  try {
+    const data = await api('/api/company-runs', { timeoutMs: 12000, retries: 1 });
+    savedCompaniesCache = data.companies || [];
+    renderSavedCompaniesWindow();
+    return savedCompaniesCache;
+  } catch (err) {
+    if (!silent) {
+      const content = getCompaniesContentEl();
+      if (content) content.innerHTML = `<div class="saved-jobs-empty">${escapeHtml(err.message || 'Failed to load company history.')}</div>`;
+    }
+    return [];
+  }
+}
+
+function openCompaniesPage() {
+  const activeScreenId = getActiveScreenId();
+  if (activeScreenId && activeScreenId !== 'companies-screen') previousScreenBeforeCompanies = activeScreenId;
+  companiesPageJustOpened = true;
+  const sortSelect = $('#companies-sort-select');
+  if (sortSelect) sortSelect.value = savedCompanySortMode;
+  showScreen('companies-screen');
+  renderSavedCompaniesWindow();
+  fetchSavedCompanies({ silent: false });
+}
+
+function openAnalysisPage() {
+  const activeScreenId = getActiveScreenId();
+  if (activeScreenId && activeScreenId !== 'analysis-screen') previousScreenBeforeAnalysis = activeScreenId;
+  showScreen('analysis-screen');
+  renderAnalysisHistoryScreen();
+  fetchSavedJobs({ silent: false });
+}
+
+function openInfoPage(page = 'how-it-works') {
+  const activeScreenId = getActiveScreenId();
+  if (activeScreenId && activeScreenId !== 'info-screen') previousScreenBeforeInfo = activeScreenId;
+  showScreen('info-screen');
+  renderInfoScreen(page);
+}
+
+function closeCompaniesPage() {
+  const fallbackScreen = previousScreenBeforeCompanies === 'companies-screen'
+    ? 'upload-screen'
+    : (previousScreenBeforeCompanies || 'upload-screen');
+  showScreen(fallbackScreen);
+}
+
+function closeAnalysisPage() {
+  const fallbackScreen = previousScreenBeforeAnalysis === 'analysis-screen'
+    ? 'upload-screen'
+    : (previousScreenBeforeAnalysis || 'upload-screen');
+  showScreen(fallbackScreen);
+}
+
+function closeInfoPage() {
+  const fallbackScreen = previousScreenBeforeInfo === 'info-screen'
+    ? 'upload-screen'
+    : (previousScreenBeforeInfo || 'upload-screen');
+  showScreen(fallbackScreen);
+}
+
+function syncRoute() {
+  if (!sessionId) {
+    showScreen('password-screen');
+    return;
+  }
+  const activeScreenId = getActiveScreenId();
+  if (!activeScreenId || activeScreenId === 'password-screen') {
+    openCompaniesPage();
+  }
 }
 
 async function api(path, opts = {}) {
@@ -1660,10 +3763,10 @@ function renderPersonProfileReport(result, fallbackName) {
 
   const apifyError = result?.diagnostics?.apify_error;
   const dataSourcesHtml = sourceParts.length
-    ? `<div class="person-report-sources" style="font-size:0.85em;color:var(--text-dim);margin-top:0.5em">Data from: ${escapeHtml(sourceParts.join(', ') || 'none')}</div>`
+    ? `<div class="person-report-sources">Data from: ${escapeHtml(sourceParts.join(', ') || 'none')}</div>`
     : '';
   const apifyErrorHtml = apifyError
-    ? `<div class="person-report-apify-error" style="font-size:0.85em;color:var(--orange);margin-top:0.25em">Apify failed: ${escapeHtml(apifyError)}</div>`
+    ? `<div class="person-report-error">Apify failed: ${escapeHtml(apifyError)}</div>`
     : '';
 
   return `
@@ -1689,6 +3792,9 @@ function renderPersonProfileReport(result, fallbackName) {
 }
 
 function getTeamMembersForSlug(slug) {
+  if (Array.isArray(renderedTeamMembersBySlug[slug]) && renderedTeamMembersBySlug[slug].length) {
+    return renderedTeamMembersBySlug[slug];
+  }
   if (!currentResults) return [];
   const bySlug = currentResults.team_members_by_slug || currentResults.founders_by_slug || {};
   if (currentResults.mode === 'single') {
@@ -1699,6 +3805,7 @@ function getTeamMembersForSlug(slug) {
 
 function renderPersonIntelSection(slug, founders) {
   const list = Array.isArray(founders) ? founders : [];
+  renderedTeamMembersBySlug[slug] = list;
   const memberCards = list.map((m, idx) => `
     <button class="team-member-pill" data-person-member="${slug}" data-member-index="${idx}" title="${escapeHtml(m.role || '')}">
       ${escapeHtml(m.full_name || `Team Member ${idx + 1}`)}${m.role ? ` · ${escapeHtml(m.role)}` : ''}
@@ -1857,47 +3964,227 @@ async function startPersonIntelForMember(slug, member) {
 }
 
 function setSpinnerActive() {
-  const spinner = document.querySelector('.spinner');
-  if (spinner) spinner.style.borderTopColor = 'var(--green)';
+  const fill = $('#progress-bar-fill');
+  if (!fill) return;
+  fill.classList.remove('error', 'done');
+  if (!fill.style.width || fill.style.width === '0%') {
+    fill.classList.add('indeterminate');
+  }
 }
 
 function setSpinnerError() {
-  const spinner = document.querySelector('.spinner');
-  if (spinner) spinner.style.borderTopColor = 'var(--red)';
+  const fill = $('#progress-bar-fill');
+  if (!fill) return;
+  fill.classList.remove('indeterminate', 'done');
+  fill.classList.add('error');
+  fill.style.width = '100%';
+  const pct = $('#progress-bar-pct');
+  if (pct) pct.textContent = '';
 }
 
-function renderProgressFeed(log) {
-  const feedEl = $('#progress-feed');
-  if (!feedEl) return;
-  feedEl.style.display = 'block';
-  if (!log || log.length === 0) {
-    feedEl.innerHTML = '<div class="progress-feed-line progress-feed-placeholder">Progress log will appear here as the analysis runs.</div>';
-    return;
+function updateProgressBar(log) {
+  const fill = $('#progress-bar-fill');
+  const pct = $('#progress-bar-pct');
+  if (!fill || !log || log.length === 0) return;
+
+  // Parse the latest log messages to compute real progress.
+  // Single company: [1/4]=5%, [2/4]=15%, [3/4]=20-80% (with Q&A sub-progress), [4/4]=80-95%, Finalizing=95%
+  // Batch (i/N): each company contributes a 1/N slice; within each slice, same [1/4]..[4/4] stages.
+  const lastMsg = log[log.length - 1] || '';
+
+  // Detect batch mode: "Analyzing X (i/N) — ..."
+  const batchMatch = lastMsg.match(/\((\d+)\/(\d+)\)/);
+  let batchIndex = 1, batchTotal = 1;
+  let isBatch = false;
+  // Scan from end to find the latest "(i/N)" pattern that is a batch marker (not Q&A)
+  for (let i = log.length - 1; i >= 0; i--) {
+    const m = log[i].match(/^Analyzing .+? \((\d+)\/(\d+)\)/);
+    if (m) {
+      batchIndex = parseInt(m[1]);
+      batchTotal = parseInt(m[2]);
+      isBatch = batchTotal > 1;
+      break;
+    }
   }
-  feedEl.innerHTML = log.map((msg) => {
-    const div = document.createElement('div');
-    div.className = 'progress-feed-line';
-    div.textContent = msg;
-    return div.outerHTML;
+
+  // Determine stage progress within a single company analysis
+  let stageProgress = 0; // 0-100 within one company
+  if (/Finalizing/i.test(lastMsg)) {
+    stageProgress = 97;
+  } else {
+    const stepMatch = lastMsg.match(/\[(\d+)\/(\d+)\]/);
+    if (stepMatch) {
+      const step = parseInt(stepMatch[1]);
+      const totalSteps = parseInt(stepMatch[2]);
+      // Step weight map: [1/4]=5-15, [2/4]=15-20, [3/4]=20-80, [4/4]=80-95
+      const stepStart = { 1: 2, 2: 15, 3: 20, 4: 80 };
+      const stepEnd   = { 1: 15, 2: 20, 3: 80, 4: 95 };
+      const start = stepStart[step] ?? (((step - 1) / totalSteps) * 95);
+      const end = stepEnd[step] ?? ((step / totalSteps) * 95);
+
+      // For step 3, parse Q&A sub-progress "(current/total Q&A)"
+      let subProgress = 0.5; // default midpoint
+      if (step === 3) {
+        const qaMatch = lastMsg.match(/\((\d+)\/(\d+)\s*Q&A\)/);
+        if (qaMatch) {
+          subProgress = parseInt(qaMatch[1]) / parseInt(qaMatch[2]);
+        } else if (/Starting|Decomposing/i.test(lastMsg)) {
+          subProgress = 0.1;
+        }
+      } else if (step === 4) {
+        // Heartbeat: "(Xs elapsed, timeout Ys)"
+        const hbMatch = lastMsg.match(/\((\d+)s elapsed,\s*timeout (\d+)s\)/);
+        if (hbMatch) {
+          subProgress = Math.min(0.9, parseInt(hbMatch[1]) / parseInt(hbMatch[2]));
+        } else {
+          subProgress = 0.1;
+        }
+      }
+      stageProgress = start + (end - start) * subProgress;
+    }
+  }
+
+  // Compute overall percentage
+  let overall;
+  if (isBatch) {
+    const perCompany = 95 / batchTotal;
+    const baseProgress = (batchIndex - 1) * perCompany;
+    overall = Math.round(baseProgress + (stageProgress / 100) * perCompany);
+    if (/Finalizing batch/i.test(lastMsg)) overall = 96;
+  } else {
+    overall = Math.round(stageProgress);
+  }
+  overall = Math.max(1, Math.min(overall, 98));
+
+  fill.classList.remove('indeterminate');
+  fill.style.width = overall + '%';
+  if (pct) pct.textContent = overall + '%';
+}
+
+function setProgressDone() {
+  const fill = $('#progress-bar-fill');
+  const pct = $('#progress-bar-pct');
+  if (!fill) return;
+  fill.classList.remove('indeterminate', 'error');
+  fill.classList.add('done');
+  fill.style.width = '100%';
+  if (pct) pct.textContent = '100%';
+}
+
+function resetProgressBar() {
+  const fill = $('#progress-bar-fill');
+  const pct = $('#progress-bar-pct');
+  if (fill) {
+    fill.classList.remove('error', 'done');
+    fill.classList.add('indeterminate');
+    fill.style.width = '';
+  }
+  if (pct) pct.textContent = '';
+}
+
+function deriveProcessingView(log = [], progressText = '', status = 'running') {
+  const messages = Array.isArray(log) ? [...log] : [];
+  if (progressText) messages.push(progressText);
+  const history = messages.join('\n');
+  const historyLower = history.toLowerCase();
+  const progressLower = String(progressText || '').toLowerCase();
+  const normalizedStatus = String(status || 'running').toLowerCase();
+
+  let companyIndex = 0;
+  let companyTotal = 0;
+  let companyName = '';
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const match = messages[i].match(/^Analyzing\s+(.+?)\s+\((\d+)\/(\d+)\)/i);
+    if (match) {
+      companyName = match[1].trim();
+      companyIndex = parseInt(match[2], 10);
+      companyTotal = parseInt(match[3], 10);
+      break;
+    }
+  }
+
+  const isBatch = companyTotal > 1 || /specter|batch/.test(historyLower);
+  const parsingLabel = /csv|excel|specter|people/.test(historyLower)
+    ? 'Parsing company and people CSV files'
+    : 'Parsing uploaded files';
+  const steps = [
+    'Preparing upload',
+    parsingLabel,
+    'Running evidence retrieval',
+    'Generating arguments',
+    'Ranking companies',
+  ];
+
+  let activeStage = 0;
+  const hasMessages = messages.length > 0;
+  const hasLeftUpload = hasMessages || !/(uploading|starting analysis|loading saved run|reconnecting)/.test(progressLower);
+  if (hasLeftUpload) activeStage = 1;
+  if (/(csv|excel|specter|parse|parsing|spreadsheet|workbook|people export|company export)/.test(historyLower)) activeStage = Math.max(activeStage, 1);
+  if (/\[(1|2)\/4\]|evidence|retriev|search|apify|linkedin|crawl|collecting|web fallback|analyzing\s+.+\(\d+\/\d+\)/.test(historyLower)) activeStage = Math.max(activeStage, 2);
+  if (/\[3\/4\]|\bq&a\b|argument|arguments|decomposing|synthes|reasoning/.test(historyLower)) activeStage = Math.max(activeStage, 3);
+  if (/\[4\/4\]|ranking|ranked|rank companies|scoring|composite|finalizing/.test(historyLower)) activeStage = Math.max(activeStage, 4);
+
+  if (normalizedStatus === 'done') {
+    activeStage = steps.length;
+  } else if (normalizedStatus === 'stopped' || normalizedStatus === 'error') {
+    activeStage = Math.min(activeStage, steps.length - 1);
+  }
+
+  const renderedSteps = steps.map((label, idx) => {
+    let state = 'upcoming';
+    if (normalizedStatus === 'done' || idx < activeStage) {
+      state = 'done';
+    } else if (idx === activeStage) {
+      state = normalizedStatus === 'error' ? 'error' : normalizedStatus === 'stopped' ? 'stopped' : 'active';
+    }
+    return { label, state };
+  });
+
+  let companyLabel = '';
+  if (companyTotal > 1) {
+    companyLabel = `Company ${companyIndex || 1} of ${companyTotal}`;
+    if (companyName) companyLabel += ` · ${companyName}`;
+  } else if (companyName) {
+    companyLabel = companyName;
+  }
+
+  return { steps: renderedSteps, companyLabel, isBatch };
+}
+
+function renderProgressFeed(log, progressText = '', status = 'running') {
+  const listEl = $('#processing-stage-list');
+  const companyMetaEl = $('#processing-company-meta');
+  if (!listEl) return;
+
+  const view = deriveProcessingView(log, progressText, status);
+  if (companyMetaEl) {
+    companyMetaEl.textContent = view.companyLabel || '';
+  }
+
+  listEl.innerHTML = view.steps.map((step) => {
+    const indicator = step.state === 'done'
+      ? '<span class="processing-stage-check" aria-hidden="true"></span>'
+      : step.state === 'active'
+        ? '<span class="processing-stage-spinner" aria-hidden="true"></span>'
+        : '';
+    return `
+      <div class="processing-stage-row is-${step.state === 'stopped' || step.state === 'error' ? 'active' : step.state}">
+        <span class="processing-stage-indicator">${indicator}</span>
+        <span class="processing-stage-label">${escapeHtml(step.label)}</span>
+      </div>
+    `;
   }).join('');
-  feedEl.scrollTop = feedEl.scrollHeight;
+
+  updateProgressBar(log);
 }
 
 function setProcessingControls(status) {
-  const pauseBtn = $('#pause-btn');
   const stopBtn = $('#stop-btn');
-  if (!pauseBtn || !stopBtn) return;
+  if (!stopBtn) return;
 
   const s = (status || '').toLowerCase();
   const isDoneLike = s === 'done' || s === 'error' || s === 'stopped';
-  pauseBtn.disabled = isDoneLike;
   stopBtn.disabled = isDoneLike;
-
-  if (s === 'paused') {
-    pauseBtn.textContent = 'Resume';
-  } else {
-    pauseBtn.textContent = 'Pause';
-  }
 }
 
 async function controlCurrentJob(action) {
@@ -1923,7 +4210,7 @@ $('#login-form').addEventListener('submit', async (e) => {
     sessionId = data.session_id;
     localStorage.setItem('session_id', sessionId);
     setCookie('session_id', sessionId);
-    showScreen('upload-screen');
+    syncRoute();
     checkWebSearchAvailable();
     renderRecentRuns();
     backfillRecentRunsWithLlm();
@@ -1955,10 +4242,11 @@ async function resumeActiveJob() {
 
   persistActiveJob(savedJobId);
   showScreen('processing-screen');
+  resetProgressBar();
   setSpinnerActive();
   setProcessingControls('running');
-  renderProgressFeed([]);
   $('#processing-status').textContent = 'Reconnecting to your running analysis...';
+  renderProgressFeed([], 'Reconnecting to your running analysis...', 'running');
 
   try {
     const data = await api(`/api/status/${savedJobId}`, { timeoutMs: 10000, retries: 0 });
@@ -1969,11 +4257,12 @@ async function resumeActiveJob() {
       results: data.results || null,
       llm: data.llm ?? undefined,
     });
-    if (data.status === 'done' && data.results) {
+    if ((data.status === 'done' || data.status === 'stopped') && data.results) {
       try {
         renderResults(data.results);
         showScreen('results-screen');
-        persistActiveJob(savedJobId);
+        if (data.status === 'done') persistActiveJob(savedJobId);
+        else persistActiveJob(null);
         return true;
       } catch (renderErr) {
         console.error('resumeActiveJob: failed to render results:', renderErr);
@@ -1984,21 +4273,21 @@ async function resumeActiveJob() {
       $('#processing-status').textContent = data.progress || 'Analysis failed.';
       setSpinnerError();
       setProcessingControls('error');
-      renderProgressFeed(data.progress_log || []);
+      renderProgressFeed(data.progress_log || [], data.progress || 'Analysis failed.', 'error');
       return true;
     }
     if (data.status === 'stopped') {
       $('#processing-status').textContent = data.progress || 'Analysis stopped.';
       setSpinnerError();
       setProcessingControls('stopped');
-      renderProgressFeed(data.progress_log || []);
+      renderProgressFeed(data.progress_log || [], data.progress || 'Analysis stopped.', 'stopped');
       persistActiveJob(null);
       return true;
     }
 
     $('#processing-status').textContent = data.progress || 'Resuming analysis...';
     setProcessingControls(data.status || 'running');
-    renderProgressFeed(data.progress_log || []);
+    renderProgressFeed(data.progress_log || [], data.progress || 'Resuming analysis...', data.status || 'running');
     pollStatus.failures = 0;
     pollStatus();
     return true;
@@ -2014,7 +4303,7 @@ async function resumeActiveJob() {
       });
       renderRecentRuns();
     }
-    showScreen('upload-screen');
+    openCompaniesPage();
     return false;
   }
 }
@@ -2023,9 +4312,9 @@ async function openSavedRun(jobId) {
   if (!jobId || jobId === 'null' || jobId === 'undefined') return;
   persistActiveJob(jobId);
 
-  const runs = loadRecentRuns();
+  const runs = mergeSavedAndRecentRuns();
   const run = runs.find((r) => r.jobId === jobId);
-  if (run?.status === 'done' && run.results) {
+  if ((run?.status === 'done' || run?.status === 'stopped') && run.results) {
     try {
       renderResults(run.results);
       showScreen('results-screen');
@@ -2036,6 +4325,7 @@ async function openSavedRun(jobId) {
   }
 
   showScreen('processing-screen');
+  resetProgressBar();
   $('#processing-status').textContent = 'Loading saved run...';
   await resumeActiveJob();
 }
@@ -2049,16 +4339,19 @@ async function openSavedRun(jobId) {
       if (data.authenticated) {
         checkWebSearchAvailable();
         renderRecentRuns();
+        renderSavedCompaniesWindow();
+        fetchSavedJobs();
+        fetchSavedCompanies();
         backfillRecentRunsWithLlm();
         const resumed = await resumeActiveJob();
         if (!resumed) {
-          showScreen('upload-screen');
+          openCompaniesPage();
         }
         return;
       }
     } catch {}
   }
-  showScreen('password-screen');
+  syncRoute();
 })();
 
 // ── File Upload ──
@@ -2156,7 +4449,7 @@ uploadZone.addEventListener('drop', (e) => {
 // ── Input mode toggle ──
 const MODE_HINTS = {
   pitchdeck: 'Each file = one company. Best for multiple pitch decks.',
-  specter: 'Upload 2 files (companies first, people second). Any names. CSV or Excel.',
+  specter: 'Upload a Specter companies export, optionally with a people export. CSV or Excel; filenames do not matter.',
   original: 'All files = one company. Best for a folder of docs (deck, financials, etc.).',
 };
 function setInputMode(mode) {
@@ -2176,10 +4469,11 @@ $('#analyze-btn').addEventListener('click', async () => {
   if (uploadedFiles.length === 0) return;
 
   showScreen('processing-screen');
+  resetProgressBar();
   setSpinnerActive();
   setProcessingControls('running');
-  renderProgressFeed([]);
   $('#processing-status').textContent = 'Uploading files...';
+  renderProgressFeed([], 'Uploading files...', 'running');
 
   const formData = new FormData();
   for (const f of uploadedFiles) formData.append('files', f);
@@ -2234,6 +4528,7 @@ $('#analyze-btn').addEventListener('click', async () => {
   } catch (err) {
     setSpinnerError();
     $('#processing-status').textContent = 'Error: ' + err.message;
+    renderProgressFeed([], 'Error: ' + err.message, 'error');
   }
 });
 
@@ -2259,20 +4554,24 @@ async function pollStatus() {
       llm: data.llm ?? undefined,
     });
     const progressText = data.progress || 'Processing...';
-    if (progressText === pollStatus.lastProgress && !isTerminal) {
+    if (data.status === 'paused') {
+      pollStatus.stallTicks = 0;
+      pollStatus.lastProgress = progressText;
+      $('#processing-status').textContent = progressText;
+    } else if (progressText === pollStatus.lastProgress && !isTerminal) {
       pollStatus.stallTicks += 1;
     } else {
       pollStatus.stallTicks = 0;
       pollStatus.lastProgress = progressText;
-    }
-    if (pollStatus.stallTicks >= 20) {
-      $('#processing-status').textContent = `${progressText} (still running, waiting for next update...)`;
-    } else {
       $('#processing-status').textContent = progressText;
     }
-    renderProgressFeed(data.progress_log || []);
+    if (data.status !== 'paused' && pollStatus.stallTicks >= 20) {
+      $('#processing-status').textContent = `${progressText} (still running, waiting for next update...)`;
+    }
+    renderProgressFeed(data.progress_log || [], $('#processing-status').textContent || progressText, data.status || 'running');
 
     if (data.status === 'done') {
+      setProgressDone();
       try {
         renderResults(data.results);
         showScreen('results-screen');
@@ -2299,6 +4598,19 @@ async function pollStatus() {
       setSpinnerError();
       setProcessingControls('error');
     } else if (data.status === 'stopped') {
+      if (data.results) {
+        try {
+          renderResults(data.results);
+          showScreen('results-screen');
+          setProcessingControls('stopped');
+          persistActiveJob(null);
+          pollStatus.lastProgress = '';
+          pollStatus.stallTicks = 0;
+          return;
+        } catch (renderErr) {
+          console.error('Failed to render stopped results:', renderErr);
+        }
+      }
       $('#processing-status').textContent = data.progress || 'Analysis stopped by user.';
       setSpinnerError();
       setProcessingControls('stopped');
@@ -2389,7 +4701,8 @@ function buildDimensionBars(dimScores, compositeScore = null) {
   rows += dimScores.map(d => {
     const pct = Math.min(100, Math.round(d.adjusted_score || 0));
     const label = getDimensionLabel(d.dimension);
-    return `<div class="dim-bar-row"><span class="dim-label">${label}</span><div class="dim-bar-bg"><div class="dim-bar-fill" style="width:${pct}%"></div></div><span class="dim-value">${pct}</span></div>`;
+    const dimClass = String(d.dimension || '').replace(/_/g, '-');
+    return `<div class="dim-bar-row ${dimClass}"><span class="dim-label">${label}</span><div class="dim-bar-bg"><div class="dim-bar-fill" style="width:${pct}%"></div></div><span class="dim-value">${pct}</span></div>`;
   }).join('');
   return rows;
 }
@@ -2435,23 +4748,29 @@ function buildExecutiveSummaryBlock(rr) {
   return html;
 }
 
+function getLlmLabel(payload, fallback = '') {
+  return payload?.llm || fallback || '';
+}
+
 function renderSingleResult(r) {
+  renderedTeamMembersBySlug = {};
   const sortWrap = $('#rankings-sort-wrap');
   if (sortWrap) sortWrap.style.display = 'none';
 
+  const subtitleBits = [
+    r.industry || '',
+    Number.isFinite(Number(r.num_documents)) ? `${r.num_documents} documents` : '',
+    Number.isFinite(Number(r.num_arguments)) ? `${r.num_arguments} arguments` : '',
+    getLlmLabel(r),
+  ].filter(Boolean);
   $('#results-subtitle').textContent =
-    `${r.company_name} — ${r.industry} · ${r.num_documents} documents · ${r.num_arguments} arguments`;
+    [r.company_name, subtitleBits.join(' · ')].filter(Boolean).join(' — ');
 
   const rank = r.ranking_result?.rank;
   const composite = r.ranking_result?.composite_score;
   const bucket = r.ranking_result?.bucket || '';
 
-  $('#stats-row').innerHTML = `
-    <div class="stat-card"><div class="stat-value">${r.num_documents}</div><div class="stat-label">Documents Processed</div></div>
-    <div class="stat-card"><div class="stat-value green">${composite !== undefined ? composite : r.total_score}</div><div class="stat-label">${composite !== undefined ? 'Composite Score' : 'Total Score'}</div></div>
-    <div class="stat-card"><div class="stat-value">${r.num_chunks}</div><div class="stat-label">Evidence Chunks</div></div>
-    <div class="stat-card"><div class="stat-value">${r.num_arguments}</div><div class="stat-label">Arguments Generated</div></div>
-  `;
+  $('#stats-row').innerHTML = '';
 
   const isInvest = r.decision.toLowerCase().includes('invest') && !r.decision.toLowerCase().includes('not');
   const decClass = isInvest ? 'invest' : 'pass';
@@ -2511,6 +4830,7 @@ function renderSingleResult(r) {
 }
 
 function renderBatchResults(r) {
+  renderedTeamMembersBySlug = {};
   const sortWrap = $('#rankings-sort-wrap');
   const sortSelect = $('#rankings-sort-select');
   if (sortWrap) sortWrap.style.display = 'inline-flex';
@@ -2523,19 +4843,19 @@ function renderBatchResults(r) {
   const sourceRows = r.summary_rows || [];
   const rows = sortSummaryRows(sourceRows, rankingsSortMode);
   const skipped = r.num_skipped || 0;
+  const failedRows = r.failed_rows || [];
+  const batchSubtitleBits = [
+    'Specter batch analysis',
+    getLlmLabel(r),
+  ].filter(Boolean);
   $('#results-subtitle').textContent =
-    `${rows.length} companies ranked${skipped ? ` (${skipped} skipped)` : ''} — Specter batch analysis`;
+    `${rows.length} companies ranked${skipped ? ` (${skipped} skipped)` : ''} — ${batchSubtitleBits.join(' · ')}`;
 
   const topComposite = sourceRows.length > 0
     ? sourceRows.reduce((best, row) => Math.max(best, _safeCompositeForSort(row)), Number.NEGATIVE_INFINITY)
     : Number.NEGATIVE_INFINITY;
   const topCompositeDisplay = Number.isFinite(topComposite) ? topComposite : '—';
-  $('#stats-row').innerHTML = `
-    <div class="stat-card"><div class="stat-value">${rows.length}</div><div class="stat-label">Companies Ranked</div></div>
-    <div class="stat-card"><div class="stat-value green">${topCompositeDisplay}</div><div class="stat-label">Top Composite</div></div>
-    <div class="stat-card"><div class="stat-value">${skipped}</div><div class="stat-label">Skipped</div></div>
-    <div class="stat-card"><div class="stat-value">${(r.argument_rows || []).length}</div><div class="stat-label">Total Arguments</div></div>
-  `;
+  $('#stats-row').innerHTML = '';
 
   let cardsHtml = rows.map((row, i) => {
     const isInvest = (row.decision || '').toLowerCase().includes('invest') && !(row.decision || '').toLowerCase().includes('not');
@@ -2609,7 +4929,24 @@ function renderBatchResults(r) {
     `;
   }).join('');
 
-  $('#rankings-container').innerHTML = cardsHtml || '<p style="color:var(--text-dim)">No companies were successfully evaluated.</p>';
+  const failedHtml = failedRows.length
+    ? `<div class="rank-card rank-card--failed">
+        <div class="rank-top">
+          <span class="rank-name">Skipped Companies</span>
+        </div>
+        <div class="failed-companies-list">
+          ${failedRows.map((row) => `
+            <div>
+              <strong class="failed-company-name">${escapeHtml(row.company_name || row.startup_slug || 'Unknown')}</strong>
+              <div style="margin-top:4px;font-size:13px;white-space:pre-wrap">${escapeHtml(row.error || 'Unknown error')}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>`
+    : '';
+
+  $('#rankings-container').innerHTML =
+    (cardsHtml || '<p style="color:var(--text-dim)">No companies were successfully evaluated.</p>') + failedHtml;
 }
 
 function showAuditLog(slug) {
@@ -2796,7 +5133,7 @@ async function showProgressLogModal(jobId) {
   await fetchAndRenderProgressLog(jobId);
 }
 
-$('#rankings-container').addEventListener('click', (e) => {
+document.addEventListener('click', (e) => {
   const toggleEl = e.target.closest('[data-person-toggle][data-person-entry-index]');
   if (toggleEl) {
     const slug = toggleEl.getAttribute('data-person-toggle');
@@ -2879,6 +5216,20 @@ $('#progress-log-modal-close').addEventListener('click', hideProgressLogModal);
 $('#progress-log-modal-overlay').addEventListener('click', (e) => {
   if (e.target === $('#progress-log-modal-overlay')) hideProgressLogModal();
 });
+['#saved-jobs-open-upload', '#saved-jobs-open-processing', '#saved-jobs-open-results'].forEach((sel) => {
+  const el = $(sel);
+  if (el) el.addEventListener('click', openCompaniesPage);
+});
+['#analysis-open-upload', '#analysis-open-processing', '#analysis-open-results', '#analysis-open-companies'].forEach((sel) => {
+  const el = $(sel);
+  if (el) el.addEventListener('click', openAnalysisPage);
+});
+$('#info-open-how-upload')?.addEventListener('click', () => openInfoPage('how-it-works'));
+$('#info-open-docs-upload')?.addEventListener('click', () => openInfoPage('documentation'));
+$('#info-show-how-btn')?.addEventListener('click', () => renderInfoScreen('how-it-works'));
+$('#info-show-docs-btn')?.addEventListener('click', () => renderInfoScreen('documentation'));
+$('#analysis-refresh-btn').addEventListener('click', () => fetchSavedJobs({ silent: false }));
+$('#companies-refresh-btn').addEventListener('click', () => fetchSavedCompanies({ silent: false }));
 $('#audit-modal-overlay').addEventListener('click', (e) => {
   if (e.target === $('#audit-modal-overlay')) hideAuditLog();
 });
@@ -2922,20 +5273,6 @@ $('#download-btn').addEventListener('click', () => {
   if (currentJobId) window.location.href = `/api/download/${currentJobId}`;
 });
 
-$('#pause-btn').addEventListener('click', async () => {
-  const btn = $('#pause-btn');
-  const action = (btn.textContent || '').toLowerCase().includes('resume') ? 'resume' : 'pause';
-  btn.disabled = true;
-  try {
-    await controlCurrentJob(action);
-    pollStatus();
-  } catch (err) {
-    $('#processing-status').textContent = err?.message || 'Failed to update job state.';
-  } finally {
-    btn.disabled = false;
-  }
-});
-
 $('#stop-btn').addEventListener('click', async () => {
   const btn = $('#stop-btn');
   btn.disabled = true;
@@ -2948,13 +5285,18 @@ $('#stop-btn').addEventListener('click', async () => {
   }
 });
 
-$('#new-analysis-btn').addEventListener('click', () => {
+function openNewAnalysis() {
   uploadedFiles = [];
   renderFiles();
   persistActiveJob(null);
   renderRecentRuns();
+  previousScreenBeforeCompanies = 'upload-screen';
   showScreen('upload-screen');
-});
+}
+
+$('#new-analysis-btn').addEventListener('click', openNewAnalysis);
+$('#new-analysis-btn-companies').addEventListener('click', openNewAnalysis);
+$('#new-analysis-btn-history').addEventListener('click', openNewAnalysis);
 
 window.addEventListener('storage', (event) => {
   if (event.key === RECENT_RUNS_KEY) {

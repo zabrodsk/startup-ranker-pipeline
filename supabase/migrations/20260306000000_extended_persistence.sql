@@ -1,4 +1,4 @@
--- Extended persistence for Startup Ranker
+-- Extended persistence for Rockaway Deal Intelligence
 -- Adds: analysis_events, job_controls, job_status_history, analysis_errors,
 --       source_files, model_executions, person_profile_jobs, and job version fields.
 

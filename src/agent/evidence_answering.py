@@ -8,7 +8,7 @@ is a FALLBACK only when the grounded answer indicates lack of evidence.
 import asyncio
 import os
 import re
-from typing import Any, Callable, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List
 
 # Timeout per LLM call to avoid indefinite hangs (e.g. API stalls, rate limits)
 LLM_ANSWER_TIMEOUT_SEC = 120
@@ -495,6 +495,7 @@ async def _answer_node_from_evidence(
     k: int = 8,
     use_web_search: bool = False,
     on_progress: Callable[[int, int], None] | None = None,
+    on_cooperate: Callable[[], Awaitable[None]] | None = None,
     progress: List[int] | None = None,
     total: int = 0,
     semaphore: asyncio.Semaphore | None = None,
@@ -508,11 +509,17 @@ async def _answer_node_from_evidence(
     Leaf nodes retrieve chunks directly. Parent nodes also retrieve chunks
     (rather than synthesizing from children) to maximize grounding.
     """
+    if on_cooperate:
+        await on_cooperate()
+
     if node.sub_nodes:
         tasks = [
             _answer_node_from_evidence(
                 child, company, store, k, use_web_search,
-                on_progress=on_progress, progress=progress, total=total,
+                on_progress=on_progress,
+                on_cooperate=on_cooperate,
+                progress=progress,
+                total=total,
                 semaphore=semaphore,
                 web_search_state=web_search_state,
                 vc_context=vc_context,
@@ -522,6 +529,9 @@ async def _answer_node_from_evidence(
             for child in node.sub_nodes
         ]
         await gather_with_concurrency(tasks, limit=MAX_CONCURRENT_LLM_CALLS)
+
+    if on_cooperate:
+        await on_cooperate()
 
     answer, provenance = await answer_question_from_evidence(
         node.question, company, store, k, use_web_search,
@@ -533,6 +543,9 @@ async def _answer_node_from_evidence(
     )
     node.answer = answer
     node.provenance = provenance
+
+    if on_cooperate:
+        await on_cooperate()
 
     if progress is not None and on_progress:
         progress[0] += 1
@@ -546,6 +559,7 @@ async def answer_all_trees_from_evidence(
     k: int = 8,
     use_web_search: bool = False,
     on_progress: Callable[[int, int], None] | None = None,
+    on_cooperate: Callable[[], Awaitable[None]] | None = None,
     vc_context: str = "",
     prompt_overrides: dict[str, Any] | None = None,
 ) -> List[Dict[str, str]]:
@@ -580,7 +594,10 @@ async def answer_all_trees_from_evidence(
     tasks = [
         _answer_node_from_evidence(
             tree.root_node, company, store, k, use_web_search,
-            on_progress=on_progress, progress=progress, total=total,
+            on_progress=on_progress,
+            on_cooperate=on_cooperate,
+            progress=progress,
+            total=total,
             semaphore=semaphore,
             web_search_state=web_search_state,
             vc_context=vc_context,

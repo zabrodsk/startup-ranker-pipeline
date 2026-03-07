@@ -1,4 +1,4 @@
-"""Run the Startup Ranker web server."""
+"""Run the Rockaway Deal Intelligence web server."""
 
 import uvicorn
 
