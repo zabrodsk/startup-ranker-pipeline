@@ -52,6 +52,54 @@ def test_detect_specter_csvs_by_headers_without_people_file(tmp_path: Path) -> N
     assert detected == {"companies": str(companies_path)}
 
 
+def test_build_single_company_specter_overlay_merges_documents_and_structured_chunks(
+    tmp_path: Path,
+) -> None:
+    companies_path = tmp_path / "companies.csv"
+    people_path = tmp_path / "people.csv"
+    notes_path = tmp_path / "notes.txt"
+
+    pd.DataFrame(
+        [
+            {
+                "Company Name": "Alpha",
+                "Industry": "SaaS",
+                "Description": "Alpha sells workflow software.",
+                "Domain": "alpha.com",
+                "Founders": '[{"specter_person_id":"p-1"}]',
+            }
+        ]
+    ).to_csv(companies_path, index=False)
+    pd.DataFrame(
+        [
+            {
+                "Specter - Person ID": "p-1",
+                "Full Name": "Alice Founder",
+                "Current Position Title": "CEO",
+                "Current Position Company Name": "Alpha",
+            }
+        ]
+    ).to_csv(people_path, index=False)
+    notes_path.write_text("Alpha also shared a customer memo and extra diligence notes.")
+
+    company, store, parsed_count = web_app._build_single_company_specter_overlay(
+        tmp_path,
+        {"companies": str(companies_path), "people": str(people_path)},
+    )
+
+    assert parsed_count == 1
+    assert company is not None
+    assert company.name == "Alpha"
+    assert company.team and company.team[0].name == "Alice Founder"
+    assert store is not None
+    assert any(chunk.source_file == "notes.txt" for chunk in store.chunks)
+    assert any(chunk.source_file == "specter-company" for chunk in store.chunks)
+    assert any(chunk.source_file == "specter-people" for chunk in store.chunks)
+    assert [chunk.chunk_id for chunk in store.chunks] == [
+        f"chunk_{idx}" for idx in range(len(store.chunks))
+    ]
+
+
 def test_build_results_payload_keeps_batch_mode_when_only_one_company_succeeds(
     tmp_path: Path,
     monkeypatch,
@@ -233,6 +281,103 @@ def test_run_specter_analysis_persists_partial_results_on_stop(
         assert job.results == web_app._results_cache[job_id]["results"]
         assert job.results["job_status"] == "stopped"
         assert job.results["summary_rows"] == [{"startup_slug": "alpha", "company_name": "Alpha"}]
+    finally:
+        web_app._jobs.pop(job_id, None)
+        web_app._job_controls.pop(job_id, None)
+        web_app._results_cache.pop(job_id, None)
+
+
+def test_run_document_analysis_passes_specter_overlay_in_multi_file_mode(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_id = "job-original-specter"
+    companies_path = tmp_path / "companies.csv"
+    people_path = tmp_path / "people.csv"
+    notes_path = tmp_path / "notes.txt"
+
+    pd.DataFrame(
+        [
+            {
+                "Company Name": "Alpha",
+                "Industry": "SaaS",
+                "Description": "Alpha sells workflow software.",
+                "Domain": "alpha.com",
+                "Founders": '[{"specter_person_id":"p-1"}]',
+            }
+        ]
+    ).to_csv(companies_path, index=False)
+    pd.DataFrame(
+        [
+            {
+                "Specter - Person ID": "p-1",
+                "Full Name": "Alice Founder",
+                "Current Position Title": "CEO",
+                "Current Position Company Name": "Alpha",
+            }
+        ]
+    ).to_csv(people_path, index=False)
+    notes_path.write_text("Alpha also shared a customer memo and extra diligence notes.")
+
+    captured: dict[str, object] = {}
+
+    async def fake_evaluate_startup(*args, **kwargs):
+        captured["initial_company"] = kwargs.get("initial_company")
+        captured["initial_store"] = kwargs.get("initial_store")
+        return {
+            "slug": "alpha",
+            "company": kwargs.get("initial_company"),
+            "evidence_store": kwargs.get("initial_store"),
+            "final_state": {"final_arguments": [], "final_decision": "invest", "ranking_result": None},
+            "skipped": False,
+        }
+
+    def fake_build_results_payload(results_list, current_job_id, upload_dir):
+        web_app._results_cache[current_job_id]["results"] = {
+            "mode": "single",
+            "company_name": "Alpha",
+        }
+
+    monkeypatch.setattr(web_app, "evaluate_startup", fake_evaluate_startup)
+    monkeypatch.setattr(web_app, "_build_results_payload", fake_build_results_payload)
+    monkeypatch.setattr(web_app, "_persist_jobs", lambda: None)
+    monkeypatch.setattr(web_app, "_persist_results_to_db", lambda job_id, results_list: None)
+    monkeypatch.setattr(web_app, "_llm_telemetry_base", lambda: {})
+
+    web_app._jobs[job_id] = web_app.AnalysisStatus(
+        job_id=job_id,
+        status="running",
+        progress="Starting...",
+        progress_log=[],
+    )
+    web_app._job_controls[job_id] = {"pause_requested": False, "stop_requested": False}
+    web_app._results_cache[job_id] = {
+        "files": [
+            {"name": companies_path.name},
+            {"name": people_path.name},
+            {"name": notes_path.name},
+        ],
+        "specter": {"companies": str(companies_path), "people": str(people_path)},
+    }
+
+    try:
+        asyncio.run(
+            web_app._run_document_analysis(
+                job_id,
+                tmp_path,
+                use_web_search=False,
+                one_company=True,
+            )
+        )
+
+        initial_company = captured["initial_company"]
+        initial_store = captured["initial_store"]
+        assert initial_company is not None
+        assert initial_company.name == "Alpha"
+        assert initial_company.team and initial_company.team[0].name == "Alice Founder"
+        assert initial_store is not None
+        assert any(chunk.source_file == "notes.txt" for chunk in initial_store.chunks)
+        assert any(chunk.source_file == "specter-company" for chunk in initial_store.chunks)
     finally:
         web_app._jobs.pop(job_id, None)
         web_app._job_controls.pop(job_id, None)

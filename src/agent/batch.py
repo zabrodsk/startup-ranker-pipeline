@@ -162,6 +162,8 @@ async def evaluate_startup(
     on_cooperate: Callable[[], Awaitable[None]] | None = None,
     vc_investment_strategy: str | None = None,
     prompt_overrides: dict[str, Any] | None = None,
+    initial_store: EvidenceStore | None = None,
+    initial_company: Company | None = None,
 ) -> Dict[str, Any]:
     """Run the full DIALECTIC pipeline for one startup folder.
 
@@ -195,7 +197,7 @@ async def evaluate_startup(
 
     # 1. Ingest
     _progress("[1/4] Ingesting files & extracting content...")
-    store = ingest_startup_folder(folder)
+    store = initial_store if initial_store is not None else ingest_startup_folder(folder)
     if not store.chunks:
         print(f"  Skipping {slug}: no extractable content found.")
         return {"slug": slug, "skipped": True}
@@ -204,11 +206,13 @@ async def evaluate_startup(
 
     # 2. Extract company info
     _progress("[2/4] Identifying company information...")
-    company = await extract_company_info(
-        store,
-        slug,
-        prompt_overrides=prompt_overrides,
-    )
+    company = initial_company
+    if company is None:
+        company = await extract_company_info(
+            store,
+            slug,
+            prompt_overrides=prompt_overrides,
+        )
     _progress(f"[2/4] {company.name} | {company.industry or 'N/A'}")
 
     # 3. Decompose questions & answer from evidence

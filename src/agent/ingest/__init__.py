@@ -40,6 +40,7 @@ def ingest_startup_folder(
     folder: str | Path,
     chunk_size: int = 500,
     overlap: int = 100,
+    exclude_files: set[str] | None = None,
 ) -> EvidenceStore:
     """Walk a startup folder, extract and chunk all supported files.
 
@@ -53,11 +54,16 @@ def ingest_startup_folder(
     """
     folder = Path(folder)
     slug = folder.name
+    excluded = {name for name in (exclude_files or set()) if name}
 
     raw_items: list[dict] = []
 
     for file_path in sorted(folder.iterdir()):
-        if file_path.is_dir() or file_path.name.startswith("."):
+        if (
+            file_path.is_dir()
+            or file_path.name.startswith(".")
+            or file_path.name in excluded
+        ):
             continue
 
         suffix = file_path.suffix.lower()

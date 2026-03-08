@@ -44,6 +44,9 @@ from agent.batch import (
     export_excel,
     rank_batch_companies,
 )
+from agent.dataclasses.company import Company
+from agent.ingest import ingest_startup_folder
+from agent.ingest.store import Chunk, EvidenceStore
 from agent.ingest.specter_ingest import ingest_specter
 
 try:
@@ -1095,6 +1098,58 @@ def _sanitize_slug(name: str) -> str:
     return safe or "doc"
 
 
+def _merge_evidence_stores(
+    primary: EvidenceStore,
+    secondary: EvidenceStore,
+    startup_slug: str,
+) -> EvidenceStore:
+    """Combine two evidence stores and normalize chunk IDs."""
+    merged_chunks: list[Chunk] = []
+    for idx, chunk in enumerate([*primary.chunks, *secondary.chunks]):
+        merged_chunks.append(
+            Chunk(
+                chunk_id=f"chunk_{idx}",
+                text=chunk.text,
+                source_file=chunk.source_file,
+                page_or_slide=chunk.page_or_slide,
+            )
+        )
+    return EvidenceStore(startup_slug=startup_slug, chunks=merged_chunks)
+
+
+def _build_single_company_specter_overlay(
+    upload_dir: Path,
+    specter: dict | None,
+) -> tuple[Company | None, EvidenceStore | None, int | None]:
+    """Build a merged one-company dossier when a single-company Specter export is present."""
+    if not specter:
+        return None, None, None
+
+    try:
+        company_store_pairs = ingest_specter(
+            specter["companies"],
+            specter.get("people"),
+        )
+    except Exception:
+        return None, None, None
+
+    parsed_count = len(company_store_pairs)
+    if parsed_count != 1:
+        return None, None, parsed_count
+
+    specter_company, specter_store = company_store_pairs[0]
+    excluded = {Path(specter["companies"]).name}
+    if specter.get("people"):
+        excluded.add(Path(specter["people"]).name)
+    document_store = ingest_startup_folder(upload_dir, exclude_files=excluded)
+    merged_store = _merge_evidence_stores(
+        document_store,
+        specter_store,
+        startup_slug=specter_store.startup_slug or upload_dir.name,
+    )
+    return specter_company, merged_store, parsed_count
+
+
 async def _run_document_analysis(
     job_id: str,
     upload_dir: Path,
@@ -1116,12 +1171,29 @@ async def _run_document_analysis(
         return
 
     if one_company or file_count == 1:
+        seed_company = None
+        seed_store = None
+        specter = _results_cache[job_id].get("specter")
+        if specter:
+            seed_company, seed_store, parsed_count = _build_single_company_specter_overlay(upload_dir, specter)
+            if seed_company and seed_store:
+                _append_progress(
+                    job_id,
+                    "Detected a single-company Specter export. Merging structured Specter evidence into the dossier.",
+                )
+            elif one_company and parsed_count and parsed_count > 1:
+                _append_progress(
+                    job_id,
+                    "Multi-file mode stays enabled. Structured Specter overlay was skipped because the export contains multiple companies.",
+                )
         started = time.perf_counter()
         result = await evaluate_startup(
             upload_dir, k=8, use_web_search=use_web_search,
             on_progress=_make_progress_callback(job_id),
             on_cooperate=lambda: _cooperate_with_job_control(job_id),
             vc_investment_strategy=vc_investment_strategy,
+            initial_store=seed_store,
+            initial_company=seed_company,
         )
         latency_ms = int((time.perf_counter() - started) * 1000)
         _results_cache[job_id].setdefault("model_executions", []).append(

@@ -44,7 +44,7 @@ python -m web
 Then open **http://localhost:8000** in your browser. Set `APP_PASSWORD` in `.env` for login.
 
 - **Upload** PDF, PPTX, Word, Excel, or CSV files
-- Choose **Pitch Deck** (each file = one company), **Specter** (company + people CSVs), or **Original** (all files = one company)
+- Choose **Pitch Deck** (each file = one company), **Specter** (company + people CSVs), or **Multi-file** (all files = one company)
 - Optionally enable **web search** for richer evidence
 - Get ranked results with executive summaries, key points, red flags, and Excel export
 
@@ -71,7 +71,7 @@ The web UI lets you upload files, run analyses, and download results without tou
 | Feature | Description |
 |---------|-------------|
 | **Upload** | PDF, PPTX, DOCX, XLSX, CSV — single or multi-file |
-| **Input modes** | Pitch Deck (1 file per company), Specter (2 CSVs), Original (all files = 1 company) |
+| **Input modes** | Pitch Deck (1 file per company), Specter (2 CSVs), Multi-file (all files = 1 company) |
 | **Web search** | Optional Perplexity/Brave search for extra evidence |
 | **VC strategy** | Optional investment thesis for tailored scoring |
 | **Results** | Summary table, executive summaries, key points, red flags, pro/contra arguments, Excel download |
