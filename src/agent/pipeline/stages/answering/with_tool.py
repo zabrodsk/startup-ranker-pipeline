@@ -95,10 +95,6 @@ Avoid: repetition, excessive keywords, quotation marks unless needed for exact p
                 return f"Search failed: {error_msg}. Try broader industry terms rather than specific company names."
 
 
-# Initialize LLM
-llm = get_llm(temperature=0.0)
-
-
 def _create_tools_for_state(state: AnswerState) -> list:
     """Create tools dynamically based on the current state."""
     web_search_tool = IntelligentWebSearchTool(search_end_date=state.search_end_date)
@@ -169,9 +165,11 @@ def answer_question(state: AnswerState) -> AnswerState:
                 content="Tool limit reached. Provide final answer based on available information. Do not request more tools."
             )
         )
+        llm = get_llm(temperature=0.0)
         response = llm.invoke(state.messages)
     else:
         tools = _create_tools_for_state(state)
+        llm = get_llm(temperature=0.0)
         llm_with_tools = llm.bind_tools(tools)
         response = llm_with_tools.invoke(state.messages)
 

@@ -30,11 +30,6 @@ from agent.pipeline.state.decomposition import (
 )
 
 
-# Initialize LLM with structured output
-llm = get_llm(temperature=0.5)
-llm_with_structured_output = llm.with_structured_output(DecompositionTree)
-
-
 def _build_question_tree_from_decomposition_tree(
     decomposition_tree: DecompositionTree,
     aspect: Literal["general_company", "market", "product", "team"] | None = "general_company",
@@ -88,6 +83,8 @@ def decompose_question(state: DecompositionInput) -> DecompositionOutput:
         ),
     ]
 
+    llm = get_llm(temperature=0.5)
+    llm_with_structured_output = llm.with_structured_output(DecompositionTree)
     decomposition_tree: DecompositionTree = llm_with_structured_output.invoke(messages)
 
     question_tree: QuestionTree = _build_question_tree_from_decomposition_tree(
@@ -120,5 +117,6 @@ if __name__ == "__main__":
         ),
     ]
 
+    llm = get_llm(temperature=0.5)
     llm_output = llm.invoke(messages)
     print(json.dumps(llm_output.content, indent=4))

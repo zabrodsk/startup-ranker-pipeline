@@ -14,7 +14,7 @@ if str(SRC) not in sys.path:
 from agent.dataclasses.company import Company
 from agent.dataclasses.question_tree import QuestionNode, QuestionTree
 from agent.evidence_answering import answer_all_trees_from_evidence
-from agent.ingest.store import EvidenceStore
+from agent.ingest.store import Chunk, EvidenceStore
 from agent.ingest.specter_ingest import ingest_specter
 from web import app as web_app
 
@@ -281,6 +281,224 @@ def test_run_specter_analysis_persists_partial_results_on_stop(
         assert job.results == web_app._results_cache[job_id]["results"]
         assert job.results["job_status"] == "stopped"
         assert job.results["summary_rows"] == [{"startup_slug": "alpha", "company_name": "Alpha"}]
+    finally:
+        web_app._jobs.pop(job_id, None)
+        web_app._job_controls.pop(job_id, None)
+        web_app._results_cache.pop(job_id, None)
+
+
+def test_run_specter_analysis_persists_first_company_before_starting_second(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_id = "job-partial-persist-order"
+    company_a = Company(name="Alpha")
+    company_b = Company(name="Beta")
+    store_a = type("Store", (), {"startup_slug": "alpha"})()
+    store_b = type("Store", (), {"startup_slug": "beta"})()
+
+    results = {
+        "alpha": {
+            "slug": "alpha",
+            "company": company_a,
+            "evidence_store": EvidenceStore(
+                startup_slug="alpha",
+                chunks=[Chunk(chunk_id="chunk_0", text="A" * 900, source_file="deck.pdf", page_or_slide=1)],
+            ),
+            "final_state": {"final_arguments": [], "final_decision": "invest", "ranking_result": None},
+            "skipped": False,
+        },
+        "beta": {
+            "slug": "beta",
+            "company": company_b,
+            "evidence_store": EvidenceStore(
+                startup_slug="beta",
+                chunks=[Chunk(chunk_id="chunk_0", text="B" * 300, source_file="deck.pdf", page_or_slide=1)],
+            ),
+            "final_state": {"final_arguments": [], "final_decision": "invest", "ranking_result": None},
+            "skipped": False,
+        },
+    }
+
+    persisted: list[str] = []
+    saw_partial_status = {"value": False}
+    state = {"calls": 0}
+
+    async def fake_evaluate_from_specter(company, store, *args, **kwargs):
+        state["calls"] += 1
+        if state["calls"] == 2:
+            assert persisted == ["alpha"]
+            current = web_app._results_cache[job_id]["results"]
+            assert current["summary_rows"] == [{"startup_slug": "alpha", "company_name": "Alpha"}]
+            saw_partial_status["value"] = True
+        return results[store.startup_slug]
+
+    def fake_build_results_payload(results_list, current_job_id, upload_dir, write_excel=True):
+        summary_rows = [
+            {
+                "startup_slug": item["slug"],
+                "company_name": item["company"].name,
+            }
+            for item in results_list
+            if not item.get("skipped")
+        ]
+        web_app._results_cache[current_job_id]["results"] = {
+            "mode": "batch",
+            "summary_rows": summary_rows,
+        }
+
+    monkeypatch.setattr(web_app, "ingest_specter", lambda companies, people=None: [(company_a, store_a), (company_b, store_b)])
+    monkeypatch.setattr(web_app, "evaluate_from_specter", fake_evaluate_from_specter)
+    monkeypatch.setattr(web_app, "_build_results_payload", fake_build_results_payload)
+    monkeypatch.setattr(web_app, "_persist_jobs", lambda: None)
+    monkeypatch.setattr(web_app, "_persist_results_to_db", lambda job_id, results_list: None)
+    monkeypatch.setattr(web_app, "_persist_company_result_to_db", lambda current_job_id, result: persisted.append(result["slug"]))
+    monkeypatch.setattr(web_app, "_llm_telemetry_base", lambda: {})
+
+    web_app._jobs[job_id] = web_app.AnalysisStatus(
+        job_id=job_id,
+        status="running",
+        progress="Starting...",
+        progress_log=[],
+    )
+    web_app._job_controls[job_id] = {"pause_requested": False, "stop_requested": False}
+    web_app._results_cache[job_id] = {}
+
+    try:
+        asyncio.run(
+            web_app._run_specter_analysis(
+                job_id,
+                tmp_path,
+                {"companies": "companies.csv", "people": "people.csv"},
+                use_web_search=False,
+            )
+        )
+
+        assert persisted == ["alpha", "beta"]
+        assert saw_partial_status["value"] is True
+        assert results["alpha"]["evidence_store"].chunks[0].text == "A" * 500
+    finally:
+        web_app._jobs.pop(job_id, None)
+        web_app._job_controls.pop(job_id, None)
+        web_app._results_cache.pop(job_id, None)
+
+
+def test_status_endpoint_returns_partial_results_for_running_job(monkeypatch) -> None:
+    job_id = "job-running-status"
+    web_app._jobs[job_id] = web_app.AnalysisStatus(
+        job_id=job_id,
+        status="running",
+        progress="Alpha complete",
+        progress_log=[],
+    )
+    web_app._results_cache[job_id] = {
+        "results": {
+            "mode": "batch",
+            "summary_rows": [{"startup_slug": "alpha", "company_name": "Alpha"}],
+            "job_status": "running",
+            "job_message": "Alpha complete",
+        }
+    }
+
+    monkeypatch.setattr(web_app, "_check_session", lambda session_id: True)
+
+    try:
+        payload = asyncio.run(web_app.get_status(job_id, session_id="session"))
+        assert payload["status"] == "running"
+        assert payload["results"]["summary_rows"] == [{"startup_slug": "alpha", "company_name": "Alpha"}]
+        assert payload["results"]["job_status"] == "running"
+    finally:
+        web_app._jobs.pop(job_id, None)
+        web_app._results_cache.pop(job_id, None)
+
+
+def test_batch_chunking_config_enables_for_large_anthropic_batch() -> None:
+    job_id = "job-chunking-config"
+    web_app._results_cache[job_id] = {
+        "llm_selection": {
+            "provider": "anthropic",
+            "model": "claude-haiku-4-5-20251001",
+            "label": "Claude Haiku 4.5",
+        }
+    }
+
+    try:
+        config = web_app._batch_chunking_config(job_id, total_items=5, mode="specter")
+        assert config["enabled"] is True
+        assert config["chunk_size"] == 2
+        assert config["total_chunks"] == 3
+        assert config["cooldown_seconds"] == 20
+    finally:
+        web_app._results_cache.pop(job_id, None)
+
+
+def test_run_specter_analysis_chunks_large_anthropic_batch_with_cooldown(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_id = "job-anthropic-chunked"
+    companies = [Company(name=name) for name in ("Alpha", "Beta", "Gamma", "Delta", "Epsilon")]
+    stores = [type("Store", (), {"startup_slug": company.name.lower()})() for company in companies]
+    evaluate_order: list[str] = []
+    sleep_calls: list[int] = []
+
+    async def fake_evaluate_from_specter(company, store, *args, **kwargs):
+        evaluate_order.append(company.name)
+        return {
+            "slug": store.startup_slug,
+            "company": company,
+            "evidence_store": EvidenceStore(startup_slug=store.startup_slug, chunks=[]),
+            "final_state": {"final_arguments": [], "final_decision": "invest", "ranking_result": None},
+            "skipped": False,
+        }
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr(
+        web_app,
+        "ingest_specter",
+        lambda companies_path, people=None: list(zip(companies, stores)),
+    )
+    monkeypatch.setattr(web_app, "evaluate_from_specter", fake_evaluate_from_specter)
+    monkeypatch.setattr(web_app, "_persist_jobs", lambda: None)
+    monkeypatch.setattr(web_app, "_persist_results_to_db", lambda job_id, results_list: None)
+    monkeypatch.setattr(web_app, "_persist_company_result_to_db", lambda current_job_id, result: None)
+    monkeypatch.setattr(web_app.asyncio, "sleep", fake_sleep)
+
+    web_app._jobs[job_id] = web_app.AnalysisStatus(
+        job_id=job_id,
+        status="running",
+        progress="Starting...",
+        progress_log=[],
+    )
+    web_app._job_controls[job_id] = {"pause_requested": False, "stop_requested": False}
+    web_app._results_cache[job_id] = {
+        "llm_selection": {
+            "provider": "anthropic",
+            "model": "claude-haiku-4-5-20251001",
+            "label": "Claude Haiku 4.5",
+        }
+    }
+
+    try:
+        asyncio.run(
+            web_app._run_specter_analysis(
+                job_id,
+                tmp_path,
+                {"companies": "companies.csv", "people": "people.csv"},
+                use_web_search=False,
+            )
+        )
+
+        assert evaluate_order == ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"]
+        assert sleep_calls == [20, 20]
+        progress_log = web_app._jobs[job_id].progress_log
+        assert any("Large batch chunking enabled" in entry for entry in progress_log)
+        assert any("Starting chunk 1/3" in entry for entry in progress_log)
+        assert any("Starting chunk 2/3" in entry for entry in progress_log)
+        assert any("Starting chunk 3/3" in entry for entry in progress_log)
+        assert web_app._results_cache[job_id]["batch_chunking"]["enabled"] is True
     finally:
         web_app._jobs.pop(job_id, None)
         web_app._job_controls.pop(job_id, None)

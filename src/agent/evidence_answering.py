@@ -73,6 +73,7 @@ from agent.llm import create_llm
 from agent.prompt_library.manager import get_prompt
 from agent.rate_limit import gather_with_concurrency
 from agent.retrieval import retrieve_chunks
+from agent.run_context import get_current_collector
 
 GROUNDED_SYSTEM_PROMPT = """\
 You are an investment analyst answering due-diligence questions about a startup.
@@ -268,7 +269,16 @@ def _run_web_search(
 
         search_date = datetime.now().strftime("%Y-%m-%d")
         provider = get_provider(search_end_date=search_date, provider_name=provider_name)
-        return provider.search(search_query, domain_filter=domain_filter)
+        result = provider.search(search_query, domain_filter=domain_filter)
+        collector = get_current_collector()
+        if collector and provider_name == "sonar" and result and not str(result).lower().startswith("web search failed"):
+            collector.record_perplexity_search(
+                metadata={
+                    "query": search_query,
+                    "domain_filter": domain_filter or [],
+                }
+            )
+        return result
     except Exception as exc:
         return f"Web search failed: {exc}"
 

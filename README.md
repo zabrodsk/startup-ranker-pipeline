@@ -183,6 +183,16 @@ MODEL_NAME=claude-haiku-4-5-20251001
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
 ```
 
+**Example for OpenAI:**
+
+```
+LLM_PROVIDER=openai
+MODEL_NAME=gpt-5-mini
+OPENAI_API_KEY=your_openai_api_key_here
+```
+
+Available OpenAI models in the UI: `gpt-5-nano`, `gpt-5-mini`, `gpt-5`, `gpt-4.1-mini`
+
 ---
 
 ## Supabase (Optional)

@@ -1,11 +1,12 @@
 """Rockaway Deal Intelligence web application.
 
 FastAPI backend serving the Rockaway-branded UI with password protection.
-The Gemini API key stays server-side only — never exposed to the client.
+Provider API keys stay server-side only and are never exposed to the client.
 """
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -44,6 +45,15 @@ from agent.batch import (
     export_excel,
     rank_batch_companies,
 )
+from agent.llm_catalog import (
+    available_models_payload,
+    current_default_selection,
+    model_label,
+    pricing_catalog_payload,
+    serialize_selection,
+    validate_requested_selection,
+)
+from agent.run_context import RunTelemetryCollector, use_run_context
 from agent.dataclasses.company import Company
 from agent.ingest import ingest_startup_folder
 from agent.ingest.store import Chunk, EvidenceStore
@@ -89,22 +99,87 @@ _results_cache: dict[str, dict[str, Any]] = {}
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-# Friendly display names for common LLM model IDs
-_LLM_DISPLAY_NAMES = {
-    "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
-    "claude-sonnet-4-20250514": "Claude Sonnet 4",
-    "gemini-2.0-flash": "Gemini 2.0 Flash",
-    "gemini-3-flash-lite-preview": "Gemini 3 Flash Lite",
-    "gemini-3.1-flash-lite-preview": "Gemini 3.1 Flash Lite",
-}
-
-
 def _get_llm_display() -> str:
-    """Return a display string for the configured LLM (provider + model)."""
-    provider = os.getenv("LLM_PROVIDER", "gemini").lower()
-    model = os.getenv("MODEL_NAME", "gemini-3.1-flash-lite-preview")
-    friendly = _LLM_DISPLAY_NAMES.get(model)
-    return friendly if friendly else f"{provider} · {model}"
+    """Return a display string for the configured default LLM."""
+    selection = current_default_selection()
+    return selection["label"]
+
+
+def _selection_from_payload(payload: dict[str, Any] | None) -> dict[str, str] | None:
+    if not isinstance(payload, dict):
+        return None
+    selection = payload.get("llm_selection")
+    if isinstance(selection, dict) and selection.get("provider") and selection.get("model"):
+        return serialize_selection(selection.get("provider"), selection.get("model"))
+    provider = payload.get("llm_provider") or payload.get("provider")
+    model = payload.get("llm_model") or payload.get("model")
+    if provider and model:
+        return serialize_selection(provider, model)
+    return None
+
+
+def _resolve_job_llm_selection(job_id: str, *, results: dict[str, Any] | None = None) -> dict[str, str]:
+    cache = _results_cache.get(job_id, {})
+    for candidate in (
+        _selection_from_payload(results),
+        _selection_from_payload(cache.get("results")),
+        _selection_from_payload(cache.get("llm_selection")),
+        _selection_from_payload(cache.get("run_config")),
+    ):
+        if candidate:
+            return candidate
+    return current_default_selection()
+
+
+def _resolve_job_llm_label(job_id: str, *, results: dict[str, Any] | None = None) -> str:
+    return _resolve_job_llm_selection(job_id, results=results)["label"]
+
+
+def _read_positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+        return value if value > 0 else default
+    except Exception:
+        return default
+
+
+def _batch_chunking_config(
+    job_id: str,
+    *,
+    total_items: int,
+    mode: str,
+) -> dict[str, Any]:
+    selection = _resolve_job_llm_selection(job_id)
+    provider = selection.get("provider")
+    default_threshold = 4 if provider == "anthropic" else 10_000
+    default_chunk_size = 2 if provider == "anthropic" else total_items
+    default_cooldown = 20 if provider == "anthropic" else 0
+
+    threshold = _read_positive_int_env("BATCH_CHUNKING_THRESHOLD", default_threshold)
+    chunk_size = _read_positive_int_env("BATCH_CHUNKING_SIZE", default_chunk_size)
+    cooldown_seconds = _read_positive_int_env("BATCH_CHUNKING_COOLDOWN_SECONDS", default_cooldown)
+    enabled = total_items >= threshold and chunk_size < total_items
+    total_chunks = (total_items + chunk_size - 1) // chunk_size if enabled and chunk_size > 0 else 1
+    return {
+        "enabled": enabled,
+        "threshold": threshold,
+        "chunk_size": chunk_size if chunk_size > 0 else total_items,
+        "cooldown_seconds": cooldown_seconds if enabled else 0,
+        "total_chunks": total_chunks,
+        "mode": mode,
+        "provider": provider,
+        "model": selection.get("model"),
+        "label": selection.get("label"),
+        "reason": "anthropic_large_batch" if enabled and provider == "anthropic" else "",
+    }
+
+
+def _chunk_items(items: list[Any], chunk_size: int) -> list[list[Any]]:
+    size = max(1, chunk_size)
+    return [items[idx: idx + size] for idx in range(0, len(items), size)]
 
 
 class LoginRequest(BaseModel):
@@ -125,8 +200,10 @@ class AnalyzeRequest(BaseModel):
     instructions: str | None = None
     input_mode: str = "pitchdeck"  # pitchdeck | specter | original
     vc_investment_strategy: str | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
 
-    @field_validator("instructions", "vc_investment_strategy", mode="before")
+    @field_validator("instructions", "vc_investment_strategy", "llm_provider", "llm_model", mode="before")
     @classmethod
     def _coerce_str(cls, v: Any) -> str | None:
         if v is None:
@@ -186,30 +263,26 @@ def _runtime_versions() -> dict[str, str]:
     }
 
 
-def _llm_telemetry_base() -> dict[str, Any]:
-    provider = os.getenv("LLM_PROVIDER", "gemini").lower()
-    model = os.getenv("MODEL_NAME", "gemini-3.1-flash-lite-preview")
-    timeout_raw = os.getenv("LLM_REQUEST_TIMEOUT_SECONDS")
-    retries_raw = os.getenv("LLM_MAX_RETRIES")
-    timeout_s: float | None = None
-    max_retries: int | None = None
-    try:
-        if timeout_raw is not None:
-            timeout_s = float(timeout_raw)
-    except Exception:
-        timeout_s = None
-    try:
-        if retries_raw is not None:
-            max_retries = int(retries_raw)
-    except Exception:
-        max_retries = None
-
+def _run_costs_from_cache(job_id: str) -> dict[str, Any]:
+    cache = _results_cache.get(job_id, {})
+    collector = cache.get("telemetry_collector")
+    if isinstance(collector, RunTelemetryCollector):
+        return collector.build_run_costs()
     return {
-        "provider": provider,
-        "model": model,
-        "request_timeout_seconds": timeout_s,
-        "max_retries": max_retries,
+        "currency": "USD",
+        "status": "unavailable",
+        "total_usd": None,
+        "llm_usd": None,
+        "perplexity_usd": None,
+        "llm_tokens": {"prompt": 0, "completion": 0, "total": 0},
+        "perplexity_search": {"requests": 0, "total_usd": 0.0},
+        "by_model": [],
     }
+
+
+def _llm_telemetry_base() -> dict[str, Any]:
+    """Backward-compatible test hook for legacy telemetry scaffolding."""
+    return {}
 
 
 def _sha256_file(path: Path) -> str:
@@ -465,7 +538,7 @@ def _get_job_summary(job_id: str, job: AnalysisStatus) -> dict[str, Any]:
         "input_mode": results.get("mode") if isinstance(results, dict) else None,
         "use_web_search": None,
         "results": results,
-        "llm": _get_llm_display(),
+        "llm": _resolve_job_llm_label(job_id, results=results),
     }
 
 
@@ -490,7 +563,9 @@ def _list_jobs_for_ui() -> list[dict[str, Any]]:
                     "input_mode": entry.get("input_mode") or (existing or {}).get("input_mode"),
                     "use_web_search": entry.get("use_web_search"),
                     "results": entry.get("results") or (existing or {}).get("results"),
-                    "llm": (existing or {}).get("llm") or _get_llm_display(),
+                    "llm": _selection_from_payload(entry.get("results") or {})["label"]
+                    if _selection_from_payload(entry.get("results") or {})
+                    else (existing or {}).get("llm") or _get_llm_display(),
                 }
                 jobs_by_id[job_id] = merged
         except Exception:
@@ -743,22 +818,35 @@ async def start_analysis(
     if job_id not in _jobs:
         raise HTTPException(status_code=404, detail="Job not found")
 
+    try:
+        selected_entry = validate_requested_selection(req.llm_provider, req.llm_model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    llm_selection = serialize_selection(
+        (selected_entry.provider if selected_entry else None),
+        (selected_entry.model if selected_entry else None),
+    )
+
     _set_job_status(job_id, "running", "Starting analysis...", source="start_analysis")
     _job_controls[job_id] = {"pause_requested": False, "stop_requested": False}
     _results_cache[job_id]["input_mode"] = req.input_mode
     _results_cache[job_id]["vc_investment_strategy"] = req.vc_investment_strategy
     _results_cache[job_id]["use_web_search"] = req.use_web_search
     _results_cache[job_id]["instructions"] = req.instructions
+    _results_cache[job_id]["llm_selection"] = llm_selection
+    _results_cache[job_id]["run_config"] = {
+        "input_mode": req.input_mode,
+        "vc_investment_strategy": req.vc_investment_strategy,
+        "instructions": req.instructions,
+        "use_web_search": req.use_web_search,
+        "llm_provider": llm_selection["provider"],
+        "llm_model": llm_selection["model"],
+    }
     _results_cache[job_id]["model_executions"] = []
     _results_cache[job_id]["versions"] = _runtime_versions()
 
     if db and db.is_configured():
-        run_config = {
-            "input_mode": req.input_mode,
-            "vc_investment_strategy": req.vc_investment_strategy,
-            "instructions": req.instructions,
-            "use_web_search": req.use_web_search,
-        }
+        run_config = dict(_results_cache[job_id]["run_config"])
         db.upsert_job(job_id, run_config=run_config, versions=_runtime_versions())
         db.upsert_job_control(
             job_id,
@@ -779,11 +867,12 @@ async def start_analysis(
                 instructions=inst,
                 input_mode=req.input_mode,
                 vc_investment_strategy=vc_str,
+                llm_selection=llm_selection,
             )
         ),
         daemon=True,
     ).start()
-    return {"status": "running", "use_web_search": req.use_web_search}
+    return {"status": "running", "use_web_search": req.use_web_search, "llm": llm_selection["label"]}
 
 
 @app.post("/api/jobs/{job_id}/control")
@@ -835,8 +924,28 @@ def _build_results_payload(
     results_list: list[dict],
     job_id: str,
     upload_dir: Path,
+    *,
+    write_excel: bool = True,
 ) -> None:
-    """Compute scores and populate _results_cache for the finished job."""
+    """Compute scores and populate _results_cache for the job."""
+    payload = _compose_results_payload(results_list, job_id)
+    _results_cache[job_id]["results"] = payload
+
+    if write_excel:
+        excel_path = upload_dir / "results.xlsx"
+        export_excel(results_list, str(excel_path))
+        _results_cache[job_id]["excel_path"] = str(excel_path)
+
+
+def _compose_results_payload(
+    results_list: list[dict],
+    job_id: str,
+) -> dict[str, Any]:
+    """Compute API/UI payload for the current job state."""
+    collector = _results_cache.get(job_id, {}).get("telemetry_collector")
+    if isinstance(collector, RunTelemetryCollector):
+        _results_cache[job_id]["model_executions"] = collector.snapshot_model_executions()
+
     input_order_map: dict[str, int] = {}
     input_order_counter = 0
     for item in results_list:
@@ -853,9 +962,6 @@ def _build_results_payload(
     summary_rows = build_summary_rows(results_list)
     argument_rows = build_argument_rows(results_list)
     qa_provenance_rows = build_qa_provenance_rows(results_list)
-
-    excel_path = upload_dir / "results.xlsx"
-    export_excel(results_list, str(excel_path))
 
     evaluated = [r for r in results_list if not r.get("skipped")]
 
@@ -904,7 +1010,7 @@ def _build_results_payload(
                 ],
             }
 
-        _results_cache[job_id]["results"] = {
+        payload = {
             "mode": "single",
             "startup_slug": r.get("slug", company.name),
             "company_name": company.name,
@@ -949,7 +1055,7 @@ def _build_results_payload(
             row["team_members"] = founders_by_slug.get(row_slug, [])
             row["specter_input_order"] = input_order_map.get(row_slug, 10_000_000)
 
-        _results_cache[job_id]["results"] = {
+        payload = {
             "mode": "batch",
             "num_companies": len(evaluated),
             "num_skipped": len(results_list) - len(evaluated),
@@ -961,7 +1067,100 @@ def _build_results_payload(
             "team_members_by_slug": founders_by_slug,
         }
 
-    _results_cache[job_id]["excel_path"] = str(excel_path)
+    llm_selection = _resolve_job_llm_selection(job_id, results=payload)
+    payload["llm"] = llm_selection["label"]
+    payload["llm_selection"] = llm_selection
+    payload["run_costs"] = _run_costs_from_cache(job_id)
+    chunking = _results_cache.get(job_id, {}).get("batch_chunking")
+    if isinstance(chunking, dict):
+        payload["batch_chunking"] = chunking
+    return payload
+
+
+def _single_result_payload(job_id: str, result: dict[str, Any]) -> dict[str, Any]:
+    return _compose_results_payload([result], job_id)
+
+
+def _compact_chunk(chunk: Any) -> Chunk:
+    text = getattr(chunk, "text", "") or ""
+    return Chunk(
+        chunk_id=getattr(chunk, "chunk_id", "") or "",
+        text=text[:500],
+        source_file=getattr(chunk, "source_file", "") or "",
+        page_or_slide=getattr(chunk, "page_or_slide", "") or "",
+    )
+
+
+def _compact_evidence_store(store: Any) -> EvidenceStore | Any:
+    if not isinstance(store, EvidenceStore):
+        return store
+    return EvidenceStore(
+        startup_slug=store.startup_slug,
+        chunks=[_compact_chunk(chunk) for chunk in store.chunks],
+    )
+
+
+def _compact_final_state(final_state: Any) -> Any:
+    if not isinstance(final_state, dict):
+        return final_state
+    compacted = {
+        "final_arguments": final_state.get("final_arguments", []),
+        "final_decision": final_state.get("final_decision"),
+        "ranking_result": final_state.get("ranking_result"),
+        "current_iteration": final_state.get("current_iteration", 0),
+        "all_qa_pairs": final_state.get("all_qa_pairs", []),
+    }
+    return compacted
+
+
+def _compact_result_for_cache(result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("skipped"):
+        return result
+    result["evidence_store"] = _compact_evidence_store(result.get("evidence_store"))
+    result["final_state"] = _compact_final_state(result.get("final_state"))
+    return result
+
+
+def _update_partial_results_cache(
+    job_id: str,
+    upload_dir: Path,
+    results_list: list[dict[str, Any]],
+) -> None:
+    try:
+        _build_results_payload(results_list, job_id, upload_dir, write_excel=False)
+    except TypeError:
+        # Compatibility for tests monkeypatching the older 3-arg helper.
+        _build_results_payload(results_list, job_id, upload_dir)
+    payload = _results_cache[job_id].setdefault("results", {})
+    payload["job_status"] = _jobs.get(job_id).status if _jobs.get(job_id) else "running"
+    payload["job_message"] = _jobs.get(job_id).progress if _jobs.get(job_id) else ""
+    if _jobs.get(job_id):
+        _jobs[job_id].results = payload
+
+
+def _persist_company_result_to_db(job_id: str, result: dict[str, Any]) -> None:
+    if not (db and db.is_configured()) or result.get("skipped"):
+        return
+    cache = _results_cache.get(job_id, {})
+    run_config = dict(cache.get("run_config") or {})
+    if not run_config:
+        llm_selection = _resolve_job_llm_selection(job_id, results=cache.get("results"))
+        run_config = {
+            "input_mode": cache.get("input_mode", "pitchdeck"),
+            "vc_investment_strategy": cache.get("vc_investment_strategy"),
+            "instructions": cache.get("instructions"),
+            "use_web_search": cache.get("use_web_search", False),
+            "llm_provider": llm_selection["provider"],
+            "llm_model": llm_selection["model"],
+        }
+    company_payload = _single_result_payload(job_id, result)
+    db.persist_company_result(
+        job_id_legacy=job_id,
+        result_row=result,
+        company_payload=company_payload,
+        run_config=run_config,
+        versions=cache.get("versions") or _runtime_versions(),
+    )
 
 
 def _persist_results_to_db(job_id: str, results_list: list[dict]) -> None:
@@ -970,12 +1169,17 @@ def _persist_results_to_db(job_id: str, results_list: list[dict]) -> None:
         return
     try:
         cache = _results_cache.get(job_id, {})
-        run_config = {
-            "input_mode": cache.get("input_mode", "pitchdeck"),
-            "vc_investment_strategy": cache.get("vc_investment_strategy"),
-            "instructions": cache.get("instructions"),
-            "use_web_search": cache.get("use_web_search", False),
-        }
+        run_config = dict(cache.get("run_config") or {})
+        if not run_config:
+            llm_selection = _resolve_job_llm_selection(job_id, results=cache.get("results"))
+            run_config = {
+                "input_mode": cache.get("input_mode", "pitchdeck"),
+                "vc_investment_strategy": cache.get("vc_investment_strategy"),
+                "instructions": cache.get("instructions"),
+                "use_web_search": cache.get("use_web_search", False),
+                "llm_provider": llm_selection["provider"],
+                "llm_model": llm_selection["model"],
+            }
         db.persist_analysis(
             job_id_legacy=job_id,
             results_list=results_list,
@@ -1017,51 +1221,60 @@ async def _run_analysis(
     instructions: str | None = None,
     input_mode: str = "pitchdeck",
     vc_investment_strategy: str | None = None,
+    llm_selection: dict[str, str] | None = None,
 ):
     try:
-        await _cooperate_with_job_control(job_id)
-        upload_dir = Path(_results_cache[job_id]["upload_dir"])
-        specter = _results_cache[job_id].get("specter")
+        selection = llm_selection or _resolve_job_llm_selection(job_id)
+        collector = RunTelemetryCollector(selected_llm=selection)
+        _results_cache[job_id]["telemetry_collector"] = collector
 
-        if input_mode == "specter":
+        with use_run_context(llm_selection=selection, telemetry_collector=collector):
             await _cooperate_with_job_control(job_id)
-            specter_detected = _results_cache[job_id].get("specter")
-            files = _results_cache[job_id].get("files", [])
-            if specter_detected:
-                specter_paths = specter_detected
-            elif len(files) >= 1:
-                specter_paths = {
-                    "companies": str(upload_dir / files[0]["name"]),
-                }
-                if len(files) >= 2:
-                    specter_paths["people"] = str(upload_dir / files[1]["name"])
-            else:
-                _set_job_status(
-                    job_id,
-                    "error",
-                    "Specter mode requires at least 1 tabular file.",
-                    source="run_analysis",
+            upload_dir = Path(_results_cache[job_id]["upload_dir"])
+            specter = _results_cache[job_id].get("specter")
+
+            if input_mode == "specter":
+                await _cooperate_with_job_control(job_id)
+                specter_detected = _results_cache[job_id].get("specter")
+                files = _results_cache[job_id].get("files", [])
+                if specter_detected:
+                    specter_paths = specter_detected
+                elif len(files) >= 1:
+                    specter_paths = {
+                        "companies": str(upload_dir / files[0]["name"]),
+                    }
+                    if len(files) >= 2:
+                        specter_paths["people"] = str(upload_dir / files[1]["name"])
+                else:
+                    _set_job_status(
+                        job_id,
+                        "error",
+                        "Specter mode requires at least 1 tabular file.",
+                        source="run_analysis",
+                    )
+                    return
+                await _run_specter_analysis(
+                    job_id, upload_dir, specter_paths, use_web_search, instructions,
+                    vc_investment_strategy=vc_investment_strategy,
                 )
-                return
-            await _run_specter_analysis(
-                job_id, upload_dir, specter_paths, use_web_search, instructions,
-                vc_investment_strategy=vc_investment_strategy,
-            )
-        elif input_mode == "original":
-            await _cooperate_with_job_control(job_id)
-            await _run_document_analysis(
-                job_id, upload_dir, use_web_search, one_company=True,
-                vc_investment_strategy=vc_investment_strategy,
-            )
-        else:
-            await _cooperate_with_job_control(job_id)
-            await _run_document_analysis(
-                job_id, upload_dir, use_web_search, one_company=False,
-                vc_investment_strategy=vc_investment_strategy,
-            )
+            elif input_mode == "original":
+                await _cooperate_with_job_control(job_id)
+                await _run_document_analysis(
+                    job_id, upload_dir, use_web_search, one_company=True,
+                    vc_investment_strategy=vc_investment_strategy,
+                )
+            else:
+                await _cooperate_with_job_control(job_id)
+                await _run_document_analysis(
+                    job_id, upload_dir, use_web_search, one_company=False,
+                    vc_investment_strategy=vc_investment_strategy,
+                )
 
     except _JobStoppedError:
         if _jobs.get(job_id):
+            collector = _results_cache.get(job_id, {}).get("telemetry_collector")
+            if isinstance(collector, RunTelemetryCollector):
+                _results_cache[job_id]["model_executions"] = collector.snapshot_model_executions()
             _set_job_status(job_id, "stopped", source="run_analysis")
             if "Stopped by user" not in (_jobs[job_id].progress or ""):
                 _append_progress(job_id, "Stopped by user.")
@@ -1074,6 +1287,9 @@ async def _run_analysis(
                 )
     except Exception as exc:
         if _jobs.get(job_id) and _jobs[job_id].status != "stopped":
+            collector = _results_cache.get(job_id, {}).get("telemetry_collector")
+            if isinstance(collector, RunTelemetryCollector):
+                _results_cache[job_id]["model_executions"] = collector.snapshot_model_executions()
             _set_job_status(job_id, "error", f"Analysis failed: {exc}", source="run_analysis")
             if db and db.is_configured():
                 db.insert_analysis_error(
@@ -1164,8 +1380,6 @@ async def _run_document_analysis(
     """
     files = _results_cache[job_id].get("files", [])
     file_count = len(files)
-    telemetry_base = _llm_telemetry_base()
-
     if file_count == 0:
         _set_job_status(job_id, "error", "No files found.", source="run_document_analysis")
         return
@@ -1186,7 +1400,6 @@ async def _run_document_analysis(
                     job_id,
                     "Multi-file mode stays enabled. Structured Specter overlay was skipped because the export contains multiple companies.",
                 )
-        started = time.perf_counter()
         result = await evaluate_startup(
             upload_dir, k=8, use_web_search=use_web_search,
             on_progress=_make_progress_callback(job_id),
@@ -1194,17 +1407,6 @@ async def _run_document_analysis(
             vc_investment_strategy=vc_investment_strategy,
             initial_store=seed_store,
             initial_company=seed_company,
-        )
-        latency_ms = int((time.perf_counter() - started) * 1000)
-        _results_cache[job_id].setdefault("model_executions", []).append(
-            {
-                **telemetry_base,
-                "company_slug": result.get("slug"),
-                "stage": "evaluate_startup",
-                "latency_ms": latency_ms,
-                "status": "done",
-                "metadata": {"input_mode": "original" if one_company else "documents"},
-            }
         )
         if result.get("skipped"):
             if _is_stop_requested(job_id):
@@ -1216,6 +1418,7 @@ async def _run_document_analysis(
                 source="run_document_analysis",
             )
             return
+        _persist_company_result_to_db(job_id, result)
         _append_progress(job_id, "Finalizing results (ranking + Excel export)...")
         _build_results_payload([result], job_id, upload_dir)
         if _is_stop_requested(job_id):
@@ -1242,74 +1445,91 @@ async def _run_document_analysis(
 
     results_list: list[dict] = []
     total = file_count
+    chunking = _batch_chunking_config(job_id, total_items=total, mode="documents")
+    _results_cache[job_id]["batch_chunking"] = chunking
+    file_chunks = _chunk_items(files, chunking["chunk_size"]) if chunking["enabled"] else [files]
+    if chunking["enabled"]:
+        _append_progress(
+            job_id,
+            "Large batch chunking enabled "
+            f"for {chunking['label']} — {chunking['total_chunks']} chunks of up to "
+            f"{chunking['chunk_size']} company(ies), cooldown {chunking['cooldown_seconds']}s.",
+        )
     try:
-        for i, finfo in enumerate(files, 1):
-            await _cooperate_with_job_control(job_id)
-            fname = finfo["name"]
-            prefix = f"Analyzing {fname} ({i}/{total})"
-            _append_progress(job_id, f"{prefix} — Starting...")
-
-            doc_dir = upload_dir / _sanitize_slug(fname)
-            doc_dir.mkdir(exist_ok=True)
-            src = upload_dir / fname
-            if src.exists():
-                shutil.copy2(src, doc_dir / fname)
-
-            def make_progress(msg: str) -> None:
-                _raise_if_stopped(job_id)
-                full_msg = f"{prefix} — {msg}"
-                _append_progress(job_id, full_msg)
-
-            try:
-                started = time.perf_counter()
-                result = await evaluate_startup(
-                    doc_dir, k=8, use_web_search=use_web_search,
-                    on_progress=make_progress,
-                    on_cooperate=lambda: _cooperate_with_job_control(job_id),
-                    vc_investment_strategy=vc_investment_strategy,
+        processed = 0
+        for chunk_idx, file_chunk in enumerate(file_chunks, 1):
+            if chunking["enabled"]:
+                chunk_start = processed + 1
+                chunk_end = processed + len(file_chunk)
+                _append_progress(
+                    job_id,
+                    f"Starting chunk {chunk_idx}/{chunking['total_chunks']} — companies {chunk_start}-{chunk_end} of {total}.",
                 )
-                latency_ms = int((time.perf_counter() - started) * 1000)
+            for finfo in file_chunk:
                 await _cooperate_with_job_control(job_id)
-                results_list.append(result)
-                _results_cache[job_id].setdefault("model_executions", []).append(
-                    {
-                        **telemetry_base,
-                        "company_slug": result.get("slug"),
-                        "stage": "evaluate_startup",
-                        "latency_ms": latency_ms,
-                        "status": "done",
-                        "metadata": {"file_name": fname},
-                    }
-                )
-            except _JobStoppedError:
-                raise
-            except Exception as exc:
-                import traceback
-                traceback.print_exc()
-                _results_cache[job_id].setdefault("model_executions", []).append(
-                    {
-                        **telemetry_base,
-                        "company_slug": _sanitize_slug(fname),
-                        "stage": "evaluate_startup",
-                        "status": "error",
-                        "error_message": str(exc)[:500],
-                        "metadata": {"file_name": fname},
-                    }
-                )
-                if db and db.is_configured():
-                    db.insert_analysis_error(
-                        job_id,
-                        message=str(exc)[:1000],
-                        stage="evaluate_startup",
-                        error_type=type(exc).__name__,
-                        company_slug=_sanitize_slug(fname),
+                processed += 1
+                fname = finfo["name"]
+                prefix = f"Chunk {chunk_idx}/{chunking['total_chunks']} — Analyzing {fname} ({processed}/{total})" if chunking["enabled"] else f"Analyzing {fname} ({processed}/{total})"
+                _append_progress(job_id, f"{prefix} — Starting...")
+
+                doc_dir = upload_dir / _sanitize_slug(fname)
+                doc_dir.mkdir(exist_ok=True)
+                src = upload_dir / fname
+                if src.exists():
+                    shutil.copy2(src, doc_dir / fname)
+
+                def make_progress(msg: str) -> None:
+                    _raise_if_stopped(job_id)
+                    full_msg = f"{prefix} — {msg}"
+                    _append_progress(job_id, full_msg)
+
+                try:
+                    result = await evaluate_startup(
+                        doc_dir, k=8, use_web_search=use_web_search,
+                        on_progress=make_progress,
+                        on_cooperate=lambda: _cooperate_with_job_control(job_id),
+                        vc_investment_strategy=vc_investment_strategy,
                     )
-                results_list.append({
-                    "slug": _sanitize_slug(fname),
-                    "skipped": True,
-                    "error": str(exc)[:500],
-                    "company_name": fname,
-                })
+                    await _cooperate_with_job_control(job_id)
+                    results_list.append(result)
+                    _append_progress(job_id, f"{prefix} — Persisting partial result...")
+                    _persist_company_result_to_db(job_id, result)
+                    _compact_result_for_cache(result)
+                    _update_partial_results_cache(job_id, upload_dir, results_list)
+                    _append_progress(
+                        job_id,
+                        f"Partial results updated — {len([r for r in results_list if not r.get('skipped')])}/{total} companies completed.",
+                    )
+                except _JobStoppedError:
+                    raise
+                except Exception as exc:
+                    import traceback
+                    traceback.print_exc()
+                    if db and db.is_configured():
+                        db.insert_analysis_error(
+                            job_id,
+                            message=str(exc)[:1000],
+                            stage="evaluate_startup",
+                            error_type=type(exc).__name__,
+                            company_slug=_sanitize_slug(fname),
+                        )
+                    results_list.append({
+                        "slug": _sanitize_slug(fname),
+                        "skipped": True,
+                        "error": str(exc)[:500],
+                        "company_name": fname,
+                    })
+
+            if (
+                chunking["enabled"]
+                and chunk_idx < chunking["total_chunks"]
+                and chunking["cooldown_seconds"] > 0
+            ):
+                _append_progress(
+                    job_id,
+                    f"Chunk {chunk_idx}/{chunking['total_chunks']} complete — cooling down for {chunking['cooldown_seconds']}s before next chunk.",
+                )
+                await asyncio.sleep(chunking["cooldown_seconds"])
     except _JobStoppedError:
         if _finalize_stopped_results(
             job_id,
@@ -1366,7 +1586,6 @@ async def _run_specter_analysis(
     vc_investment_strategy: str | None = None,
 ) -> None:
     """Batch Specter analysis from company + people CSVs."""
-    telemetry_base = _llm_telemetry_base()
     await _cooperate_with_job_control(job_id)
     _append_progress(job_id, "Parsing Specter CSV files...")
 
@@ -1391,69 +1610,92 @@ async def _run_specter_analysis(
 
     total = len(company_store_pairs)
     results_list: list[dict] = []
+    chunking = _batch_chunking_config(job_id, total_items=total, mode="specter")
+    _results_cache[job_id]["batch_chunking"] = chunking
+    company_chunks = _chunk_items(company_store_pairs, chunking["chunk_size"]) if chunking["enabled"] else [company_store_pairs]
+    if chunking["enabled"]:
+        _append_progress(
+            job_id,
+            "Large batch chunking enabled "
+            f"for {chunking['label']} — {chunking['total_chunks']} chunks of up to "
+            f"{chunking['chunk_size']} company(ies), cooldown {chunking['cooldown_seconds']}s.",
+        )
 
     last_error: str | None = None
     try:
-        for i, (company, store) in enumerate(company_store_pairs, 1):
-            await _cooperate_with_job_control(job_id)
-            prefix = f"Evaluating {company.name} ({i}/{total})"
-            _append_progress(job_id, f"{prefix} — Starting...")
-
-            def make_specter_progress(p: str) -> None:
-                _raise_if_stopped(job_id)
-                full_msg = f"{prefix} — {p}"
-                _append_progress(job_id, full_msg)
-
-            try:
-                started = time.perf_counter()
-                result = await evaluate_from_specter(
-                    company, store, k=8, use_web_search=use_web_search,
-                    on_progress=make_specter_progress,
-                    on_cooperate=lambda: _cooperate_with_job_control(job_id),
-                    vc_investment_strategy=vc_investment_strategy,
+        processed = 0
+        for chunk_idx, company_chunk in enumerate(company_chunks, 1):
+            if chunking["enabled"]:
+                chunk_start = processed + 1
+                chunk_end = processed + len(company_chunk)
+                _append_progress(
+                    job_id,
+                    f"Starting chunk {chunk_idx}/{chunking['total_chunks']} — companies {chunk_start}-{chunk_end} of {total}.",
                 )
-                latency_ms = int((time.perf_counter() - started) * 1000)
+            for company, store in company_chunk:
                 await _cooperate_with_job_control(job_id)
-                results_list.append(result)
-                _results_cache[job_id].setdefault("model_executions", []).append(
-                    {
-                        **telemetry_base,
-                        "company_slug": result.get("slug"),
-                        "stage": "evaluate_from_specter",
-                        "latency_ms": latency_ms,
-                        "status": "done",
-                    }
+                processed += 1
+                prefix = (
+                    f"Chunk {chunk_idx}/{chunking['total_chunks']} — Evaluating {company.name} ({processed}/{total})"
+                    if chunking["enabled"]
+                    else f"Evaluating {company.name} ({processed}/{total})"
                 )
-            except _JobStoppedError:
-                raise
-            except Exception as exc:
-                import traceback
-                last_error = str(exc)
-                print(f"  ERROR evaluating {company.name}: {exc}")
-                traceback.print_exc()
-                _results_cache[job_id].setdefault("model_executions", []).append(
-                    {
-                        **telemetry_base,
-                        "company_slug": store.startup_slug,
-                        "stage": "evaluate_from_specter",
-                        "status": "error",
-                        "error_message": str(exc)[:500],
-                    }
-                )
-                if db and db.is_configured():
-                    db.insert_analysis_error(
-                        job_id,
-                        message=str(exc)[:1000],
-                        stage="evaluate_from_specter",
-                        error_type=type(exc).__name__,
-                        company_slug=store.startup_slug,
+                _append_progress(job_id, f"{prefix} — Starting...")
+
+                def make_specter_progress(p: str) -> None:
+                    _raise_if_stopped(job_id)
+                    full_msg = f"{prefix} — {p}"
+                    _append_progress(job_id, full_msg)
+
+                try:
+                    result = await evaluate_from_specter(
+                        company, store, k=8, use_web_search=use_web_search,
+                        on_progress=make_specter_progress,
+                        on_cooperate=lambda: _cooperate_with_job_control(job_id),
+                        vc_investment_strategy=vc_investment_strategy,
                     )
-                results_list.append({
-                    "slug": store.startup_slug,
-                    "skipped": True,
-                    "error": str(exc)[:500],
-                    "company_name": company.name,
-                })
+                    await _cooperate_with_job_control(job_id)
+                    results_list.append(result)
+                    _append_progress(job_id, f"{prefix} — Persisting partial result...")
+                    _persist_company_result_to_db(job_id, result)
+                    _compact_result_for_cache(result)
+                    _update_partial_results_cache(job_id, upload_dir, results_list)
+                    _append_progress(
+                        job_id,
+                        f"Partial results updated — {len([r for r in results_list if not r.get('skipped')])}/{total} companies completed.",
+                    )
+                except _JobStoppedError:
+                    raise
+                except Exception as exc:
+                    import traceback
+                    last_error = str(exc)
+                    print(f"  ERROR evaluating {company.name}: {exc}")
+                    traceback.print_exc()
+                    if db and db.is_configured():
+                        db.insert_analysis_error(
+                            job_id,
+                            message=str(exc)[:1000],
+                            stage="evaluate_from_specter",
+                            error_type=type(exc).__name__,
+                            company_slug=store.startup_slug,
+                        )
+                    results_list.append({
+                        "slug": store.startup_slug,
+                        "skipped": True,
+                        "error": str(exc)[:500],
+                        "company_name": company.name,
+                    })
+
+            if (
+                chunking["enabled"]
+                and chunk_idx < chunking["total_chunks"]
+                and chunking["cooldown_seconds"] > 0
+            ):
+                _append_progress(
+                    job_id,
+                    f"Chunk {chunk_idx}/{chunking['total_chunks']} complete — cooling down for {chunking['cooldown_seconds']}s before next chunk.",
+                )
+                await asyncio.sleep(chunking["cooldown_seconds"])
     except _JobStoppedError:
         if _finalize_stopped_results(
             job_id,
@@ -1655,7 +1897,13 @@ async def get_config(session_id: str | None = Cookie(default=None)):
     """Return current app config (e.g. LLM) for backfilling past runs."""
     if not _check_session(session_id):
         raise HTTPException(status_code=401, detail="Not authenticated")
-    return {"llm": _get_llm_display()}
+    default_llm = current_default_selection()
+    return {
+        "llm": default_llm["label"],
+        "default_llm": default_llm,
+        "available_models": available_models_payload(),
+        "pricing_catalog": pricing_catalog_payload(),
+    }
 
 
 @app.get("/api/status/{job_id}")
@@ -1665,13 +1913,14 @@ async def get_status(job_id: str, session_id: str | None = Cookie(default=None))
 
     if job_id in _jobs:
         job = _jobs[job_id]
+        results = _results_cache.get(job_id, {}).get("results")
         return {
             "job_id": job.job_id,
             "status": job.status,
             "progress": job.progress,
             "progress_log": getattr(job, "progress_log", []) or [],
-            "results": _results_cache.get(job_id, {}).get("results"),
-            "llm": _get_llm_display(),
+            "results": results,
+            "llm": _resolve_job_llm_label(job_id, results=results),
         }
 
     if db and db.is_configured():
@@ -1695,7 +1944,9 @@ async def get_status(job_id: str, session_id: str | None = Cookie(default=None))
                 "progress": "Analysis complete",
                 "progress_log": [],
                 "results": results,
-                "llm": _get_llm_display(),
+                "llm": _selection_from_payload(results)["label"]
+                if _selection_from_payload(results)
+                else _get_llm_display(),
             }
 
     raise HTTPException(status_code=404, detail="Job not found")

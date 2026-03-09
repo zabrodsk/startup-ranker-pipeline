@@ -22,10 +22,6 @@ from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
 from agent.pipeline.state.schemas import ArgumentCritique
 from agent.rate_limit import gather_with_concurrency
 
-# Initialize LLM
-llm = get_llm(temperature=0.5)
-
-
 @backoff.on_exception(
     backoff.expo, RateLimitError, max_tries=5, max_time=60, jitter=backoff.full_jitter
 )
@@ -42,6 +38,7 @@ async def _apply_devils_advocate_to_pro_argument(
     """
     pro_user_prompt = get_prompt("critique.pro_user", prompt_overrides)
     pro_system_prompt = get_prompt("critique.pro_system", prompt_overrides)
+    llm = get_llm(temperature=0.5)
     llm_with_structured_output = llm.with_structured_output(ArgumentCritique)
 
     user_prompt = pro_user_prompt.format(
@@ -76,6 +73,7 @@ async def _apply_devils_advocate_to_contra_argument(
     """
     contra_user_prompt = get_prompt("critique.contra_user", prompt_overrides)
     contra_system_prompt = get_prompt("critique.contra_system", prompt_overrides)
+    llm = get_llm(temperature=0.5)
     llm_with_structured_output = llm.with_structured_output(ArgumentCritique)
 
     user_prompt = contra_user_prompt.format(

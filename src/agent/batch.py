@@ -11,6 +11,7 @@ import contextlib
 import os
 import sys
 import time
+from contextvars import copy_context
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List
@@ -26,10 +27,17 @@ from agent.dataclasses.config import Config
 from agent.dataclasses.ranking import CompanyRankingResult
 from agent.evidence_answering import answer_all_trees_from_evidence
 from agent.ingest import EvidenceStore, ingest_startup_folder
-from agent.llm import create_llm
+from agent.llm import create_llm, get_llm_runtime_settings
 from agent.prompt_library.manager import get_prompt
 from agent.pipeline.stages.parallel_decomposition import decompose_all_questions
 from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
+from agent.run_context import (
+    get_current_collector,
+    get_current_company_slug,
+    get_current_llm_selection,
+    use_company_context,
+    use_stage_context,
+)
 
 
 def _read_positive_int_env(name: str, default: int) -> int:
@@ -43,7 +51,7 @@ def _read_positive_int_env(name: str, default: int) -> int:
         return default
 
 
-SCORING_TIMEOUT_SECONDS = _read_positive_int_env("SCORING_TIMEOUT_SECONDS", 420)
+SCORING_TIMEOUT_SECONDS = _read_positive_int_env("SCORING_TIMEOUT_SECONDS", 900)
 SCORING_HEARTBEAT_SECONDS = _read_positive_int_env("SCORING_HEARTBEAT_SECONDS", 20)
 
 
@@ -64,9 +72,10 @@ async def _await_with_heartbeat(
 
     interval = max(1, heartbeat_seconds)
     loop = asyncio.get_running_loop()
+    ctx = copy_context()
 
     def _run_in_thread() -> Any:
-        return asyncio.run(coro)
+        return ctx.run(asyncio.run, coro)
 
     task = loop.run_in_executor(None, _run_in_thread)
     started = time.monotonic()
@@ -83,7 +92,8 @@ async def _await_with_heartbeat(
         if elapsed >= timeout_seconds:
             task.cancel()
             raise TimeoutError(
-                f"Scoring step timed out after {timeout_seconds}s",
+                "Scoring wall-clock timeout reached after "
+                f"{timeout_seconds}s; background provider work may still be unwinding",
             )
 
 
@@ -94,6 +104,21 @@ def _ensure_str(val: Any) -> str:
     if isinstance(val, list):
         return " ".join(str(x) for x in val) if val else ""
     return str(val)
+
+
+def _scoring_retry_count(stage_name: str) -> int:
+    collector = get_current_collector()
+    if not collector:
+        return 0
+    current_slug = get_current_company_slug()
+    return sum(
+        1
+        for row in collector.model_executions
+        if row.get("service") == "llm"
+        and row.get("stage") == stage_name
+        and row.get("status") == "retrying"
+        and row.get("company_slug") == current_slug
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -183,100 +208,180 @@ async def evaluate_startup(
             on_progress(msg)
         print(f"  {msg}")
 
-    print(f"\n{'='*60}")
-    print(f"  Evaluating: {slug}")
-    print(f"{'='*60}")
+    with use_company_context(slug):
+        print(f"\n{'='*60}")
+        print(f"  Evaluating: {slug}")
+        print(f"{'='*60}")
 
-    if config is None:
-        config = Config(
-            n_pro_arguments=3,
-            n_contra_arguments=3,
-            k_best_arguments_per_iteration=[3, 1],
-            max_iterations=1,
+        if config is None:
+            config = Config(
+                n_pro_arguments=3,
+                n_contra_arguments=3,
+                k_best_arguments_per_iteration=[3, 1],
+                max_iterations=1,
+            )
+
+        # 1. Ingest
+        _progress("[1/4] Ingesting files & extracting content...")
+        store = initial_store if initial_store is not None else ingest_startup_folder(folder)
+        if not store.chunks:
+            print(f"  Skipping {slug}: no extractable content found.")
+            return {"slug": slug, "skipped": True}
+
+        _progress(f"[1/4] {len(store.chunks)} chunks extracted")
+
+        # 2. Extract company info
+        _progress("[2/4] Identifying company information...")
+        company = initial_company
+        if company is None:
+            company = await extract_company_info(
+                store,
+                slug,
+                prompt_overrides=prompt_overrides,
+            )
+        _progress(f"[2/4] {company.name} | {company.industry or 'N/A'}")
+
+        # 3. Decompose questions & answer from evidence
+        _progress("[3/4] Decomposing questions & gathering evidence...")
+        if on_cooperate:
+            await on_cooperate()
+        temp_state = IterativeInvestmentStoryState(
+            company=company,
+            config=config,
+            prompt_overrides=prompt_overrides or {},
         )
+        decomp_result = await decompose_all_questions(temp_state)
+        question_trees = decomp_result["question_trees"]
 
-    # 1. Ingest
-    _progress("[1/4] Ingesting files & extracting content...")
-    store = initial_store if initial_store is not None else ingest_startup_folder(folder)
-    if not store.chunks:
-        print(f"  Skipping {slug}: no extractable content found.")
-        return {"slug": slug, "skipped": True}
+        def _on_qa_progress(current: int, total: int) -> None:
+            _progress(f"[3/4] Decomposing questions & gathering evidence... ({current}/{total} Q&A)")
 
-    _progress(f"[1/4] {len(store.chunks)} chunks extracted")
-
-    # 2. Extract company info
-    _progress("[2/4] Identifying company information...")
-    company = initial_company
-    if company is None:
-        company = await extract_company_info(
-            store,
-            slug,
-            prompt_overrides=prompt_overrides,
+        all_qa_pairs = await answer_all_trees_from_evidence(
+            question_trees, company, store, k=k,
+            use_web_search=use_web_search,
+            on_progress=_on_qa_progress,
+            on_cooperate=on_cooperate,
+            vc_context=_ensure_str(vc_investment_strategy).strip() or "",
+            prompt_overrides=prompt_overrides or {},
         )
-    _progress(f"[2/4] {company.name} | {company.industry or 'N/A'}")
+        _progress(f"[3/4] {len(all_qa_pairs)} Q&A pairs generated")
 
-    # 3. Decompose questions & answer from evidence
-    _progress("[3/4] Decomposing questions & gathering evidence...")
-    if on_cooperate:
-        await on_cooperate()
-    temp_state = IterativeInvestmentStoryState(
-        company=company,
-        config=config,
-        prompt_overrides=prompt_overrides or {},
-    )
-    decomp_result = await decompose_all_questions(temp_state)
-    question_trees = decomp_result["question_trees"]
-
-    def _on_qa_progress(current: int, total: int) -> None:
-        _progress(f"[3/4] Decomposing questions & gathering evidence... ({current}/{total} Q&A)")
-
-    all_qa_pairs = await answer_all_trees_from_evidence(
-        question_trees, company, store, k=k,
-        use_web_search=use_web_search,
-        on_progress=_on_qa_progress,
-        on_cooperate=on_cooperate,
-        vc_context=_ensure_str(vc_investment_strategy).strip() or "",
-        prompt_overrides=prompt_overrides or {},
-    )
-    _progress(f"[3/4] {len(all_qa_pairs)} Q&A pairs generated")
-
-    # 4. Run existing DIALECTIC graph (enters at argument generation)
-    _progress("[4/4] Generating arguments & scoring...")
-    from agent.pipeline.graph import graph
-
-    def _on_scoring_heartbeat(elapsed: int, timeout_s: int) -> None:
+        # 4. Run existing DIALECTIC graph (enters at argument generation)
+        _progress("[4/4] Generating arguments & scoring...")
+        llm_runtime = get_llm_runtime_settings()
+        llm_selection = get_current_llm_selection() or {}
+        request_timeout_s = llm_runtime["request_timeout_seconds"]
+        max_retries = llm_runtime["max_retries"]
+        stage_name = "batch_scoring"
         _progress(
-            f"[4/4] Generating arguments & scoring... "
-            f"({elapsed}s elapsed, timeout {timeout_s}s)",
+            "[4/4] Runtime limits: "
+            f"provider={llm_selection.get('provider') or 'default'} "
+            f"model={llm_selection.get('model') or 'default'} "
+            f"request_timeout={request_timeout_s}s "
+            f"wall_timeout={SCORING_TIMEOUT_SECONDS}s "
+            f"max_retries={max_retries}"
         )
+        from agent.pipeline.graph import graph
 
-    final_state = await _await_with_heartbeat(
-        graph.ainvoke(
-            {
-                "company": company,
-                "config": config,
-                "all_qa_pairs": all_qa_pairs,
-                "prompt_overrides": prompt_overrides or {},
-                "vc_context": _ensure_str(vc_investment_strategy).strip() or "",
-                "slug": slug,
-            },
-            config={"recursion_limit": 100},
-        ),
-        timeout_seconds=SCORING_TIMEOUT_SECONDS,
-        heartbeat_seconds=SCORING_HEARTBEAT_SECONDS,
-        on_heartbeat=_on_scoring_heartbeat,
-    )
+        def _on_scoring_heartbeat(elapsed: int, timeout_s: int) -> None:
+            retry_count = _scoring_retry_count(stage_name)
+            wait_state = (
+                "retrying after provider throttle/timeout"
+                if retry_count > 0
+                else "still scoring"
+            )
+            _progress(
+                f"[4/4] Generating arguments & scoring... "
+                f"{wait_state} "
+                f"({elapsed}s elapsed, wall timeout {timeout_s}s, "
+                f"request timeout {request_timeout_s}s, retries observed {retry_count})",
+            )
 
-    decision = final_state.get("final_decision", "unknown")
-    print(f"         Decision: {decision}")
+        collector = get_current_collector()
+        if collector:
+            collector.record_execution_event(
+                service="pipeline_stage",
+                status="started",
+                stage=stage_name,
+                provider=llm_selection.get("provider"),
+                model=llm_selection.get("model"),
+                request_timeout_seconds=request_timeout_s,
+                max_retries=max_retries,
+                metadata={
+                    "slug": slug,
+                    "wall_timeout_seconds": SCORING_TIMEOUT_SECONDS,
+                    "heartbeat_seconds": SCORING_HEARTBEAT_SECONDS,
+                    "source": "evaluate_startup",
+                },
+            )
 
-    return {
-        "slug": slug,
-        "company": company,
-        "evidence_store": store,
-        "final_state": final_state,
-        "skipped": False,
-    }
+        started_scoring = time.monotonic()
+        try:
+            with use_stage_context(stage_name):
+                final_state = await _await_with_heartbeat(
+                    graph.ainvoke(
+                        {
+                            "company": company,
+                            "config": config,
+                            "all_qa_pairs": all_qa_pairs,
+                            "prompt_overrides": prompt_overrides or {},
+                            "vc_context": _ensure_str(vc_investment_strategy).strip() or "",
+                            "slug": slug,
+                        },
+                        config={"recursion_limit": 100},
+                    ),
+                    timeout_seconds=SCORING_TIMEOUT_SECONDS,
+                    heartbeat_seconds=SCORING_HEARTBEAT_SECONDS,
+                    on_heartbeat=_on_scoring_heartbeat,
+                )
+        except TimeoutError as exc:
+            if collector:
+                collector.record_execution_event(
+                    service="pipeline_stage",
+                    status="timeout",
+                    stage=stage_name,
+                    provider=llm_selection.get("provider"),
+                    model=llm_selection.get("model"),
+                    request_timeout_seconds=request_timeout_s,
+                    max_retries=max_retries,
+                    latency_ms=int((time.monotonic() - started_scoring) * 1000),
+                    error_message=str(exc),
+                    metadata={
+                        "slug": slug,
+                        "wall_timeout_seconds": SCORING_TIMEOUT_SECONDS,
+                        "request_timeout_seconds": request_timeout_s,
+                        "retry_events_observed": _scoring_retry_count(stage_name),
+                    },
+                )
+            raise
+        else:
+            if collector:
+                collector.record_execution_event(
+                    service="pipeline_stage",
+                    status="done",
+                    stage=stage_name,
+                    provider=llm_selection.get("provider"),
+                    model=llm_selection.get("model"),
+                    request_timeout_seconds=request_timeout_s,
+                    max_retries=max_retries,
+                    latency_ms=int((time.monotonic() - started_scoring) * 1000),
+                    metadata={
+                        "slug": slug,
+                        "wall_timeout_seconds": SCORING_TIMEOUT_SECONDS,
+                        "retry_events_observed": _scoring_retry_count(stage_name),
+                    },
+                )
+
+        decision = final_state.get("final_decision", "unknown")
+        print(f"         Decision: {decision}")
+
+        return {
+            "slug": slug,
+            "company": company,
+            "evidence_store": store,
+            "final_state": final_state,
+            "skipped": False,
+        }
 
 
 async def evaluate_from_specter(
@@ -296,87 +401,167 @@ async def evaluate_from_specter(
     Company and EvidenceStore built from Specter CSVs directly.
     """
     slug = store.startup_slug
-    print(f"\n{'='*60}")
-    print(f"  Evaluating (Specter): {company.name}")
-    print(f"{'='*60}")
+    with use_company_context(slug):
+        print(f"\n{'='*60}")
+        print(f"  Evaluating (Specter): {company.name}")
+        print(f"{'='*60}")
 
-    if config is None:
-        config = Config(
-            n_pro_arguments=3,
-            n_contra_arguments=3,
-            k_best_arguments_per_iteration=[3, 1],
-            max_iterations=1,
+        if config is None:
+            config = Config(
+                n_pro_arguments=3,
+                n_contra_arguments=3,
+                k_best_arguments_per_iteration=[3, 1],
+                max_iterations=1,
+            )
+
+        def _progress(msg: str) -> None:
+            if on_progress:
+                on_progress(msg)
+            print(f"  {msg}")
+
+        _progress(f"[1/3] {len(store.chunks)} evidence chunks · {company.name} ({company.industry or 'N/A'})")
+        if company.team:
+            print(f"         Team: {len(company.team)} member(s)")
+
+        _progress("[2/3] Decomposing questions & gathering evidence...")
+        if on_cooperate:
+            await on_cooperate()
+        temp_state = IterativeInvestmentStoryState(
+            company=company,
+            config=config,
+            prompt_overrides=prompt_overrides or {},
         )
+        decomp_result = await decompose_all_questions(temp_state)
+        question_trees = decomp_result["question_trees"]
 
-    def _progress(msg: str) -> None:
-        if on_progress:
-            on_progress(msg)
-        print(f"  {msg}")
+        def _on_qa_progress(current: int, total: int) -> None:
+            _progress(f"[2/3] Decomposing questions & gathering evidence... ({current}/{total} Q&A)")
 
-    _progress(f"[1/3] {len(store.chunks)} evidence chunks · {company.name} ({company.industry or 'N/A'})")
-    if company.team:
-        print(f"         Team: {len(company.team)} member(s)")
+        all_qa_pairs = await answer_all_trees_from_evidence(
+            question_trees, company, store, k=k,
+            use_web_search=use_web_search,
+            on_progress=_on_qa_progress,
+            on_cooperate=on_cooperate,
+            vc_context=_ensure_str(vc_investment_strategy).strip() or "",
+            prompt_overrides=prompt_overrides or {},
+        )
+        _progress(f"[2/3] {len(all_qa_pairs)} Q&A pairs generated")
 
-    _progress("[2/3] Decomposing questions & gathering evidence...")
-    if on_cooperate:
-        await on_cooperate()
-    temp_state = IterativeInvestmentStoryState(
-        company=company,
-        config=config,
-        prompt_overrides=prompt_overrides or {},
-    )
-    decomp_result = await decompose_all_questions(temp_state)
-    question_trees = decomp_result["question_trees"]
-
-    def _on_qa_progress(current: int, total: int) -> None:
-        _progress(f"[2/3] Decomposing questions & gathering evidence... ({current}/{total} Q&A)")
-
-    all_qa_pairs = await answer_all_trees_from_evidence(
-        question_trees, company, store, k=k,
-        use_web_search=use_web_search,
-        on_progress=_on_qa_progress,
-        on_cooperate=on_cooperate,
-        vc_context=_ensure_str(vc_investment_strategy).strip() or "",
-        prompt_overrides=prompt_overrides or {},
-    )
-    _progress(f"[2/3] {len(all_qa_pairs)} Q&A pairs generated")
-
-    _progress("[3/3] Generating arguments & scoring...")
-    from agent.pipeline.graph import graph
-
-    def _on_scoring_heartbeat(elapsed: int, timeout_s: int) -> None:
+        _progress("[3/3] Generating arguments & scoring...")
+        llm_runtime = get_llm_runtime_settings()
+        llm_selection = get_current_llm_selection() or {}
+        request_timeout_s = llm_runtime["request_timeout_seconds"]
+        max_retries = llm_runtime["max_retries"]
+        stage_name = "batch_scoring"
         _progress(
-            f"[3/3] Generating arguments & scoring... "
-            f"({elapsed}s elapsed, timeout {timeout_s}s)",
+            "[3/3] Runtime limits: "
+            f"provider={llm_selection.get('provider') or 'default'} "
+            f"model={llm_selection.get('model') or 'default'} "
+            f"request_timeout={request_timeout_s}s "
+            f"wall_timeout={SCORING_TIMEOUT_SECONDS}s "
+            f"max_retries={max_retries}"
         )
+        from agent.pipeline.graph import graph
 
-    final_state = await _await_with_heartbeat(
-        graph.ainvoke(
-            {
-                "company": company,
-                "config": config,
-                "all_qa_pairs": all_qa_pairs,
-                "prompt_overrides": prompt_overrides or {},
-                "vc_context": _ensure_str(vc_investment_strategy).strip() or "",
-                "slug": slug,
-            },
-            config={"recursion_limit": 100},
-        ),
-        timeout_seconds=SCORING_TIMEOUT_SECONDS,
-        heartbeat_seconds=SCORING_HEARTBEAT_SECONDS,
-        on_heartbeat=_on_scoring_heartbeat,
-    )
+        def _on_scoring_heartbeat(elapsed: int, timeout_s: int) -> None:
+            retry_count = _scoring_retry_count(stage_name)
+            wait_state = (
+                "retrying after provider throttle/timeout"
+                if retry_count > 0
+                else "still scoring"
+            )
+            _progress(
+                f"[3/3] Generating arguments & scoring... "
+                f"{wait_state} "
+                f"({elapsed}s elapsed, wall timeout {timeout_s}s, "
+                f"request timeout {request_timeout_s}s, retries observed {retry_count})",
+            )
 
-    decision = final_state.get("final_decision", "unknown")
-    print(f"         Decision: {decision}")
+        collector = get_current_collector()
+        if collector:
+            collector.record_execution_event(
+                service="pipeline_stage",
+                status="started",
+                stage=stage_name,
+                provider=llm_selection.get("provider"),
+                model=llm_selection.get("model"),
+                request_timeout_seconds=request_timeout_s,
+                max_retries=max_retries,
+                metadata={
+                    "slug": slug,
+                    "wall_timeout_seconds": SCORING_TIMEOUT_SECONDS,
+                    "heartbeat_seconds": SCORING_HEARTBEAT_SECONDS,
+                    "source": "evaluate_from_specter",
+                },
+            )
 
-    return {
-        "slug": slug,
-        "company": company,
-        "evidence_store": store,
-        "final_state": final_state,
-        "skipped": False,
-    }
+        started_scoring = time.monotonic()
+        try:
+            with use_stage_context(stage_name):
+                final_state = await _await_with_heartbeat(
+                    graph.ainvoke(
+                        {
+                            "company": company,
+                            "config": config,
+                            "all_qa_pairs": all_qa_pairs,
+                            "prompt_overrides": prompt_overrides or {},
+                            "vc_context": _ensure_str(vc_investment_strategy).strip() or "",
+                            "slug": slug,
+                        },
+                        config={"recursion_limit": 100},
+                    ),
+                    timeout_seconds=SCORING_TIMEOUT_SECONDS,
+                    heartbeat_seconds=SCORING_HEARTBEAT_SECONDS,
+                    on_heartbeat=_on_scoring_heartbeat,
+                )
+        except TimeoutError as exc:
+            if collector:
+                collector.record_execution_event(
+                    service="pipeline_stage",
+                    status="timeout",
+                    stage=stage_name,
+                    provider=llm_selection.get("provider"),
+                    model=llm_selection.get("model"),
+                    request_timeout_seconds=request_timeout_s,
+                    max_retries=max_retries,
+                    latency_ms=int((time.monotonic() - started_scoring) * 1000),
+                    error_message=str(exc),
+                    metadata={
+                        "slug": slug,
+                        "wall_timeout_seconds": SCORING_TIMEOUT_SECONDS,
+                        "request_timeout_seconds": request_timeout_s,
+                        "retry_events_observed": _scoring_retry_count(stage_name),
+                    },
+                )
+            raise
+        else:
+            if collector:
+                collector.record_execution_event(
+                    service="pipeline_stage",
+                    status="done",
+                    stage=stage_name,
+                    provider=llm_selection.get("provider"),
+                    model=llm_selection.get("model"),
+                    request_timeout_seconds=request_timeout_s,
+                    max_retries=max_retries,
+                    latency_ms=int((time.monotonic() - started_scoring) * 1000),
+                    metadata={
+                        "slug": slug,
+                        "wall_timeout_seconds": SCORING_TIMEOUT_SECONDS,
+                        "retry_events_observed": _scoring_retry_count(stage_name),
+                    },
+                )
+
+        decision = final_state.get("final_decision", "unknown")
+        print(f"         Decision: {decision}")
+
+        return {
+            "slug": slug,
+            "company": company,
+            "evidence_store": store,
+            "final_state": final_state,
+            "skipped": False,
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -12,11 +12,15 @@ Environment variables:
 """
 
 import os
+from typing import Any
 
 from dotenv import load_dotenv
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from agent.llm_catalog import normalize_provider
 from agent.rate_limit import wrap_llm
+from agent.run_context import get_current_collector, get_current_llm_selection
 
 load_dotenv()
 
@@ -24,6 +28,119 @@ _DEFAULT_PROVIDER = "gemini"
 _DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 _DEFAULT_TIMEOUT_SECONDS = 90.0
 _DEFAULT_MAX_RETRIES = 2
+
+
+def _extract_usage_metadata(payload: Any) -> dict[str, int] | None:
+    """Normalize provider-specific usage payloads into prompt/completion/total tokens."""
+    if payload is None:
+        return None
+
+    sources: list[dict[str, Any]] = []
+    generations = None
+    if isinstance(payload, dict):
+        sources.append(payload)
+        generations = payload.get("generations")
+        if isinstance(payload.get("llm_output"), dict):
+            sources.append(payload["llm_output"])
+        if isinstance(payload.get("response_metadata"), dict):
+            sources.append(payload["response_metadata"])
+    else:
+        llm_output = getattr(payload, "llm_output", None)
+        response_metadata = getattr(payload, "response_metadata", None)
+        generations = getattr(payload, "generations", None)
+        if isinstance(llm_output, dict):
+            sources.append(llm_output)
+        if isinstance(response_metadata, dict):
+            sources.append(response_metadata)
+        if hasattr(payload, "dict"):
+            try:
+                payload_dict = payload.dict()
+            except Exception:
+                payload_dict = None
+            if isinstance(payload_dict, dict):
+                sources.append(payload_dict)
+                if generations is None:
+                    generations = payload_dict.get("generations")
+                if isinstance(payload_dict.get("llm_output"), dict):
+                    sources.append(payload_dict["llm_output"])
+                if isinstance(payload_dict.get("response_metadata"), dict):
+                    sources.append(payload_dict["response_metadata"])
+
+    candidate = None
+    for source in sources:
+        candidate = (
+            source.get("token_usage")
+            or source.get("usage_metadata")
+            or source.get("usage")
+        )
+        if isinstance(candidate, dict):
+            break
+        candidate = None
+
+    if candidate is None and isinstance(generations, list):
+        for generation_list in generations:
+            if not generation_list:
+                continue
+            generation = generation_list[0]
+            message = getattr(generation, "message", None)
+            if message is None and isinstance(generation, dict):
+                message = generation.get("message")
+            usage_metadata = getattr(message, "usage_metadata", None)
+            if usage_metadata is None and isinstance(message, dict):
+                usage_metadata = message.get("usage_metadata")
+            if isinstance(usage_metadata, dict):
+                candidate = usage_metadata
+                break
+
+    if not isinstance(candidate, dict):
+        return None
+
+    def _read_int(*keys: str) -> int | None:
+        for key in keys:
+            value = candidate.get(key)
+            if isinstance(value, int):
+                return value
+            if isinstance(value, float):
+                return int(value)
+        return None
+
+    prompt_tokens = _read_int("prompt_tokens", "input_tokens", "prompt_token_count", "input_token_count")
+    completion_tokens = _read_int("completion_tokens", "output_tokens", "candidates_token_count", "output_token_count")
+    total_tokens = _read_int("total_tokens", "total_token_count")
+    if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+        total_tokens = prompt_tokens + completion_tokens
+
+    if prompt_tokens is None or completion_tokens is None or total_tokens is None:
+        return None
+
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+class _TelemetryCallbackHandler(BaseCallbackHandler):
+    """Collect token usage from LangChain callback payloads."""
+
+    def on_llm_end(self, response, **kwargs: Any) -> Any:
+        collector = get_current_collector()
+        selection = get_current_llm_selection()
+        if not collector or not selection:
+            return None
+        usage = _extract_usage_metadata(response)
+        collector.record_llm_usage(
+            provider=selection["provider"],
+            model=selection["model"],
+            prompt_tokens=(usage or {}).get("prompt_tokens"),
+            completion_tokens=(usage or {}).get("completion_tokens"),
+            total_tokens=(usage or {}).get("total_tokens"),
+            metadata={},
+        )
+        return None
+
+
+_TELEMETRY_CALLBACK = _TelemetryCallbackHandler()
 
 
 def _read_positive_float_env(name: str, default: float) -> float:
@@ -63,10 +180,12 @@ def create_llm(temperature: float = 0.0) -> BaseChatModel:
     if not (0.0 <= temperature <= 2.0):
         raise ValueError(f"Temperature must be between 0.0 and 2.0, got {temperature}")
 
-    provider = os.getenv("LLM_PROVIDER", _DEFAULT_PROVIDER).lower()
-    model = os.getenv("MODEL_NAME", _DEFAULT_MODEL)
-    timeout_s = _read_positive_float_env("LLM_REQUEST_TIMEOUT_SECONDS", _DEFAULT_TIMEOUT_SECONDS)
-    max_retries = _read_nonnegative_int_env("LLM_MAX_RETRIES", _DEFAULT_MAX_RETRIES)
+    selection = get_current_llm_selection() or {}
+    provider = normalize_provider(selection.get("provider") or os.getenv("LLM_PROVIDER", _DEFAULT_PROVIDER))
+    model = selection.get("model") or os.getenv("MODEL_NAME", _DEFAULT_MODEL)
+    runtime = get_llm_runtime_settings()
+    timeout_s = runtime["request_timeout_seconds"]
+    max_retries = runtime["max_retries"]
 
     if provider == "gemini":
         return wrap_llm(_create_gemini(model, temperature, timeout_s, max_retries))
@@ -81,6 +200,20 @@ def create_llm(temperature: float = 0.0) -> BaseChatModel:
             f"Unknown LLM_PROVIDER '{provider}'. "
             "Supported: gemini, openai, anthropic, openrouter"
         )
+
+
+def get_llm_runtime_settings() -> dict[str, float | int]:
+    """Return the active runtime request controls for the current process."""
+    return {
+        "request_timeout_seconds": _read_positive_float_env(
+            "LLM_REQUEST_TIMEOUT_SECONDS",
+            _DEFAULT_TIMEOUT_SECONDS,
+        ),
+        "max_retries": _read_nonnegative_int_env(
+            "LLM_MAX_RETRIES",
+            _DEFAULT_MAX_RETRIES,
+        ),
+    }
 
 
 def _create_gemini(
@@ -101,6 +234,7 @@ def _create_gemini(
         temperature=temperature,
         timeout=timeout_s,
         max_retries=max_retries,
+        callbacks=[_TELEMETRY_CALLBACK],
     )
 
 
@@ -112,14 +246,20 @@ def _create_openai(
 ) -> BaseChatModel:
     from langchain_openai import ChatOpenAI
 
-    if model == "gpt-5-mini":
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
+
+    if model.startswith("gpt-5"):
         temperature = 1
 
     return ChatOpenAI(
         model=model,
+        api_key=api_key,
         temperature=temperature,
         request_timeout=timeout_s,
         max_retries=max_retries,
+        callbacks=[_TELEMETRY_CALLBACK],
     )
 
 
@@ -145,6 +285,7 @@ def _create_openrouter(
         temperature=temperature,
         request_timeout=timeout_s,
         max_retries=max_retries,
+        callbacks=[_TELEMETRY_CALLBACK],
     )
 
 
@@ -166,4 +307,5 @@ def _create_anthropic(
         temperature=temperature,
         default_request_timeout=timeout_s,
         max_retries=max_retries,
+        callbacks=[_TELEMETRY_CALLBACK],
     )

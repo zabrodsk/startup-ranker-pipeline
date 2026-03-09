@@ -186,6 +186,165 @@ def _upsert_company(
     return None
 
 
+def _select_existing_company_analyses(
+    client: Client,
+    *,
+    job_id_legacy: str,
+    company_id: str | None,
+) -> list[dict[str, Any]]:
+    if not company_id:
+        return []
+    try:
+        rows = (
+            client.table("analyses")
+            .select("id, pitch_deck_id")
+            .eq("job_id_legacy", job_id_legacy)
+            .eq("company_id", company_id)
+            .execute()
+        )
+        return list(rows.data or [])
+    except Exception:
+        return []
+
+
+def _replace_company_analysis_records(
+    client: Client,
+    *,
+    job_id_legacy: str,
+    company_id: str | None,
+    replace_documents: bool,
+) -> str | None:
+    existing_rows = _select_existing_company_analyses(
+        client,
+        job_id_legacy=job_id_legacy,
+        company_id=company_id,
+    )
+    pitch_deck_ids = [row.get("pitch_deck_id") for row in existing_rows if row.get("pitch_deck_id")]
+    preserved_pitch_deck_id = pitch_deck_ids[0] if pitch_deck_ids and not replace_documents else None
+
+    if company_id:
+        try:
+            client.table("analyses").delete().eq("job_id_legacy", job_id_legacy).eq("company_id", company_id).execute()
+        except Exception:
+            pass
+
+    if replace_documents:
+        for pitch_deck_id in pitch_deck_ids:
+            try:
+                client.table("chunks").delete().eq("pitch_deck_id", pitch_deck_id).execute()
+            except Exception:
+                pass
+            try:
+                client.table("pitch_decks").delete().eq("id", pitch_deck_id).execute()
+            except Exception:
+                pass
+
+    return preserved_pitch_deck_id
+
+
+def _persist_company_analysis_row(
+    client: Client,
+    *,
+    job_uuid: str,
+    job_id_legacy: str,
+    result_row: dict[str, Any],
+    company_payload: dict[str, Any],
+    run_config: dict[str, Any],
+    excel_storage_path: str | None,
+    replace_documents: bool,
+) -> bool:
+    company = result_row.get("company")
+    slug = result_row.get("slug", "unknown")
+    final_state = result_row.get("final_state", {})
+    store = result_row.get("evidence_store")
+    company_name = getattr(company, "name", None) or result_row.get("company_name") or slug
+    company_domain = getattr(company, "domain", None)
+    company_key = _normalize_company_key(company_name, company_domain, slug)
+    ranking_result = company_payload.get("ranking_result") or {}
+    summary_row = ((company_payload.get("summary_rows") or [{}]) or [{}])[0]
+
+    company_id = _upsert_company(
+        client,
+        name=company_name,
+        industry=getattr(company, "industry", None),
+        tagline=getattr(company, "tagline", None),
+        about=getattr(company, "about", None),
+        team=getattr(company, "team", None),
+        domain=company_domain,
+        company_key=company_key,
+    )
+
+    pitch_deck_id = _replace_company_analysis_records(
+        client,
+        job_id_legacy=job_id_legacy,
+        company_id=company_id,
+        replace_documents=replace_documents,
+    )
+
+    if store and company_id and (replace_documents or not pitch_deck_id):
+        pd_row = client.table("pitch_decks").insert(
+            {
+                "company_id": company_id,
+                "storage_path": f"jobs/{job_id_legacy}/{slug}",
+                "original_filename": f"{slug}.pdf",
+            }
+        ).execute()
+        if pd_row.data:
+            pitch_deck_id = pd_row.data[0]["id"]
+
+        if pitch_deck_id:
+            for idx, chunk in enumerate(getattr(store, "chunks", []) or []):
+                client.table("chunks").insert(
+                    {
+                        "pitch_deck_id": pitch_deck_id,
+                        "chunk_id": getattr(chunk, "chunk_id", None),
+                        "text": getattr(chunk, "text", ""),
+                        "source_file": getattr(chunk, "source_file", ""),
+                        "page_or_slide": (
+                            str(getattr(chunk, "page_or_slide", None))
+                            if getattr(chunk, "page_or_slide", None) is not None
+                            else None
+                        ),
+                        "sort_order": idx,
+                    }
+                ).execute()
+
+    client.table("analyses").insert(
+        {
+            "pitch_deck_id": pitch_deck_id,
+            "company_id": company_id,
+            "job_id": job_uuid,
+            "job_id_legacy": job_id_legacy,
+            "state": _serialize(final_state),
+            "results_payload": _serialize(company_payload),
+            "status": "done",
+            "run_config": _serialize(run_config),
+            "excel_storage_path": excel_storage_path,
+        }
+    ).execute()
+
+    client.table("company_runs").upsert(
+        {
+            "company_id": company_id,
+            "job_id": job_uuid,
+            "job_id_legacy": job_id_legacy,
+            "company_key": company_key,
+            "company_name": company_name,
+            "startup_slug": slug,
+            "input_order": summary_row.get("specter_input_order"),
+            "decision": company_payload.get("decision"),
+            "total_score": company_payload.get("total_score"),
+            "composite_score": ranking_result.get("composite_score"),
+            "bucket": ranking_result.get("bucket"),
+            "mode": run_config.get("input_mode", "pitchdeck"),
+            "run_created_at": datetime.now(timezone.utc).isoformat(),
+            "result_payload": _serialize(company_payload),
+        },
+        on_conflict="job_id_legacy,company_key",
+    ).execute()
+    return True
+
+
 def _get_supabase_config() -> tuple[str, str]:
     return (
         os.getenv("SUPABASE_URL", ""),
@@ -463,6 +622,8 @@ def persist_analysis(
         ensure_excel_bucket()
 
         job_uuid = upsert_job(job_id_legacy, run_config=run_config, versions=versions)
+        if not job_uuid:
+            return False
 
         excel_storage_path: str | None = None
         excel_file = Path(excel_path)
@@ -505,6 +666,7 @@ def persist_analysis(
                         "job_id": job_uuid,
                         "job_id_legacy": job_id_legacy,
                         "company_slug": exec_row.get("company_slug"),
+                        "service": exec_row.get("service", "llm"),
                         "stage": exec_row.get("stage", "scoring"),
                         "provider": exec_row.get("provider"),
                         "model": exec_row.get("model"),
@@ -514,6 +676,8 @@ def persist_analysis(
                         "prompt_tokens": exec_row.get("prompt_tokens"),
                         "completion_tokens": exec_row.get("completion_tokens"),
                         "total_tokens": exec_row.get("total_tokens"),
+                        "estimated_cost_usd": exec_row.get("estimated_cost_usd"),
+                        "request_count": exec_row.get("request_count"),
                         "status": exec_row.get("status", "done"),
                         "error_message": exec_row.get("error_message"),
                         "metadata": _serialize(exec_row.get("metadata") or {}),
@@ -525,90 +689,17 @@ def persist_analysis(
         payload_serialized = _serialize(results_payload)
 
         for r in evaluated:
-            company = r.get("company")
-            slug = r.get("slug", "unknown")
-            final_state = r.get("final_state", {})
-            store = r.get("evidence_store")
-            company_name = getattr(company, "name", None) or r.get("company_name") or slug
-            company_domain = getattr(company, "domain", None)
-            company_key = _normalize_company_key(company_name, company_domain, slug)
             company_payload = _company_payload_from_result(payload_serialized, r)
-            summary_row = ((company_payload.get("summary_rows") or [{}]) or [{}])[0]
-            ranking_result = company_payload.get("ranking_result") or {}
-
-            company_id = None
-            company_id = _upsert_company(
+            _persist_company_analysis_row(
                 client,
-                name=company_name,
-                industry=getattr(company, "industry", None),
-                tagline=getattr(company, "tagline", None),
-                about=getattr(company, "about", None),
-                team=getattr(company, "team", None),
-                domain=company_domain,
-                company_key=company_key,
+                job_uuid=job_uuid,
+                job_id_legacy=job_id_legacy,
+                result_row=r,
+                company_payload=company_payload,
+                run_config=run_config,
+                excel_storage_path=excel_storage_path,
+                replace_documents=False,
             )
-
-            pitch_deck_id = None
-            if store and company_id:
-                pd_row = client.table("pitch_decks").insert(
-                    {
-                        "company_id": company_id,
-                        "storage_path": f"jobs/{job_id_legacy}/{slug}",
-                        "original_filename": f"{slug}.pdf",
-                    }
-                ).execute()
-                if pd_row.data:
-                    pitch_deck_id = pd_row.data[0]["id"]
-
-                for idx, chunk in enumerate(store.chunks):
-                    client.table("chunks").insert(
-                        {
-                            "pitch_deck_id": pitch_deck_id,
-                            "chunk_id": chunk.chunk_id,
-                            "text": chunk.text,
-                            "source_file": chunk.source_file,
-                            "page_or_slide": str(chunk.page_or_slide) if chunk.page_or_slide is not None else None,
-                            "sort_order": idx,
-                        }
-                    ).execute()
-
-            state = _serialize(final_state)
-            client.table("analyses").insert(
-                {
-                    "pitch_deck_id": pitch_deck_id,
-                    "company_id": company_id,
-                    "job_id": job_uuid,
-                    "job_id_legacy": job_id_legacy,
-                    "state": state,
-                    "results_payload": payload_serialized,
-                    "status": "done",
-                    "run_config": _serialize(run_config),
-                    "excel_storage_path": excel_storage_path,
-                }
-            ).execute()
-
-            try:
-                client.table("company_runs").upsert(
-                    {
-                        "company_id": company_id,
-                        "job_id": job_uuid,
-                        "job_id_legacy": job_id_legacy,
-                        "company_key": company_key,
-                        "company_name": company_name,
-                        "startup_slug": slug,
-                        "input_order": summary_row.get("specter_input_order"),
-                        "decision": company_payload.get("decision"),
-                        "total_score": company_payload.get("total_score"),
-                        "composite_score": ranking_result.get("composite_score"),
-                        "bucket": ranking_result.get("bucket"),
-                        "mode": run_config.get("input_mode", "pitchdeck"),
-                        "run_created_at": datetime.now(timezone.utc).isoformat(),
-                        "result_payload": company_payload,
-                    },
-                    on_conflict="job_id_legacy,company_key",
-                ).execute()
-            except Exception:
-                pass
 
         insert_job_status_history(
             job_id_legacy,
@@ -624,6 +715,38 @@ def persist_analysis(
         )
 
         return True
+    except Exception:
+        return False
+
+
+def persist_company_result(
+    *,
+    job_id_legacy: str,
+    result_row: dict[str, Any],
+    company_payload: dict[str, Any],
+    run_config: dict[str, Any],
+    versions: dict[str, Any] | None = None,
+) -> bool:
+    """Persist one completed company immediately without waiting for the full batch."""
+    client = _get_client()
+    if not client or result_row.get("skipped"):
+        return False
+
+    try:
+        job_uuid = upsert_job(job_id_legacy, run_config=run_config, versions=versions)
+        if not job_uuid:
+            return False
+
+        return _persist_company_analysis_row(
+            client,
+            job_uuid=job_uuid,
+            job_id_legacy=job_id_legacy,
+            result_row=result_row,
+            company_payload=company_payload,
+            run_config=run_config,
+            excel_storage_path=None,
+            replace_documents=True,
+        )
     except Exception:
         return False
 
@@ -703,7 +826,7 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
     try:
         jobs_resp = (
             client.table("jobs")
-            .select("job_id_legacy, input_mode, use_web_search, created_at")
+            .select("job_id_legacy, input_mode, use_web_search, created_at, run_config")
             .order("created_at", desc=True)
             .limit(limit)
             .execute()
@@ -764,6 +887,7 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
                     "created_at": created_at,
                     "input_mode": row.get("input_mode"),
                     "use_web_search": row.get("use_web_search"),
+                    "run_config": row.get("run_config") or {},
                     "results": latest_analysis.get("results_payload"),
                     "excel_storage_path": latest_analysis.get("excel_storage_path"),
                 }

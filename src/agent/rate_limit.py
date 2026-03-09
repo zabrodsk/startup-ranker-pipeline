@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from threading import Lock, Semaphore
 from typing import Any, Awaitable, Iterable
 
+from agent.run_context import get_current_collector, get_current_llm_selection
+
 
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
@@ -174,12 +176,50 @@ class ThrottledRunnable:
         attempt = 0
         while True:
             await self._throttle.acquire_async()
+            started = time.monotonic()
             try:
                 return await self._runnable.ainvoke(*args, **kwargs)
             except Exception as exc:
-                if attempt >= self._retry_policy.max_retries or not is_retryable_api_error(exc):
+                retryable = is_retryable_api_error(exc)
+                selection = get_current_llm_selection() or {}
+                collector = get_current_collector()
+                latency_ms = int((time.monotonic() - started) * 1000)
+                if attempt >= self._retry_policy.max_retries or not retryable:
+                    if collector:
+                        collector.record_execution_event(
+                            service="llm",
+                            status="error",
+                            provider=selection.get("provider"),
+                            model=selection.get("model"),
+                            latency_ms=latency_ms,
+                            max_retries=self._retry_policy.max_retries,
+                            error_message=str(exc)[:500],
+                            metadata={
+                                "attempt": attempt + 1,
+                                "retryable": retryable,
+                                "status_code": _extract_status_code(exc),
+                                "error_type": exc.__class__.__name__,
+                            },
+                        )
                     raise
                 delay = compute_retry_delay(exc, attempt, self._retry_policy)
+                if collector:
+                    collector.record_execution_event(
+                        service="llm",
+                        status="retrying",
+                        provider=selection.get("provider"),
+                        model=selection.get("model"),
+                        latency_ms=latency_ms,
+                        max_retries=self._retry_policy.max_retries,
+                        error_message=str(exc)[:500],
+                        metadata={
+                            "attempt": attempt + 1,
+                            "retry_delay_seconds": delay,
+                            "status_code": _extract_status_code(exc),
+                            "error_type": exc.__class__.__name__,
+                            "rate_limited": is_rate_limit_error(exc),
+                        },
+                    )
                 if is_rate_limit_error(exc):
                     await self._throttle.impose_async_cooldown(delay)
             finally:
@@ -192,12 +232,50 @@ class ThrottledRunnable:
         attempt = 0
         while True:
             self._throttle.acquire_sync()
+            started = time.monotonic()
             try:
                 return self._runnable.invoke(*args, **kwargs)
             except Exception as exc:
-                if attempt >= self._retry_policy.max_retries or not is_retryable_api_error(exc):
+                retryable = is_retryable_api_error(exc)
+                selection = get_current_llm_selection() or {}
+                collector = get_current_collector()
+                latency_ms = int((time.monotonic() - started) * 1000)
+                if attempt >= self._retry_policy.max_retries or not retryable:
+                    if collector:
+                        collector.record_execution_event(
+                            service="llm",
+                            status="error",
+                            provider=selection.get("provider"),
+                            model=selection.get("model"),
+                            latency_ms=latency_ms,
+                            max_retries=self._retry_policy.max_retries,
+                            error_message=str(exc)[:500],
+                            metadata={
+                                "attempt": attempt + 1,
+                                "retryable": retryable,
+                                "status_code": _extract_status_code(exc),
+                                "error_type": exc.__class__.__name__,
+                            },
+                        )
                     raise
                 delay = compute_retry_delay(exc, attempt, self._retry_policy)
+                if collector:
+                    collector.record_execution_event(
+                        service="llm",
+                        status="retrying",
+                        provider=selection.get("provider"),
+                        model=selection.get("model"),
+                        latency_ms=latency_ms,
+                        max_retries=self._retry_policy.max_retries,
+                        error_message=str(exc)[:500],
+                        metadata={
+                            "attempt": attempt + 1,
+                            "retry_delay_seconds": delay,
+                            "status_code": _extract_status_code(exc),
+                            "error_type": exc.__class__.__name__,
+                            "rate_limited": is_rate_limit_error(exc),
+                        },
+                    )
                 if is_rate_limit_error(exc):
                     self._throttle.impose_sync_cooldown(delay)
             finally:

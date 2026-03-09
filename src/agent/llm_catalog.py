@@ -1,0 +1,204 @@
+"""Curated model catalog and pricing metadata for run-level LLM selection."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import asdict, dataclass
+from typing import Any
+
+
+@dataclass(frozen=True)
+class ModelPricing:
+    input_per_million_tokens_usd: float
+    output_per_million_tokens_usd: float
+
+
+@dataclass(frozen=True)
+class ModelCatalogEntry:
+    provider: str
+    model: str
+    label: str
+    summary: str
+    pricing: ModelPricing | None
+    required_env: tuple[str, ...]
+
+
+MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
+    ModelCatalogEntry(
+        provider="gemini",
+        model="gemini-3.1-flash-lite-preview",
+        label="Gemini 3.1 Flash Lite",
+        summary="Budget speed",
+        pricing=ModelPricing(
+            input_per_million_tokens_usd=0.25,
+            output_per_million_tokens_usd=1.50,
+        ),
+        required_env=("GOOGLE_API_KEY",),
+    ),
+    ModelCatalogEntry(
+        provider="anthropic",
+        model="claude-haiku-4-5-20251001",
+        label="Claude Haiku 4.5",
+        summary="Sharp writing",
+        pricing=ModelPricing(
+            input_per_million_tokens_usd=1.00,
+            output_per_million_tokens_usd=5.00,
+        ),
+        required_env=("ANTHROPIC_API_KEY",),
+    ),
+    ModelCatalogEntry(
+        provider="openai",
+        model="gpt-5-nano",
+        label="GPT-5 nano",
+        summary="Ultra fast",
+        pricing=ModelPricing(
+            input_per_million_tokens_usd=0.05,
+            output_per_million_tokens_usd=0.40,
+        ),
+        required_env=("OPENAI_API_KEY",),
+    ),
+    ModelCatalogEntry(
+        provider="openai",
+        model="gpt-5-mini",
+        label="GPT-5 mini",
+        summary="Balanced pick",
+        pricing=ModelPricing(
+            input_per_million_tokens_usd=0.25,
+            output_per_million_tokens_usd=2.00,
+        ),
+        required_env=("OPENAI_API_KEY",),
+    ),
+    ModelCatalogEntry(
+        provider="openai",
+        model="gpt-5",
+        label="GPT-5",
+        summary="Deep reasoning",
+        pricing=ModelPricing(
+            input_per_million_tokens_usd=1.25,
+            output_per_million_tokens_usd=10.00,
+        ),
+        required_env=("OPENAI_API_KEY",),
+    ),
+    ModelCatalogEntry(
+        provider="openai",
+        model="gpt-4.1-mini",
+        label="GPT-4.1 mini",
+        summary="Stable fallback",
+        pricing=ModelPricing(
+            input_per_million_tokens_usd=0.80,
+            output_per_million_tokens_usd=3.20,
+        ),
+        required_env=("OPENAI_API_KEY",),
+    ),
+)
+
+_DEFAULT_PROVIDER = "gemini"
+_DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
+
+_PROVIDER_ALIASES = {
+    "google": "gemini",
+    "gemini": "gemini",
+    "anthropic": "anthropic",
+    "openai": "openai",
+    "openrouter": "openrouter",
+}
+
+
+def normalize_provider(provider: str | None) -> str:
+    raw = (provider or "").strip().lower()
+    return _PROVIDER_ALIASES.get(raw, raw)
+
+
+def _has_required_env(entry: ModelCatalogEntry) -> bool:
+    return all(bool(os.getenv(name)) for name in entry.required_env)
+
+
+def find_model_entry(provider: str | None, model: str | None) -> ModelCatalogEntry | None:
+    provider_norm = normalize_provider(provider)
+    model_norm = (model or "").strip()
+    for entry in MODEL_CATALOG:
+        if entry.provider == provider_norm and entry.model == model_norm:
+            return entry
+    return None
+
+
+def model_label(provider: str | None, model: str | None) -> str:
+    entry = find_model_entry(provider, model)
+    if entry:
+        return entry.label
+    provider_norm = normalize_provider(provider or _DEFAULT_PROVIDER)
+    model_norm = (model or _DEFAULT_MODEL).strip()
+    return f"{provider_norm} · {model_norm}"
+
+
+def serialize_selection(provider: str | None, model: str | None) -> dict[str, str]:
+    provider_norm = normalize_provider(provider or _DEFAULT_PROVIDER)
+    model_norm = (model or _DEFAULT_MODEL).strip()
+    return {
+        "provider": provider_norm,
+        "model": model_norm,
+        "label": model_label(provider_norm, model_norm),
+    }
+
+
+def current_default_selection() -> dict[str, str]:
+    provider = normalize_provider(os.getenv("LLM_PROVIDER", _DEFAULT_PROVIDER))
+    model = os.getenv("MODEL_NAME", _DEFAULT_MODEL).strip()
+    return serialize_selection(provider, model)
+
+
+def available_models_payload() -> list[dict[str, Any]]:
+    models: list[dict[str, Any]] = []
+    for entry in MODEL_CATALOG:
+        models.append(
+            {
+                "provider": entry.provider,
+                "model": entry.model,
+                "label": entry.label,
+                "summary": entry.summary,
+                "available": _has_required_env(entry),
+                "pricing_available": entry.pricing is not None,
+            }
+        )
+    return models
+
+
+def validate_requested_selection(
+    provider: str | None,
+    model: str | None,
+) -> ModelCatalogEntry | None:
+    if not provider and not model:
+        return None
+    entry = find_model_entry(provider, model)
+    if not entry:
+        raise ValueError("Unknown LLM model selection.")
+    if not _has_required_env(entry):
+        raise ValueError(f"{entry.label} is not available in this environment.")
+    return entry
+
+
+def estimate_llm_cost_usd(
+    provider: str | None,
+    model: str | None,
+    *,
+    prompt_tokens: int,
+    completion_tokens: int,
+) -> float | None:
+    entry = find_model_entry(provider, model)
+    if not entry or not entry.pricing:
+        return None
+    prompt_cost = (prompt_tokens / 1_000_000) * entry.pricing.input_per_million_tokens_usd
+    completion_cost = (completion_tokens / 1_000_000) * entry.pricing.output_per_million_tokens_usd
+    return round(prompt_cost + completion_cost, 8)
+
+
+def pricing_catalog_payload() -> dict[str, dict[str, Any]]:
+    return {
+        f"{entry.provider}:{entry.model}": {
+            "provider": entry.provider,
+            "model": entry.model,
+            "label": entry.label,
+            "pricing": asdict(entry.pricing) if entry.pricing else None,
+        }
+        for entry in MODEL_CATALOG
+    }

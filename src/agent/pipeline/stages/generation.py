@@ -17,10 +17,6 @@ from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
 from agent.pipeline.state.schemas import ArgumentsOutput
 from agent.pipeline.utils.helpers import convert_llm_arguments_to_objects
 
-# Initialize LLM
-llm = get_llm(temperature=0.5)
-
-
 def check_if_final(
     state: IterativeInvestmentStoryState,
 ) -> Literal["score_and_select_best_k", "generate_pro_and_contra_arguments"]:
@@ -63,6 +59,7 @@ def generate_pro_arguments(
     system_prompt = get_prompt("generation.system", state.prompt_overrides)
     pro_user_prompt = get_prompt("generation.pro_user", state.prompt_overrides)
 
+    llm = get_llm(temperature=0.5)
     llm_with_structured_output = llm.with_structured_output(ArgumentsOutput)
     arguments: ArgumentsOutput = llm_with_structured_output.invoke(
         [
@@ -110,6 +107,7 @@ def generate_contra_arguments(
     system_prompt = get_prompt("generation.system", state.prompt_overrides)
     contra_user_prompt = get_prompt("generation.contra_user", state.prompt_overrides)
 
+    llm = get_llm(temperature=0.5)
     llm_with_structured_output = llm.with_structured_output(ArgumentsOutput)
     arguments: ArgumentsOutput = llm_with_structured_output.invoke(
         [

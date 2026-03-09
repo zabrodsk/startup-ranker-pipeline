@@ -34,6 +34,9 @@
       --font-body: 'Inter', -apple-system, sans-serif;
       --screen-transition-ms: 420ms;
       --ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+      --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+      --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+      --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
       --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.18);
       --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.20);
       --shadow-lg: 0 16px 32px rgba(0, 0, 0, 0.22);
@@ -515,6 +518,34 @@
       color: var(--text-dim);
       line-height: 1.4;
     }
+    .input-mode-callout {
+      display: none;
+      align-items: flex-start;
+      gap: 8px;
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: var(--radius-md);
+      background: var(--blue-surface-subtle);
+      border: 1px solid var(--blue-border-accent);
+      font-size: 12px;
+      color: var(--text-mid);
+      line-height: 1.5;
+    }
+    .input-mode-callout.is-visible { display: flex; }
+    .input-mode-callout strong { color: var(--text-light); font-weight: 600; }
+    .input-mode-callout svg { color: var(--blue-accent); margin-top: 1px; }
+    .input-mode-callout-dismiss {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      padding: 0 2px;
+      flex-shrink: 0;
+      transition: color 0.2s;
+    }
+    .input-mode-callout-dismiss:hover { color: var(--text-gray); }
 
     .instructions-label {
       display: block; font-size: 12px; font-weight: 600;
@@ -536,6 +567,215 @@
     }
     .instructions-input:focus { border-color: var(--green); }
     .instructions-input::placeholder { color: var(--text-dim); font-size: 13px; }
+    .llm-model-section {
+      width: 640px;
+      margin-top: 16px;
+    }
+    .visually-hidden {
+      position: absolute !important;
+      width: 1px !important;
+      height: 1px !important;
+      padding: 0 !important;
+      margin: -1px !important;
+      overflow: hidden !important;
+      clip: rect(0, 0, 0, 0) !important;
+      white-space: nowrap !important;
+      border: 0 !important;
+    }
+    .llm-select-shell {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .llm-select {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 12px 14px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      color: var(--text-light);
+      font: 14px var(--font-body);
+      outline: none;
+      transition: border-color 0.2s;
+      min-height: 44px;
+    }
+    .llm-select:focus {
+      border-color: var(--green);
+    }
+    .llm-select-hint {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--text-dim);
+      line-height: 1.45;
+    }
+    .llm-model-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .llm-model-card {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      min-height: 138px;
+      padding: 16px;
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border-subtle);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)),
+        linear-gradient(135deg, color-mix(in srgb, var(--llm-accent, var(--green)) 10%, transparent), transparent 60%);
+      color: var(--text-light);
+      text-align: left;
+      cursor: pointer;
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+      transition:
+        transform 220ms var(--ease-out-quint),
+        border-color 220ms var(--ease-out-quart),
+        background 220ms var(--ease-out-quart),
+        box-shadow 220ms var(--ease-out-quart);
+      animation: fadeUp 0.55s var(--ease-out-expo) calc(var(--card-index, 0) * 70ms) both;
+    }
+    .llm-model-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, rgba(255,255,255,0.06), transparent 45%);
+      opacity: 0;
+      transition: opacity 180ms ease;
+      pointer-events: none;
+    }
+    .llm-model-card:hover:not(:disabled),
+    .llm-model-card:focus-visible {
+      transform: translateY(-2px);
+      border-color: color-mix(in srgb, var(--llm-accent, var(--green)) 44%, rgba(255,255,255,0.14));
+      box-shadow: 0 18px 36px color-mix(in srgb, var(--llm-accent, var(--green)) 10%, rgba(0,0,0,0.28));
+      outline: none;
+    }
+    .llm-model-card:hover:not(:disabled)::before,
+    .llm-model-card:focus-visible::before {
+      opacity: 1;
+    }
+    .llm-model-card.is-selected {
+      border-color: color-mix(in srgb, var(--llm-accent, var(--green)) 50%, rgba(255,255,255,0.16));
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015)),
+        linear-gradient(135deg, color-mix(in srgb, var(--llm-accent, var(--green)) 18%, transparent), transparent 62%);
+      box-shadow: 0 18px 42px color-mix(in srgb, var(--llm-accent, var(--green)) 14%, rgba(0,0,0,0.28));
+    }
+    .llm-model-card.is-selected .llm-model-check {
+      border-color: color-mix(in srgb, var(--llm-accent, var(--green)) 55%, white 8%);
+      background: color-mix(in srgb, var(--llm-accent, var(--green)) 28%, rgba(255,255,255,0.06));
+      color: color-mix(in srgb, var(--llm-accent, var(--green)) 72%, white 28%);
+      transform: scale(1);
+    }
+    .llm-model-card.is-unavailable {
+      opacity: 0.62;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+    .llm-model-card.is-unavailable:hover {
+      transform: none;
+      border-color: var(--border-subtle);
+    }
+    .llm-model-card-top,
+    .llm-model-card-bottom {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      position: relative;
+      z-index: 1;
+    }
+    .llm-model-card-main {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      position: relative;
+      z-index: 1;
+    }
+    .llm-model-pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .llm-model-provider,
+    .llm-model-state {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 9px;
+      border-radius: var(--radius-full);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .llm-model-provider {
+      color: color-mix(in srgb, var(--llm-accent, var(--green)) 68%, white 32%);
+      background: color-mix(in srgb, var(--llm-accent, var(--green)) 14%, rgba(255,255,255,0.03));
+      border-color: color-mix(in srgb, var(--llm-accent, var(--green)) 26%, rgba(255,255,255,0.08));
+    }
+    .llm-model-state {
+      color: var(--text-dim);
+      background: rgba(255,255,255,0.03);
+    }
+    .llm-model-state.ready {
+      color: var(--text-light);
+    }
+    .llm-model-check {
+      flex-shrink: 0;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 1px solid rgba(255,255,255,0.10);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: transparent;
+      background: rgba(255,255,255,0.02);
+      transform: scale(0.96);
+      transition:
+        border-color 180ms ease,
+        background 180ms ease,
+        color 180ms ease,
+        transform 180ms var(--ease-out-quart);
+    }
+    .llm-model-name {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--text-white);
+      line-height: 1.1;
+    }
+    .llm-model-summary {
+      font-size: 13px;
+      color: color-mix(in srgb, var(--llm-accent, var(--green)) 54%, white 46%);
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .llm-model-meta {
+      font-size: 12px;
+      line-height: 1.45;
+      color: var(--text-dim);
+    }
+    .llm-model-pricing {
+      font-size: 12px;
+      color: var(--text-mid);
+    }
+    .llm-model-card[data-provider="openai"] {
+      --llm-accent: #74b3ff;
+    }
+    .llm-model-card[data-provider="anthropic"] {
+      --llm-accent: #f4b46b;
+    }
+    .llm-model-card[data-provider="gemini"] {
+      --llm-accent: #5be7c4;
+    }
 
     .files-section { width: 640px; }
     .files-header {
@@ -1125,7 +1365,17 @@
     input[type="file"] { display: none; }
 
     /* ── Processing Screen ── */
-    #processing-screen { align-items: center; justify-content: center; }
+    #processing-screen {
+      align-items: stretch;
+      justify-content: flex-start;
+    }
+    .processing-screen-body {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
     .processing-card {
       text-align: center;
       width: min(100%, 640px);
@@ -1361,6 +1611,112 @@
       display: none;
       gap: 16px;
       margin-bottom: 0;
+    }
+    .run-cost-strip {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+      margin-bottom: 28px;
+    }
+    .run-cost-strip.is-unavailable {
+      grid-template-columns: 1fr;
+    }
+    .run-cost-card {
+      position: relative;
+      min-height: 178px;
+      padding: 26px 28px;
+      --glow-x: 50%;
+      --glow-y: 50%;
+      background:
+        radial-gradient(circle at top left, rgba(30, 62, 108, 0.12), transparent 38%),
+        linear-gradient(180deg, rgba(9, 13, 23, 0.98), rgba(6, 10, 18, 0.98));
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 24px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03), 0 12px 32px rgba(0, 0, 0, 0.22);
+      overflow: hidden;
+      transition: transform 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;
+    }
+    .run-cost-card:hover {
+      transform: translateY(-3px);
+      border-color: rgba(255,255,255,0.16);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 18px 40px rgba(0, 0, 0, 0.28);
+    }
+    .run-cost-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      padding: 1px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.02));
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      pointer-events: none;
+      opacity: 0.75;
+    }
+    .run-cost-card.is-total::after {
+      content: '';
+      position: absolute;
+      inset: -30% auto auto -10%;
+      width: 180px;
+      height: 180px;
+      background: radial-gradient(circle, rgba(0, 210, 106, 0.16), transparent 68%);
+      pointer-events: none;
+    }
+    .run-cost-card-glow {
+      position: absolute;
+      inset: -1px;
+      border-radius: inherit;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.22s ease;
+      background:
+        radial-gradient(240px circle at var(--glow-x) var(--glow-y), rgba(92, 123, 255, 0.18), transparent 55%),
+        radial-gradient(180px circle at var(--glow-x) var(--glow-y), rgba(0, 210, 106, 0.10), transparent 60%);
+    }
+    .run-cost-card:hover .run-cost-card-glow {
+      opacity: 1;
+    }
+    .run-cost-card-label {
+      position: relative;
+      z-index: 1;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 2.2px;
+      color: rgba(255,255,255,0.34);
+      text-transform: uppercase;
+      margin-bottom: 18px;
+    }
+    .run-cost-card-value {
+      position: relative;
+      z-index: 1;
+      font-family: var(--font-body);
+      font-size: clamp(30px, 3vw, 44px);
+      font-weight: 700;
+      color: #f2f4f7;
+      line-height: 1;
+      letter-spacing: -1.4px;
+    }
+    .run-cost-card-value.is-accent {
+      color: var(--green);
+      text-shadow: 0 0 18px rgba(0, 210, 106, 0.12);
+    }
+    .run-cost-card-sub {
+      position: relative;
+      z-index: 1;
+      margin-top: 18px;
+      font-size: 15px;
+      line-height: 1.45;
+      color: rgba(255,255,255,0.62);
+      white-space: pre-wrap;
+    }
+    .run-cost-card-note {
+      position: relative;
+      z-index: 1;
+      margin-top: 14px;
+      font-size: 12px;
+      color: rgba(255,255,255,0.42);
+      line-height: 1.45;
     }
     .stat-card {
       flex: 1;
@@ -1891,9 +2247,14 @@
       .hero-text h1 { font-size: 32px; }
       .upload-zone { width: 100%; padding: 32px 20px; }
       .instructions-section { width: 100% !important; }
+      .llm-model-section { width: 100%; }
+      .llm-model-grid { grid-template-columns: 1fr; }
       .files-section { width: 100%; }
       .results-body { padding: 24px 20px; }
       .stats-row { flex-direction: column; }
+      .run-cost-strip {
+        grid-template-columns: 1fr;
+      }
       .args-row { flex-direction: column; }
       .score-row { flex-wrap: wrap; }
       .rankings-row { flex-direction: column; align-items: flex-start; }
@@ -2265,9 +2626,194 @@
     .screen.active .instructions-section {
       animation: fadeUp 0.5s cubic-bezier(0.4, 0, 0.2, 1) 0.35s both;
     }
+    .screen.active .llm-model-section {
+      animation: fadeUp 0.5s var(--ease-out-expo) 0.4s both;
+    }
     .screen.active .recent-runs-section {
       animation: fadeUp 0.5s cubic-bezier(0.4, 0, 0.2, 1) 0.4s both;
     }
+    .screen.active .onboarding-welcome {
+      animation: fadeUp 0.5s cubic-bezier(0.4, 0, 0.2, 1) 0.38s both;
+    }
+
+    /* ── Onboarding: Welcome Banner ── */
+    .onboarding-welcome {
+      width: 640px;
+      border: 1px solid var(--green-border-strong);
+      border-radius: var(--radius-lg);
+      background: linear-gradient(135deg, var(--green-surface-subtle), rgba(0, 210, 106, 0.03));
+      padding: 20px 24px;
+      display: none;
+      flex-direction: column;
+      gap: 14px;
+      position: relative;
+    }
+    .onboarding-welcome.is-visible { display: flex; }
+    .onboarding-welcome-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .onboarding-welcome-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-white);
+      line-height: 1.4;
+    }
+    .onboarding-welcome-dismiss {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      padding: 2px;
+      flex-shrink: 0;
+      transition: color 0.2s;
+    }
+    .onboarding-welcome-dismiss:hover { color: var(--text-gray); }
+    .onboarding-welcome-dismiss svg { width: 14px; height: 14px; }
+    .onboarding-welcome-steps {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    .onboarding-step {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .onboarding-step-num {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--green);
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+    .onboarding-step-label {
+      font-size: 13px;
+      color: var(--text-light);
+      line-height: 1.45;
+    }
+    .onboarding-welcome-actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    .onboarding-welcome-actions .btn-ghost {
+      font-size: 12px;
+      padding: 6px 14px;
+    }
+
+    /* ── Onboarding: Getting Started (empty recent runs) ── */
+    .getting-started-section {
+      width: 640px;
+      display: none;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .getting-started-section.is-visible { display: flex; }
+    .getting-started-header {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-gray);
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+    .getting-started-cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+    .getting-started-card {
+      border: 1px dashed var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .getting-started-card:hover {
+      border-color: var(--text-dark);
+      background: var(--bg-surface);
+    }
+    .getting-started-card-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .getting-started-card-icon svg { width: 16px; height: 16px; }
+    .getting-started-card-icon.strategy { background: var(--strategy-bg); color: var(--strategy); }
+    .getting-started-card-icon.team { background: var(--team-bg); color: var(--team); }
+    .getting-started-card-icon.potential { background: var(--potential-bg); color: var(--potential); }
+    .getting-started-card-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-light);
+    }
+    .getting-started-card-desc {
+      font-size: 12px;
+      color: var(--text-dim);
+      line-height: 1.5;
+    }
+    .screen.active .getting-started-section {
+      animation: fadeUp 0.5s cubic-bezier(0.4, 0, 0.2, 1) 0.42s both;
+    }
+
+    /* ── Onboarding: Enhanced Empty States ── */
+    .empty-state-enhanced {
+      border: 1px dashed var(--border-subtle);
+      border-radius: var(--radius-xl);
+      padding: 48px 32px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      text-align: center;
+      background: rgba(255,255,255,0.01);
+    }
+    .empty-state-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: var(--radius-lg);
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-dim);
+    }
+    .empty-state-icon svg { width: 22px; height: 22px; }
+    .empty-state-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-light);
+    }
+    .empty-state-desc {
+      font-size: 13px;
+      color: var(--text-dim);
+      line-height: 1.6;
+      max-width: 380px;
+    }
+    .empty-state-cta {
+      margin-top: 4px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 20px;
+      border-radius: var(--radius-md);
+      background: var(--green);
+      color: #07291c;
+      font: 600 13px var(--font-body);
+      border: none;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    .empty-state-cta:hover { opacity: 0.88; }
+    .empty-state-cta svg { width: 14px; height: 14px; }
     .screen.active .files-section {
       animation: fadeUp 0.5s cubic-bezier(0.4, 0, 0.2, 1) 0.35s both;
     }
@@ -2398,6 +2944,31 @@
     .dim-bar-row:hover .dim-bar-bg {
       border-color: color-mix(in srgb, var(--dim-color) 30%, rgba(255,255,255,0.06));
       background: color-mix(in srgb, var(--dim-color-bg) 55%, rgba(255,255,255,0.02));
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
+      .screen,
+      .screen.active,
+      .screen.leaving {
+        transform: none !important;
+        filter: none !important;
+      }
+      .llm-model-card:hover,
+      .llm-model-card:focus-visible,
+      .rank-card:hover,
+      .stat-card:hover,
+      .recent-run-card:hover,
+      .team-member-pill:hover,
+      .companies-page-sidebar .saved-company-card:hover,
+      .score-item.clickable:hover {
+        transform: none !important;
+      }
     }
 
     @media (max-width: 980px) {
@@ -2535,6 +3106,33 @@
       <p>Upload pitch decks, financials, and documents. Get structured investment rankings with pro and contra arguments in seconds.</p>
     </div>
 
+    <!-- Onboarding: First-visit welcome banner -->
+    <div class="onboarding-welcome" id="onboarding-welcome">
+      <div class="onboarding-welcome-header">
+        <div class="onboarding-welcome-title">Welcome — here's how to run your first analysis</div>
+        <button type="button" class="onboarding-welcome-dismiss" id="onboarding-dismiss" title="Dismiss">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="onboarding-welcome-steps">
+        <div class="onboarding-step">
+          <div class="onboarding-step-num">Step 1</div>
+          <div class="onboarding-step-label">Drop pitch decks or CSV exports into the upload zone below</div>
+        </div>
+        <div class="onboarding-step">
+          <div class="onboarding-step-num">Step 2</div>
+          <div class="onboarding-step-label">Pick your input mode — one file per company, or batch Specter data</div>
+        </div>
+        <div class="onboarding-step">
+          <div class="onboarding-step-num">Step 3</div>
+          <div class="onboarding-step-label">Hit Analyze & Rank and review scored results with pro/contra arguments</div>
+        </div>
+      </div>
+      <div class="onboarding-welcome-actions">
+        <button type="button" class="btn-ghost" id="onboarding-learn-more">How it works</button>
+      </div>
+    </div>
+
     <div class="upload-zone" id="upload-zone">
       <div class="upload-icon">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
@@ -2554,11 +3152,24 @@
         <button type="button" class="input-mode-option active" data-mode="pitchdeck">Pitch deck</button>
       </div>
       <p class="input-mode-hint" id="input-mode-hint">Each file = one company. Best for multiple pitch decks.</p>
+      <div class="input-mode-callout" id="input-mode-callout">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;flex-shrink:0"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <span><strong>Pitch deck</strong> is best for most files. Use <strong>Specter</strong> for structured CSV exports, or <strong>Multi-file</strong> to combine multiple docs into one company.</span>
+        <button type="button" class="input-mode-callout-dismiss" id="input-mode-callout-dismiss" title="Dismiss">&times;</button>
+      </div>
     </div>
 
     <div class="instructions-section" style="width:640px;margin-top:20px;">
       <label class="instructions-label" for="instructions-input">Additional instructions <span style="color:var(--text-dim);font-weight:400">(optional)</span></label>
       <textarea id="instructions-input" class="instructions-input" rows="2" placeholder="e.g. Only rank the first 3 companies, focus on B2B SaaS, ignore companies outside Europe..."></textarea>
+    </div>
+    <div class="llm-model-section">
+      <label class="instructions-label" for="llm-model-select" id="llm-model-label">Analysis model</label>
+      <div class="llm-select-shell">
+        <select id="llm-model-select" class="llm-select visually-hidden" aria-labelledby="llm-model-label"></select>
+        <div id="llm-model-grid" class="llm-model-grid" role="radiogroup" aria-labelledby="llm-model-label"></div>
+      </div>
+      <div class="llm-select-hint" id="llm-model-hint">Loading available models…</div>
     </div>
 
     <div class="files-section" id="files-section" style="display:none">
@@ -2591,6 +3202,34 @@
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
         Analyze & Rank
       </button>
+
+      <!-- Onboarding: Getting Started (shown when no recent runs) -->
+      <div class="getting-started-section" id="getting-started-section">
+        <div class="getting-started-header">What you'll get</div>
+        <div class="getting-started-cards">
+          <div class="getting-started-card">
+            <div class="getting-started-card-icon strategy">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            </div>
+            <div class="getting-started-card-title">Strategy Fit</div>
+            <div class="getting-started-card-desc">How well each company aligns with your investment thesis and focus areas.</div>
+          </div>
+          <div class="getting-started-card">
+            <div class="getting-started-card-icon team">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            </div>
+            <div class="getting-started-card-title">Team Quality</div>
+            <div class="getting-started-card-desc">Founder backgrounds, execution signals, and team composition assessment.</div>
+          </div>
+          <div class="getting-started-card">
+            <div class="getting-started-card-icon potential">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+            </div>
+            <div class="getting-started-card-title">Upside Potential</div>
+            <div class="getting-started-card-desc">Market sizing, growth indicators, and return potential with red flags called out.</div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -2693,7 +3332,7 @@
       <button type="button" class="btn-ghost" id="saved-jobs-open-processing">Companies</button>
     </div>
   </div>
-  <div style="flex:1;display:flex;align-items:center;justify-content:center">
+  <div class="processing-screen-body">
     <div class="processing-card">
       <h2>Analyzing...</h2>
       <p class="status status-live" id="processing-status">Uploading files and starting analysis...</p>
@@ -2751,6 +3390,7 @@
     </div>
 
     <div class="stats-row" id="stats-row"></div>
+    <div id="results-cost-strip"></div>
     <div class="rankings-row">
       <div class="rankings-label">RANKINGS</div>
       <label class="rankings-sort" id="rankings-sort-wrap" style="display:none">
@@ -2847,6 +3487,7 @@ let rankingsSortMode = DEFAULT_RANKINGS_SORT;
 let statusWatchdogTimer = null;
 let savedJobsCache = [];
 let savedCompaniesCache = [];
+let companiesFetched = false;
 let savedCompanySortMode = DEFAULT_SAVED_COMPANY_SORT;
 let savedCompanySearch = '';
 let savedCompanySearchDebounce = null;
@@ -2861,6 +3502,9 @@ let previousScreenBeforeInfo = 'upload-screen';
 let activeInfoPage = 'how-it-works';
 let screenTransitionToken = 0;
 let renderedTeamMembersBySlug = {};
+let analysisConfig = null;
+let selectedLlmKey = null;
+let analysisConfigLoadState = 'idle';
 
 function _finalizeVisibleScreens(activeId) {
   $$('.screen').forEach((screen) => {
@@ -2987,6 +3631,169 @@ function saveRecentRuns(runs) {
   localStorage.setItem(RECENT_RUNS_KEY, JSON.stringify(runs.slice(0, 12)));
 }
 
+function getSelectedLlmFromConfig() {
+  const defaultSelection = analysisConfig?.default_llm || null;
+  const models = analysisConfig?.available_models || [];
+  if (!models.length) return defaultSelection;
+  if (selectedLlmKey) {
+    const chosen = models.find((item) => `${item.provider}:${item.model}` === selectedLlmKey && item.available);
+    if (chosen) return chosen;
+  }
+  const fallbackKey = defaultSelection ? `${defaultSelection.provider}:${defaultSelection.model}` : null;
+  const fallback = models.find((item) => `${item.provider}:${item.model}` === fallbackKey && item.available);
+  return fallback || models.find((item) => item.available) || defaultSelection;
+}
+
+function getProviderLabel(provider) {
+  const labels = {
+    openai: 'OpenAI',
+    anthropic: 'Anthropic',
+    gemini: 'Gemini',
+    openrouter: 'OpenRouter',
+  };
+  return labels[provider] || provider || 'Model';
+}
+
+function getModelPricing(model) {
+  if (!model) return null;
+  const key = `${model.provider}:${model.model}`;
+  return analysisConfig?.pricing_catalog?.[key]?.pricing || null;
+}
+
+function formatModelUsd(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return 'Unavailable';
+  return `$${Number(value).toFixed(2)}`;
+}
+
+function formatModelPricing(model) {
+  const pricing = getModelPricing(model);
+  if (!pricing) return 'Usage tracked, pricing unavailable';
+  return `In ${formatModelUsd(pricing.input_per_million_tokens_usd)}/1M · Out ${formatModelUsd(pricing.output_per_million_tokens_usd)}/1M`;
+}
+
+function syncLlmSelectValue(value) {
+  const select = $('#llm-model-select');
+  if (!select) return;
+  select.value = value || '';
+}
+
+function renderLlmSelector() {
+  const select = $('#llm-model-select');
+  const grid = $('#llm-model-grid');
+  const hint = $('#llm-model-hint');
+  if (!select || !grid || !hint) return;
+
+  if (analysisConfigLoadState === 'loading') {
+    select.innerHTML = '<option value="">Loading models…</option>';
+    grid.innerHTML = '<button type="button" class="llm-model-card is-unavailable" disabled><span class="llm-model-name">Loading models…</span><span class="llm-model-meta">Checking configured providers.</span></button>';
+    select.disabled = true;
+    hint.textContent = 'Loading available models…';
+    return;
+  }
+  if (analysisConfigLoadState === 'error') {
+    select.innerHTML = '<option value="">Failed to load models</option>';
+    grid.innerHTML = '<button type="button" class="llm-model-card is-unavailable" disabled><span class="llm-model-name">Model catalog unavailable</span><span class="llm-model-meta">Refresh the page or reconnect to the server.</span></button>';
+    select.disabled = true;
+    hint.textContent = 'Could not load the model catalog. Refresh the page or reconnect to the server.';
+    return;
+  }
+  if (!analysisConfig || !(analysisConfig.available_models || []).length) {
+    select.innerHTML = '<option value="">No models available</option>';
+    grid.innerHTML = '<button type="button" class="llm-model-card is-unavailable" disabled><span class="llm-model-name">No models configured</span><span class="llm-model-meta">Add provider credentials to enable analysis models.</span></button>';
+    select.disabled = true;
+    hint.textContent = 'No configured analysis models are available in this environment.';
+    return;
+  }
+
+  const models = analysisConfig.available_models || [];
+  const selected = getSelectedLlmFromConfig();
+  if (selected) selectedLlmKey = `${selected.provider}:${selected.model}`;
+
+  select.innerHTML = models.map((item) => {
+    const key = `${item.provider}:${item.model}`;
+    const statusSuffix = item.available
+      ? (item.pricing_available ? '' : ' · cost unavailable')
+      : ' · unavailable';
+    return `<option value="${escapeHtml(key)}" ${item.available ? '' : 'disabled'} ${key === selectedLlmKey ? 'selected' : ''}>${escapeHtml(item.label + statusSuffix)}</option>`;
+  }).join('');
+  select.disabled = !models.some((item) => item.available);
+  syncLlmSelectValue(selectedLlmKey);
+
+  grid.innerHTML = models.map((item, index) => {
+    const key = `${item.provider}:${item.model}`;
+    const providerLabel = getProviderLabel(item.provider);
+    const selectedClass = key === selectedLlmKey ? ' is-selected' : '';
+    const unavailableClass = item.available ? '' : ' is-unavailable';
+    const stateClass = item.available ? 'ready' : '';
+    const stateLabel = item.available ? 'Ready' : 'Missing key';
+    const description = item.summary || 'General use';
+    const pricingLine = item.pricing_available ? formatModelPricing(item) : 'Usage tracked, pricing unavailable';
+    return `
+      <button
+        type="button"
+        class="llm-model-card${selectedClass}${unavailableClass}"
+        data-llm-key="${escapeHtml(key)}"
+        data-provider="${escapeHtml(item.provider)}"
+        style="--card-index:${index}"
+        role="radio"
+        aria-checked="${key === selectedLlmKey ? 'true' : 'false'}"
+        ${item.available ? '' : 'disabled'}
+      >
+        <div class="llm-model-card-top">
+          <div class="llm-model-pill-row">
+            <span class="llm-model-provider">${escapeHtml(providerLabel)}</span>
+            <span class="llm-model-state ${stateClass}">${escapeHtml(stateLabel)}</span>
+          </div>
+          <span class="llm-model-check" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5 6.2 11.5 13 4.5"/></svg>
+          </span>
+        </div>
+        <div class="llm-model-card-main">
+          <div class="llm-model-name">${escapeHtml(item.label)}</div>
+          <div class="llm-model-summary">${escapeHtml(description)}</div>
+        </div>
+        <div class="llm-model-card-bottom">
+          <div class="llm-model-pricing">${escapeHtml(pricingLine)}</div>
+        </div>
+      </button>
+    `;
+  }).join('');
+
+  grid.querySelectorAll('[data-llm-key]').forEach((button) => {
+    button.addEventListener('click', () => {
+      selectedLlmKey = button.getAttribute('data-llm-key') || null;
+      syncLlmSelectValue(selectedLlmKey);
+      renderLlmSelector();
+    });
+  });
+
+  const chosen = getSelectedLlmFromConfig();
+  if (!chosen) {
+    hint.textContent = 'No configured model credentials are available in this environment.';
+    return;
+  }
+  const chosenSummary = chosen.summary ? `${chosen.summary}. ` : '';
+  hint.textContent = chosen.pricing_available
+    ? `${chosen.label} will be used for this run. ${chosenSummary}${formatModelPricing(chosen)}. Cost tracking is enabled when token usage metadata is returned by the provider.`
+    : `${chosen.label} will be used for this run. ${chosenSummary}Token totals may still be tracked, but exact LLM cost is unavailable for this model.`;
+}
+
+async function loadAnalysisConfig() {
+  analysisConfigLoadState = 'loading';
+  renderLlmSelector();
+  try {
+    analysisConfig = await api('/api/config', { timeoutMs: 5000, retries: 0 });
+    analysisConfigLoadState = 'ready';
+    renderLlmSelector();
+    return analysisConfig;
+  } catch (_) {
+    analysisConfig = null;
+    analysisConfigLoadState = 'error';
+    renderLlmSelector();
+    return null;
+  }
+}
+
 async function backfillRecentRunsWithLlm() {
   const runs = loadRecentRuns();
   const needBackfill = runs.some((r) => !r.llm);
@@ -3042,6 +3849,8 @@ function getRunTitle(run) {
   }
   return run.results?.company_name || run.title || `Run ${run.jobId}`;
 }
+
+renderLlmSelector();
 
 function getRunModeLabel(run) {
   const raw = String(run.input_mode || run.results?.mode || '').trim().toLowerCase();
@@ -3143,11 +3952,18 @@ function renderRecentRuns() {
   if (!section || !list) return;
   const runs = mergeSavedAndRecentRuns();
 
+  const gettingStarted = $('#getting-started-section');
+
   if (!runs.length) {
     section.style.display = 'none';
     list.innerHTML = '';
+    // Show getting-started for new users when no runs exist
+    if (gettingStarted) gettingStarted.classList.add('is-visible');
     return;
   }
+
+  // Hide getting-started when user has runs
+  if (gettingStarted) gettingStarted.classList.remove('is-visible');
 
   section.style.display = 'flex';
   list.innerHTML = renderSavedJobCards(runs, {
@@ -3283,6 +4099,29 @@ function renderAnalysisHistoryScreen() {
   if (!content) return;
 
   const runs = mergeSavedAndRecentRuns();
+
+  if (!runs.length) {
+    content.innerHTML = `
+      <div class="analysis-history-section">
+        <div class="analysis-history-head">
+          <div class="analysis-history-title">Analysis</div>
+        </div>
+        <div class="empty-state-enhanced">
+          <div class="empty-state-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          </div>
+          <div class="empty-state-title">No analyses yet</div>
+          <div class="empty-state-desc">Completed analyses will appear here. Upload pitch decks or Specter exports to run your first deal ranking.</div>
+          <button class="empty-state-cta" onclick="openNewAnalysis()">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            New Analysis
+          </button>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
   const cardsHtml = renderSavedJobCards(runs, {
     emptyText: 'No saved analyses found yet.',
   });
@@ -3418,10 +4257,6 @@ function renderCompanyDetail(company, run) {
   ].filter(Boolean);
   const rank = summary.rank ?? ranking.rank ?? '';
   const composite = ranking.composite_score ?? run?.composite_score ?? summary.composite_score ?? result.total_score ?? run?.total_score ?? '—';
-  const decisionRaw = (result.decision || run?.decision || summary.decision || '').toLowerCase();
-  const isInvest = decisionRaw.includes('invest') && !decisionRaw.includes('not');
-  const decClass = isInvest ? 'invest' : 'pass';
-  const decText = isInvest ? 'INVEST' : (decisionRaw ? String(result.decision || run?.decision || summary.decision).toUpperCase() : 'SAVED');
   const bucket = ranking.bucket || run?.bucket || summary.bucket || '';
   const bucketLabel = bucket === 'priority_review' ? 'Priority Review' : bucket === 'watchlist' ? 'Watchlist' : bucket ? 'Low Priority' : '';
   const dimBars = ranking.dimension_scores?.length
@@ -3461,7 +4296,6 @@ function renderCompanyDetail(company, run) {
         ${rank ? `<span class="rank-badge first">#${escapeHtml(String(rank))}</span>` : ''}
         <span class="rank-name">${escapeHtml(companyName)}</span>
         ${bucketLabel ? `<span class="bucket-badge bucket-${bucket.replace(/_/g, '-')}">${bucketLabel}</span>` : ''}
-        <span class="decision-badge ${decClass}">${escapeHtml(decText)}</span>
         <div class="rank-top-actions">${auditButtonHtml}</div>
       </div>
       ${dimBars ? `<div class="dim-bars-container">${dimBars}</div>` : ''}
@@ -3523,7 +4357,26 @@ function renderSavedCompaniesWindow() {
 
   const totalCount = savedCompaniesCache.length;
   if (!savedCompaniesCache.length) {
-    content.innerHTML = renderCompaniesLoadingState();
+    if (companiesFetched) {
+      // Truly no companies — show enhanced empty state
+      content.innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:center;min-height:60vh">
+          <div class="empty-state-enhanced">
+            <div class="empty-state-icon">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            </div>
+            <div class="empty-state-title">No companies yet</div>
+            <div class="empty-state-desc">Companies will appear here after you run your first analysis. Each ranked company is saved automatically.</div>
+            <button class="empty-state-cta" onclick="openNewAnalysis()">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              Run First Analysis
+            </button>
+          </div>
+        </div>
+      `;
+    } else {
+      content.innerHTML = renderCompaniesLoadingState();
+    }
     return;
   }
 
@@ -3580,7 +4433,12 @@ function renderSavedCompaniesWindow() {
 
   const detailHtml = activeCompany && activeRun
     ? renderCompanyDetail(activeCompany, activeRun)
-    : '<div class="companies-page-empty">Select a company on the left to view its scoring.</div>';
+    : `<div class="companies-page-empty">
+        <div class="empty-state-icon" style="margin-bottom:4px">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </div>
+        Select a company on the left to view its scoring and run history.
+      </div>`;
 
   content.innerHTML = `<div class="companies-page">
     <div class="companies-page-sidebar">
@@ -3710,6 +4568,7 @@ async function fetchSavedCompanies({ silent = true } = {}) {
   try {
     const data = await api('/api/company-runs', { timeoutMs: 12000, retries: 1 });
     savedCompaniesCache = data.companies || [];
+    companiesFetched = true;
     renderSavedCompaniesWindow();
     return savedCompaniesCache;
   } catch (err) {
@@ -4330,7 +5189,10 @@ $('#login-form').addEventListener('submit', async (e) => {
     setCookie('session_id', sessionId);
     syncRoute();
     checkWebSearchAvailable();
+    await loadAnalysisConfig();
     renderRecentRuns();
+    initOnboardingWelcome();
+    initInputModeCallout();
     backfillRecentRunsWithLlm();
   } catch (err) {
     const msg = err.message === 'Wrong password' ? 'Wrong password. Try again.'
@@ -4456,6 +5318,7 @@ async function openSavedRun(jobId) {
       const data = await api('/api/check-session');
       if (data.authenticated) {
         checkWebSearchAvailable();
+        await loadAnalysisConfig();
         renderRecentRuns();
         renderSavedCompaniesWindow();
         fetchSavedJobs();
@@ -4584,10 +5447,19 @@ $$('.input-mode-option').forEach((btn) => {
     setInputMode(btn.dataset.mode);
   });
 });
+$('#llm-model-select')?.addEventListener('change', (event) => {
+  selectedLlmKey = event.target.value || null;
+  renderLlmSelector();
+});
 
 // ── Analyze ──
 $('#analyze-btn').addEventListener('click', async () => {
   if (uploadedFiles.length === 0) return;
+
+  // Dismiss onboarding once user starts their first analysis
+  localStorage.setItem(ONBOARDING_DISMISSED_KEY, '1');
+  const _welcomeBanner = $('#onboarding-welcome');
+  if (_welcomeBanner) _welcomeBanner.classList.remove('is-visible');
 
   showScreen('processing-screen');
   resetProgressBar();
@@ -4626,6 +5498,7 @@ $('#analyze-btn').addEventListener('click', async () => {
 
     const useWebSearch = !!$('#web-search-checkbox')?.checked;
     const instructions = ($('#instructions-input')?.value || '').trim();
+    const selectedLlm = getSelectedLlmFromConfig();
     if (autoDetectedSpecter) setInputMode('specter');
     try {
       await api(`/api/analyze/${currentJobId}`, {
@@ -4636,6 +5509,8 @@ $('#analyze-btn').addEventListener('click', async () => {
           instructions: instructions || undefined,
           input_mode: effectiveInputMode,
           vc_investment_strategy: vcInvestmentStrategy || undefined,
+          llm_provider: selectedLlm?.provider || undefined,
+          llm_model: selectedLlm?.model || undefined,
         }),
         timeoutMs: 60000,
         retries: 4,
@@ -4874,10 +5749,91 @@ function getLlmLabel(payload, fallback = '') {
   return payload?.llm || fallback || '';
 }
 
+function formatUsd(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return 'Unavailable';
+  const amount = Number(value);
+  return `$${amount.toFixed(Math.abs(amount) < 1 ? 4 : 2)}`;
+}
+
+function formatTokens(value) {
+  const num = Number(value || 0);
+  return Number.isFinite(num) ? num.toLocaleString() : '0';
+}
+
+function initializeRunCostCardHover(container) {
+  if (!container) return;
+  container.querySelectorAll('.run-cost-card').forEach((card) => {
+    if (card.dataset.glowBound === '1') return;
+    card.dataset.glowBound = '1';
+
+    const updateGlow = (event) => {
+      const rect = card.getBoundingClientRect();
+      const x = ((event.clientX - rect.left) / rect.width) * 100;
+      const y = ((event.clientY - rect.top) / rect.height) * 100;
+      card.style.setProperty('--glow-x', `${Math.max(0, Math.min(100, x))}%`);
+      card.style.setProperty('--glow-y', `${Math.max(0, Math.min(100, y))}%`);
+    };
+
+    card.addEventListener('pointermove', updateGlow);
+  });
+}
+
+function renderRunCostStrip(runCosts, fallbackLlmLabel = '') {
+  const container = $('#results-cost-strip');
+  if (!container) return;
+  const costs = runCosts || {};
+  const llmLabel = escapeHtml(fallbackLlmLabel || 'Selected model');
+  if (!costs || costs.status === 'unavailable') {
+    container.innerHTML = `
+      <div class="run-cost-strip is-unavailable">
+        <div class="run-cost-card is-total">
+          <div class="run-cost-card-glow"></div>
+          <div class="run-cost-card-label">Total Run Cost</div>
+          <div class="run-cost-card-value">Unavailable</div>
+          <div class="run-cost-card-sub">Cost unavailable for this legacy run.</div>
+          ${fallbackLlmLabel ? `<div class="run-cost-card-note">Model: ${llmLabel}</div>` : ''}
+        </div>
+      </div>
+    `;
+    initializeRunCostCardHover(container);
+    return;
+  }
+  const statusNote = costs.status === 'partial'
+    ? 'Some successful model calls did not include billable usage metadata, so totals are partial.'
+    : '';
+  const requestCount = Number(costs.perplexity_search?.requests || 0);
+
+  container.innerHTML = `
+    <div class="run-cost-strip${costs.status === 'unavailable' ? ' is-unavailable' : ''}">
+      <div class="run-cost-card is-total">
+        <div class="run-cost-card-glow"></div>
+        <div class="run-cost-card-label">Total Run Cost</div>
+        <div class="run-cost-card-value is-accent">${formatUsd(costs.total_usd)}</div>
+        <div class="run-cost-card-sub">${llmLabel}</div>
+        ${statusNote ? `<div class="run-cost-card-note">${escapeHtml(statusNote)}</div>` : ''}
+      </div>
+      <div class="run-cost-card">
+        <div class="run-cost-card-glow"></div>
+        <div class="run-cost-card-label">Primary LLM</div>
+        <div class="run-cost-card-value">${formatUsd(costs.llm_usd)}</div>
+        <div class="run-cost-card-sub">Prompt ${formatTokens(costs.llm_tokens?.prompt)} · Completion ${formatTokens(costs.llm_tokens?.completion)} · Total ${formatTokens(costs.llm_tokens?.total)} tokens</div>
+      </div>
+      <div class="run-cost-card">
+        <div class="run-cost-card-glow"></div>
+        <div class="run-cost-card-label">Perplexity Search</div>
+        <div class="run-cost-card-value">${formatUsd(costs.perplexity_usd)}</div>
+        <div class="run-cost-card-sub">${requestCount.toLocaleString()} request${requestCount === 1 ? '' : 's'} · request-based pricing</div>
+      </div>
+    </div>
+  `;
+  initializeRunCostCardHover(container);
+}
+
 function renderSingleResult(r) {
   renderedTeamMembersBySlug = {};
   const sortWrap = $('#rankings-sort-wrap');
   if (sortWrap) sortWrap.style.display = 'none';
+  renderRunCostStrip(r.run_costs, getLlmLabel(r));
 
   const subtitleBits = [
     r.industry || '',
@@ -4894,9 +5850,6 @@ function renderSingleResult(r) {
 
   $('#stats-row').innerHTML = '';
 
-  const isInvest = r.decision.toLowerCase().includes('invest') && !r.decision.toLowerCase().includes('not');
-  const decClass = isInvest ? 'invest' : 'pass';
-  const decText = isInvest ? 'INVEST' : 'PASS';
   const bucketLabel = bucket === 'priority_review' ? 'Priority Review' : bucket === 'watchlist' ? 'Watchlist' : bucket ? 'Low Priority' : '';
 
   let proHtml = r.pro_arguments.map(a =>
@@ -4930,7 +5883,6 @@ function renderSingleResult(r) {
         <span class="rank-badge first">#${rank || 1}</span>
         <span class="rank-name">${r.company_name}</span>
         ${bucketLabel ? `<span class="bucket-badge bucket-${bucket.replace(/_/g,'-')}">${bucketLabel}</span>` : ''}
-        <span class="decision-badge ${decClass}">${decText}</span>
         <div class="rank-top-actions">${auditButtonHtml}</div>
       </div>
       ${dimBars ? `<div class="dim-bars-container">${dimBars}</div>` : ''}
@@ -4956,6 +5908,7 @@ function renderBatchResults(r) {
   const sortWrap = $('#rankings-sort-wrap');
   const sortSelect = $('#rankings-sort-select');
   if (sortWrap) sortWrap.style.display = 'inline-flex';
+  renderRunCostStrip(r.run_costs, getLlmLabel(r));
   if (sortSelect) {
     const allowed = new Set(['top_scored', 'alphabetical', 'from_specter']);
     if (!allowed.has(rankingsSortMode)) rankingsSortMode = DEFAULT_RANKINGS_SORT;
@@ -4980,9 +5933,6 @@ function renderBatchResults(r) {
   $('#stats-row').innerHTML = '';
 
   let cardsHtml = rows.map((row, i) => {
-    const isInvest = (row.decision || '').toLowerCase().includes('invest') && !(row.decision || '').toLowerCase().includes('not');
-    const decClass = isInvest ? 'invest' : 'pass';
-    const decText = isInvest ? 'INVEST' : 'PASS';
     const rankNum = (typeof row.rank === 'number' ? row.rank : i + 1);
     const badge = rankNum === 1 ? 'first' : (rankNum === 2 ? 'second' : (rankNum === 3 ? 'third' : ''));
     const bucket = row.bucket || '';
@@ -5030,7 +5980,6 @@ function renderBatchResults(r) {
           <span class="rank-badge ${badge}">#${rankNum}</span>
           <span class="rank-name">${row.company_name || row.startup_slug}</span>
           ${bucketLabel ? `<span class="bucket-badge bucket-${bucket.replace(/_/g,'-')}">${bucketLabel}</span>` : ''}
-          <span class="decision-badge ${decClass}">${decText}</span>
           <div class="rank-top-actions">${auditButtonHtml}</div>
         </div>
         ${dimBars ? `<div class="dim-bars-container">${dimBars}</div>` : ''}
@@ -5082,16 +6031,12 @@ function showAuditLog(slug) {
   const argRows = (r.argument_rows || []).filter((a) => (a.startup_slug || a.company_name) === slug);
   const qaRows = (r.qa_provenance_rows || []).filter((q) => (q.startup_slug || q.company_name) === slug);
 
-  const isInvest = (summary?.decision || r.decision || '').toLowerCase().includes('invest') && !(summary?.decision || r.decision || '').toLowerCase().includes('not');
-  const decClass = isInvest ? 'invest' : 'pass';
-  const decText = isInvest ? 'INVEST' : 'NOT INVEST';
   const avgPro = summary?.avg_pro ?? r.avg_pro ?? 0;
   const avgContra = summary?.avg_contra ?? r.avg_contra ?? 0;
   const totalScore = summary?.total_score ?? r.total_score ?? 0;
 
   let html = '';
   html += `<div class="audit-section"><div class="audit-section-title">Decision</div><div class="audit-section-body">`;
-  html += `<div class="audit-decision-badge ${decClass}">${decText}</div>`;
   html += SHOW_AVG_PRO_CONTRA_SCORES
     ? `<div class="audit-decision-reason">Avg pro: ${avgPro} · Avg contra: ${avgContra} → total score ${totalScore}. Invest when pro > contra.</div>`
     : `<div class="audit-decision-reason">Total score ${totalScore}.</div>`;
@@ -5348,6 +6293,56 @@ $('#progress-log-modal-overlay').addEventListener('click', (e) => {
 });
 $('#info-open-how-upload')?.addEventListener('click', () => openInfoPage('how-it-works'));
 $('#info-open-docs-upload')?.addEventListener('click', () => openInfoPage('documentation'));
+
+// ── Onboarding: Welcome banner ──
+const ONBOARDING_DISMISSED_KEY = 'onboarding_welcome_dismissed';
+function initOnboardingWelcome() {
+  const banner = $('#onboarding-welcome');
+  if (!banner) return;
+  const dismissed = localStorage.getItem(ONBOARDING_DISMISSED_KEY);
+  const runs = mergeSavedAndRecentRuns();
+  // Show only for first-time users (no runs and not dismissed)
+  if (!dismissed && runs.length === 0) {
+    banner.classList.add('is-visible');
+  }
+}
+$('#onboarding-dismiss')?.addEventListener('click', () => {
+  localStorage.setItem(ONBOARDING_DISMISSED_KEY, '1');
+  const banner = $('#onboarding-welcome');
+  if (banner) {
+    banner.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+    banner.style.opacity = '0';
+    banner.style.transform = 'translateY(-8px)';
+    setTimeout(() => banner.classList.remove('is-visible'), 300);
+  }
+});
+$('#onboarding-learn-more')?.addEventListener('click', () => openInfoPage('how-it-works'));
+
+// ── Onboarding: Input mode callout ──
+const MODE_CALLOUT_KEY = 'input_mode_callout_dismissed';
+function initInputModeCallout() {
+  const callout = $('#input-mode-callout');
+  if (!callout) return;
+  if (localStorage.getItem(MODE_CALLOUT_KEY)) return;
+  const runs = mergeSavedAndRecentRuns();
+  if (runs.length === 0) {
+    callout.classList.add('is-visible');
+  }
+}
+$('#input-mode-callout-dismiss')?.addEventListener('click', () => {
+  localStorage.setItem(MODE_CALLOUT_KEY, '1');
+  const callout = $('#input-mode-callout');
+  if (callout) callout.classList.remove('is-visible');
+});
+// Also dismiss callout when user changes mode (they understood it)
+document.querySelectorAll('.input-mode-option').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    localStorage.setItem(MODE_CALLOUT_KEY, '1');
+    const callout = $('#input-mode-callout');
+    if (callout) callout.classList.remove('is-visible');
+  });
+});
+
 $('#info-show-how-btn')?.addEventListener('click', () => renderInfoScreen('how-it-works'));
 $('#info-show-docs-btn')?.addEventListener('click', () => renderInfoScreen('documentation'));
 $('#analysis-refresh-btn').addEventListener('click', () => fetchSavedJobs({ silent: false }));
@@ -5412,8 +6407,13 @@ function openNewAnalysis() {
   renderFiles();
   persistActiveJob(null);
   renderRecentRuns();
+  initOnboardingWelcome();
+  initInputModeCallout();
   previousScreenBeforeCompanies = 'upload-screen';
   showScreen('upload-screen');
+  if (sessionId && analysisConfigLoadState !== 'ready') {
+    loadAnalysisConfig();
+  }
 }
 
 $('#new-analysis-btn').addEventListener('click', openNewAnalysis);

@@ -26,10 +26,6 @@ Company summary: {company_summary}
 {context_block}
 """
 
-# Initialize LLM
-llm = get_llm(temperature=0.0)
-
-
 def answer_question(state: AnswerStateSimple) -> AnswerStateSimple:
     """Synthesize answer from child Q&A pairs.
 
@@ -50,6 +46,7 @@ def answer_question(state: AnswerStateSimple) -> AnswerStateSimple:
             ),
         ]
 
+    llm = get_llm(temperature=0.0)
     response = llm.invoke(state.messages)
     state.answer = response.content
 
