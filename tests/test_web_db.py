@@ -145,3 +145,130 @@ def test_list_company_histories_requeries_after_recent_reconcile(monkeypatch) ->
     assert len(histories) == 2
     assert {item["company_name"] for item in histories} == {"Apify", "Apaleo"}
     assert fetch_calls["count"] == 2
+
+
+def test_compose_results_payload_from_company_runs_rebuilds_batch_ranking() -> None:
+    import web.db as web_db
+
+    rows = [
+        {
+            "startup_slug": "alpha",
+            "company_name": "Alpha",
+            "input_order": 2,
+            "run_created_at": "2026-03-09T09:00:00Z",
+            "created_at": "2026-03-09T09:00:00Z",
+            "result_payload": {
+                "mode": "single",
+                "startup_slug": "alpha",
+                "company_name": "Alpha",
+                "decision": "invest",
+                "total_score": 8.0,
+                "summary_rows": [{"startup_slug": "alpha", "company_name": "Alpha", "decision": "invest", "total_score": 8.0}],
+                "argument_rows": [{"startup_slug": "alpha", "argument_text": "Alpha arg"}],
+                "qa_provenance_rows": [{"startup_slug": "alpha", "question": "Why alpha?"}],
+                "founders": [{"full_name": "Alice"}],
+                "team_members": [{"full_name": "Alice"}],
+                "ranking_result": {
+                    "composite_score": 82.0,
+                    "strategy_fit_score": 80.0,
+                    "team_score": 79.0,
+                    "upside_score": 87.0,
+                    "bucket": "priority_review",
+                    "dimension_scores": [
+                        {"dimension": "strategy_fit", "adjusted_score": 80.0, "confidence": 0.8, "critical_gaps": []},
+                        {"dimension": "team", "adjusted_score": 79.0, "confidence": 0.7, "critical_gaps": []},
+                    ],
+                },
+            },
+        },
+        {
+            "startup_slug": "beta",
+            "company_name": "Beta",
+            "input_order": 1,
+            "run_created_at": "2026-03-09T09:05:00Z",
+            "created_at": "2026-03-09T09:05:00Z",
+            "result_payload": {
+                "mode": "single",
+                "startup_slug": "beta",
+                "company_name": "Beta",
+                "decision": "watch",
+                "total_score": 6.0,
+                "summary_rows": [{"startup_slug": "beta", "company_name": "Beta", "decision": "watch", "total_score": 6.0}],
+                "argument_rows": [{"startup_slug": "beta", "argument_text": "Beta arg"}],
+                "qa_provenance_rows": [{"startup_slug": "beta", "question": "Why beta?"}],
+                "founders": [{"full_name": "Bob"}],
+                "team_members": [{"full_name": "Bob"}],
+                "ranking_result": {
+                    "composite_score": 70.0,
+                    "strategy_fit_score": 69.0,
+                    "team_score": 68.0,
+                    "upside_score": 73.0,
+                    "bucket": "watchlist",
+                    "dimension_scores": [
+                        {"dimension": "strategy_fit", "adjusted_score": 69.0, "confidence": 0.6, "critical_gaps": []},
+                    ],
+                },
+            },
+        },
+    ]
+
+    payload = web_db._compose_results_payload_from_company_runs(
+        rows,
+        preferred_mode="batch",
+        snapshot_payload={"llm": "Claude", "job_status": "done"},
+    )
+
+    assert payload["mode"] == "batch"
+    assert [row["startup_slug"] for row in payload["summary_rows"]] == ["alpha", "beta"]
+    assert [row["rank"] for row in payload["summary_rows"]] == [1, 2]
+    assert payload["founders_by_slug"]["alpha"] == [{"full_name": "Alice"}]
+    assert payload["argument_rows"] == [
+        {"startup_slug": "alpha", "argument_text": "Alpha arg"},
+        {"startup_slug": "beta", "argument_text": "Beta arg"},
+    ]
+    assert payload["llm"] == "Claude"
+    assert payload["job_status"] == "done"
+
+
+def test_load_job_results_reconstructs_from_company_runs(monkeypatch) -> None:
+    import web.db as web_db
+
+    monkeypatch.setattr(web_db, "_get_client", lambda: object())
+    monkeypatch.setattr(
+        web_db,
+        "_load_latest_analysis_snapshot",
+        lambda client, job_id_legacy: {"results_payload": {"mode": "batch", "job_status": "done"}},
+    )
+    monkeypatch.setattr(
+        web_db,
+        "_load_company_run_rows_for_job",
+        lambda client, job_id_legacy: [
+            {
+                "startup_slug": "alpha",
+                "company_name": "Alpha",
+                "input_order": 1,
+                "run_created_at": "2026-03-09T09:00:00Z",
+                "created_at": "2026-03-09T09:00:00Z",
+                "result_payload": {
+                    "mode": "single",
+                    "startup_slug": "alpha",
+                    "company_name": "Alpha",
+                    "decision": "invest",
+                    "total_score": 8.0,
+                    "summary_rows": [{"startup_slug": "alpha", "company_name": "Alpha", "decision": "invest", "total_score": 8.0}],
+                    "argument_rows": [],
+                    "qa_provenance_rows": [],
+                    "founders": [],
+                    "team_members": [],
+                    "ranking_result": {"composite_score": 82.0, "dimension_scores": []},
+                },
+            }
+        ],
+    )
+
+    loaded = web_db.load_job_results("job-123", preferred_mode="batch")
+
+    assert loaded is not None
+    assert loaded["results"]["mode"] == "batch"
+    assert loaded["results"]["summary_rows"][0]["startup_slug"] == "alpha"
+    assert loaded["results"]["job_status"] == "done"

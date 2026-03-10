@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from fastapi import Cookie, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
@@ -42,7 +43,6 @@ from agent.batch import (
     build_summary_rows,
     evaluate_from_specter,
     evaluate_startup,
-    export_excel,
     rank_batch_companies,
 )
 from agent.llm_catalog import (
@@ -405,7 +405,7 @@ def _finalize_stopped_results(
     _results_cache[job_id]["results"]["job_status"] = "stopped"
     _results_cache[job_id]["results"]["job_message"] = message
     _jobs[job_id].results = _results_cache[job_id]["results"]
-    _append_progress(job_id, "Finalizing partial results (ranking + Excel export)...", allow_stopped=True)
+    _append_progress(job_id, "Finalizing partial results...", allow_stopped=True)
     _append_progress(job_id, message, allow_stopped=True)
     _set_job_status(job_id, "stopped", message, source="stop_finalize")
     _persist_jobs()
@@ -925,16 +925,53 @@ def _build_results_payload(
     job_id: str,
     upload_dir: Path,
     *,
-    write_excel: bool = True,
+    write_excel: bool = False,
 ) -> None:
     """Compute scores and populate _results_cache for the job."""
-    payload = _compose_results_payload(results_list, job_id)
+    payload = _compose_db_backed_results_payload(results_list, job_id)
     _results_cache[job_id]["results"] = payload
 
-    if write_excel:
-        excel_path = upload_dir / "results.xlsx"
-        export_excel(results_list, str(excel_path))
-        _results_cache[job_id]["excel_path"] = str(excel_path)
+
+def _report_mode_hint(job_id: str, results_list: list[dict[str, Any]]) -> str:
+    cache = _results_cache.get(job_id, {})
+    input_mode = cache.get("input_mode")
+    files = cache.get("files") or []
+    specter = cache.get("specter")
+    if specter:
+        return "batch"
+    if input_mode == "original":
+        return "single"
+    if input_mode == "pitchdeck":
+        return "single" if len(files) <= 1 else "batch"
+    if len(results_list) == 1 and not any(item.get("skipped") for item in results_list):
+        return "single"
+    return "batch"
+
+
+def _merge_runtime_payload_metadata(job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(payload)
+    llm_selection = _resolve_job_llm_selection(job_id, results=merged)
+    merged["llm"] = llm_selection["label"]
+    merged["llm_selection"] = llm_selection
+    run_costs = _run_costs_from_cache(job_id)
+    if run_costs.get("status") != "unavailable" or "run_costs" not in merged:
+        merged["run_costs"] = run_costs
+    chunking = _results_cache.get(job_id, {}).get("batch_chunking")
+    if isinstance(chunking, dict):
+        merged["batch_chunking"] = chunking
+    return merged
+
+
+def _compose_db_backed_results_payload(
+    results_list: list[dict[str, Any]],
+    job_id: str,
+) -> dict[str, Any]:
+    if db and db.is_configured():
+        preferred_mode = _report_mode_hint(job_id, results_list)
+        loaded = db.load_job_results(job_id, preferred_mode=preferred_mode)
+        if loaded and isinstance(loaded.get("results"), dict):
+            return _merge_runtime_payload_metadata(job_id, loaded["results"])
+    return _compose_results_payload(results_list, job_id)
 
 
 def _compose_results_payload(
@@ -1081,43 +1118,43 @@ def _single_result_payload(job_id: str, result: dict[str, Any]) -> dict[str, Any
     return _compose_results_payload([result], job_id)
 
 
-def _compact_chunk(chunk: Any) -> Chunk:
-    text = getattr(chunk, "text", "") or ""
-    return Chunk(
-        chunk_id=getattr(chunk, "chunk_id", "") or "",
-        text=text[:500],
-        source_file=getattr(chunk, "source_file", "") or "",
-        page_or_slide=getattr(chunk, "page_or_slide", "") or "",
-    )
+def _score_summary_from_result(result: dict[str, Any]) -> tuple[float | None, float | None]:
+    final_state = result.get("final_state") or {}
+    ranking = final_state.get("ranking_result")
+    composite_score = getattr(ranking, "composite_score", None)
+    if composite_score is None and isinstance(ranking, dict):
+        composite_score = ranking.get("composite_score")
+    final_args = final_state.get("final_arguments", []) or []
+    pro_scores = [float(arg.score) for arg in final_args if getattr(arg, "argument_type", "") == "pro"]
+    contra_scores = [float(arg.score) for arg in final_args if getattr(arg, "argument_type", "") == "contra"]
+    total_score = None
+    if pro_scores or contra_scores:
+        avg_pro = (sum(pro_scores) / len(pro_scores)) if pro_scores else 0.0
+        avg_contra = (sum(contra_scores) / len(contra_scores)) if contra_scores else 0.0
+        total_score = round(avg_pro - avg_contra, 2)
+    return total_score, composite_score
 
 
-def _compact_evidence_store(store: Any) -> EvidenceStore | Any:
-    if not isinstance(store, EvidenceStore):
-        return store
-    return EvidenceStore(
-        startup_slug=store.startup_slug,
-        chunks=[_compact_chunk(chunk) for chunk in store.chunks],
-    )
-
-
-def _compact_final_state(final_state: Any) -> Any:
-    if not isinstance(final_state, dict):
-        return final_state
-    compacted = {
-        "final_arguments": final_state.get("final_arguments", []),
-        "final_decision": final_state.get("final_decision"),
-        "ranking_result": final_state.get("ranking_result"),
-        "current_iteration": final_state.get("current_iteration", 0),
-        "all_qa_pairs": final_state.get("all_qa_pairs", []),
-    }
-    return compacted
-
-
-def _compact_result_for_cache(result: dict[str, Any]) -> dict[str, Any]:
+def _minimize_completed_result_for_memory(result: dict[str, Any]) -> dict[str, Any]:
     if result.get("skipped"):
         return result
-    result["evidence_store"] = _compact_evidence_store(result.get("evidence_store"))
-    result["final_state"] = _compact_final_state(result.get("final_state"))
+    company = result.get("company")
+    slug = result.get("slug") or getattr(company, "name", None) or "unknown"
+    company_name = getattr(company, "name", None) or result.get("company_name") or slug
+    decision = (result.get("final_state") or {}).get("final_decision")
+    total_score, composite_score = _score_summary_from_result(result)
+    minimized = {
+        "slug": slug,
+        "company_name": company_name,
+        "skipped": False,
+        "persisted": True,
+        "decision": decision,
+        "total_score": total_score,
+        "composite_score": composite_score,
+        "persisted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    result.clear()
+    result.update(minimized)
     return result
 
 
@@ -1138,9 +1175,9 @@ def _update_partial_results_cache(
         _jobs[job_id].results = payload
 
 
-def _persist_company_result_to_db(job_id: str, result: dict[str, Any]) -> None:
+def _persist_company_result_to_db(job_id: str, result: dict[str, Any]) -> bool:
     if not (db and db.is_configured()) or result.get("skipped"):
-        return
+        return False
     cache = _results_cache.get(job_id, {})
     run_config = dict(cache.get("run_config") or {})
     if not run_config:
@@ -1151,16 +1188,16 @@ def _persist_company_result_to_db(job_id: str, result: dict[str, Any]) -> None:
             "instructions": cache.get("instructions"),
             "use_web_search": cache.get("use_web_search", False),
             "llm_provider": llm_selection["provider"],
-            "llm_model": llm_selection["model"],
-        }
+                "llm_model": llm_selection["model"],
+            }
     company_payload = _single_result_payload(job_id, result)
-    db.persist_company_result(
+    return bool(db.persist_company_result(
         job_id_legacy=job_id,
         result_row=result,
         company_payload=company_payload,
         run_config=run_config,
         versions=cache.get("versions") or _runtime_versions(),
-    )
+    ))
 
 
 def _persist_results_to_db(job_id: str, results_list: list[dict]) -> None:
@@ -1184,7 +1221,6 @@ def _persist_results_to_db(job_id: str, results_list: list[dict]) -> None:
             job_id_legacy=job_id,
             results_list=results_list,
             results_payload=cache.get("results", {}),
-            excel_path=cache.get("excel_path", ""),
             run_config=run_config,
             versions=cache.get("versions") or _runtime_versions(),
             source_files=cache.get("files") or [],
@@ -1419,7 +1455,7 @@ async def _run_document_analysis(
             )
             return
         _persist_company_result_to_db(job_id, result)
-        _append_progress(job_id, "Finalizing results (ranking + Excel export)...")
+        _append_progress(job_id, "Finalizing results...")
         _build_results_payload([result], job_id, upload_dir)
         if _is_stop_requested(job_id):
             _results_cache[job_id].setdefault("results", {})
@@ -1493,8 +1529,9 @@ async def _run_document_analysis(
                     await _cooperate_with_job_control(job_id)
                     results_list.append(result)
                     _append_progress(job_id, f"{prefix} — Persisting partial result...")
-                    _persist_company_result_to_db(job_id, result)
-                    _compact_result_for_cache(result)
+                    persisted_to_db = _persist_company_result_to_db(job_id, result)
+                    if persisted_to_db:
+                        _minimize_completed_result_for_memory(result)
                     _update_partial_results_cache(job_id, upload_dir, results_list)
                     _append_progress(
                         job_id,
@@ -1553,7 +1590,7 @@ async def _run_document_analysis(
         )
         return
 
-    _append_progress(job_id, "Finalizing batch results (ranking + Excel export)...")
+    _append_progress(job_id, "Finalizing batch results...")
     _build_results_payload(results_list, job_id, upload_dir)
     _append_progress(job_id, "Finalizing complete.")
     if _is_stop_requested(job_id):
@@ -1657,8 +1694,9 @@ async def _run_specter_analysis(
                     await _cooperate_with_job_control(job_id)
                     results_list.append(result)
                     _append_progress(job_id, f"{prefix} — Persisting partial result...")
-                    _persist_company_result_to_db(job_id, result)
-                    _compact_result_for_cache(result)
+                    persisted_to_db = _persist_company_result_to_db(job_id, result)
+                    if persisted_to_db:
+                        _minimize_completed_result_for_memory(result)
                     _update_partial_results_cache(job_id, upload_dir, results_list)
                     _append_progress(
                         job_id,
@@ -1717,7 +1755,7 @@ async def _run_specter_analysis(
         _set_job_status(job_id, "error", msg, source="run_specter_analysis")
         return
 
-    _append_progress(job_id, "Finalizing batch results (ranking + Excel export)...")
+    _append_progress(job_id, "Finalizing batch results...")
     _build_results_payload(results_list, job_id, upload_dir)
     _append_progress(job_id, "Finalizing complete.")
     if _is_stop_requested(job_id):
@@ -1927,21 +1965,22 @@ async def get_status(job_id: str, session_id: str | None = Cookie(default=None))
         loaded = db.load_job_results(job_id)
         if loaded:
             results = loaded.get("results")
+            loaded_status = (results or {}).get("job_status") or "done"
+            loaded_progress = (results or {}).get("job_message") or "Analysis complete"
             _jobs[job_id] = AnalysisStatus(
                 job_id=job_id,
-                status="done",
-                progress="Analysis complete",
+                status=loaded_status,
+                progress=loaded_progress,
                 progress_log=[],
                 results=results,
             )
             _results_cache[job_id] = {
                 "results": results,
-                "excel_storage_path": loaded.get("excel_storage_path"),
             }
             return {
                 "job_id": job_id,
-                "status": "done",
-                "progress": "Analysis complete",
+                "status": loaded_status,
+                "progress": loaded_progress,
                 "progress_log": [],
                 "results": results,
                 "llm": _selection_from_payload(results)["label"]
@@ -1956,26 +1995,7 @@ async def get_status(job_id: str, session_id: str | None = Cookie(default=None))
 async def download_excel(job_id: str, session_id: str | None = Cookie(default=None)):
     if not _check_session(session_id):
         raise HTTPException(status_code=401, detail="Not authenticated")
-
-    cache = _results_cache.get(job_id, {})
-    excel_path = cache.get("excel_path")
-    if excel_path and Path(excel_path).exists():
-        return FileResponse(
-            excel_path,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename="startup_ranking_results.xlsx",
-        )
-
-    if db and db.is_configured():
-        data = db.download_excel_bytes(job_id)
-        if data:
-            return Response(
-                content=data,
-                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                headers={"Content-Disposition": 'attachment; filename="startup_ranking_results.xlsx"'},
-            )
-
-    raise HTTPException(status_code=404, detail="Results not ready")
+    raise HTTPException(status_code=410, detail="Excel export has been removed")
 
 
 @app.get("/api/analyses/{job_id}")

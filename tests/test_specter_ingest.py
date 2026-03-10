@@ -122,8 +122,6 @@ def test_build_results_payload_keeps_batch_mode_when_only_one_company_succeeds(
     monkeypatch.setattr(web_app, "build_argument_rows", lambda results: [])
     monkeypatch.setattr(web_app, "build_qa_provenance_rows", lambda results: [])
     monkeypatch.setattr(web_app, "build_failed_rows", lambda results: results[1:])
-    monkeypatch.setattr(web_app, "export_excel", lambda results, output_path: Path(output_path).write_text("ok"))
-
     job_id = "job-batch-mode"
     web_app._results_cache[job_id] = {}
 
@@ -337,7 +335,7 @@ def test_run_specter_analysis_persists_first_company_before_starting_second(
         summary_rows = [
             {
                 "startup_slug": item["slug"],
-                "company_name": item["company"].name,
+                "company_name": item.get("company_name") or item["company"].name,
             }
             for item in results_list
             if not item.get("skipped")
@@ -352,7 +350,11 @@ def test_run_specter_analysis_persists_first_company_before_starting_second(
     monkeypatch.setattr(web_app, "_build_results_payload", fake_build_results_payload)
     monkeypatch.setattr(web_app, "_persist_jobs", lambda: None)
     monkeypatch.setattr(web_app, "_persist_results_to_db", lambda job_id, results_list: None)
-    monkeypatch.setattr(web_app, "_persist_company_result_to_db", lambda current_job_id, result: persisted.append(result["slug"]))
+    monkeypatch.setattr(
+        web_app,
+        "_persist_company_result_to_db",
+        lambda current_job_id, result: persisted.append(result["slug"]) or True,
+    )
     monkeypatch.setattr(web_app, "_llm_telemetry_base", lambda: {})
 
     web_app._jobs[job_id] = web_app.AnalysisStatus(
@@ -376,7 +378,16 @@ def test_run_specter_analysis_persists_first_company_before_starting_second(
 
         assert persisted == ["alpha", "beta"]
         assert saw_partial_status["value"] is True
-        assert results["alpha"]["evidence_store"].chunks[0].text == "A" * 500
+        assert results["alpha"] == {
+            "slug": "alpha",
+            "company_name": "Alpha",
+            "skipped": False,
+            "persisted": True,
+            "decision": "invest",
+            "total_score": None,
+            "composite_score": None,
+            "persisted_at": results["alpha"]["persisted_at"],
+        }
     finally:
         web_app._jobs.pop(job_id, None)
         web_app._job_controls.pop(job_id, None)

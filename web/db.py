@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import re
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
@@ -15,7 +14,6 @@ load_dotenv()
 
 _client: Client | None = None
 _client_config: tuple[str, str] | None = None
-BUCKET_EXCEL = "analysis-exports"
 
 
 def _normalize_company_key(name: str | None, domain: str | None = None, slug: str | None = None) -> str:
@@ -142,6 +140,164 @@ def _company_payload_from_result(
             "red_flags": summary_row.get("red_flags"),
         } if summary_row else None,
     }
+
+
+def _ranking_sort_key_from_payload(payload: dict[str, Any]) -> tuple[float, float, float, int]:
+    ranking = _serialize(payload.get("ranking_result") or {})
+    dimension_scores = ranking.get("dimension_scores") or []
+    adjusted_scores = [
+        float(item.get("adjusted_score"))
+        for item in dimension_scores
+        if isinstance(item, dict) and isinstance(item.get("adjusted_score"), (int, float))
+    ]
+    confidences = [
+        float(item.get("confidence"))
+        for item in dimension_scores
+        if isinstance(item, dict) and isinstance(item.get("confidence"), (int, float))
+    ]
+    critical_gaps = sum(
+        len(item.get("critical_gaps") or [])
+        for item in dimension_scores
+        if isinstance(item, dict)
+    )
+    composite_score = ranking.get("composite_score")
+    total_score = payload.get("total_score")
+    primary_score = (
+        float(composite_score)
+        if isinstance(composite_score, (int, float))
+        else float(total_score) if isinstance(total_score, (int, float)) else 0.0
+    )
+    min_dimension_score = min(adjusted_scores) if adjusted_scores else 0.0
+    avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+    return (
+        -primary_score,
+        -min_dimension_score,
+        -avg_confidence,
+        critical_gaps,
+    )
+
+
+def _sorted_completed_company_payloads(
+    rows: list[dict[str, Any]],
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    prepared: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for row in rows:
+        payload = _serialize(row.get("result_payload") or {})
+        if not payload:
+            continue
+        prepared.append((row, payload))
+
+    def _order_key(item: tuple[dict[str, Any], dict[str, Any]]) -> tuple[int, str, str]:
+        row, payload = item
+        input_order = row.get("input_order")
+        summary_row = ((payload.get("summary_rows") or [{}]) or [{}])[0]
+        fallback_order = summary_row.get("specter_input_order")
+        order_value = input_order if isinstance(input_order, int) else fallback_order
+        if not isinstance(order_value, int):
+            order_value = 10**9
+        created_at = str(row.get("run_created_at") or row.get("created_at") or "")
+        slug = str(row.get("startup_slug") or payload.get("startup_slug") or "")
+        return (order_value, created_at, slug)
+
+    prepared.sort(key=_order_key)
+    return prepared
+
+
+def _compose_results_payload_from_company_runs(
+    rows: list[dict[str, Any]],
+    *,
+    preferred_mode: str | None = None,
+    snapshot_payload: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    prepared = _sorted_completed_company_payloads(rows)
+    if not prepared:
+        snapshot = _serialize(snapshot_payload or {})
+        return snapshot or None
+
+    snapshot = _serialize(snapshot_payload or {})
+    resolved_mode = preferred_mode or snapshot.get("mode")
+    if not resolved_mode:
+        only_payload = prepared[0][1]
+        resolved_mode = "single" if len(prepared) == 1 and only_payload.get("mode") == "single" else "batch"
+
+    if resolved_mode == "single" and len(prepared) == 1:
+        payload = _serialize(prepared[0][1])
+        for key in ("llm", "llm_selection", "run_costs", "batch_chunking", "job_status", "job_message"):
+            if key in snapshot:
+                payload[key] = _serialize(snapshot.get(key))
+        return payload
+
+    ranked_payloads = [payload for _, payload in prepared]
+    ranked_payloads.sort(key=_ranking_sort_key_from_payload)
+    company_count = len(ranked_payloads)
+
+    summary_rows: list[dict[str, Any]] = []
+    argument_rows: list[dict[str, Any]] = []
+    qa_rows: list[dict[str, Any]] = []
+    founders_by_slug: dict[str, list[dict[str, Any]]] = {}
+    team_members_by_slug: dict[str, list[dict[str, Any]]] = {}
+
+    for index, payload in enumerate(ranked_payloads, start=1):
+        summary_row = _serialize(((payload.get("summary_rows") or [{}]) or [{}])[0])
+        if not summary_row:
+            summary_row = {
+                "startup_slug": payload.get("startup_slug"),
+                "company_name": payload.get("company_name"),
+                "decision": payload.get("decision"),
+                "total_score": payload.get("total_score"),
+            }
+
+        ranking = _serialize(payload.get("ranking_result") or {})
+        summary_row["rank"] = index
+        summary_row["percentile"] = round(100.0 * (company_count - index + 1) / company_count, 1)
+        for key in (
+            "composite_score",
+            "strategy_fit_score",
+            "team_score",
+            "upside_score",
+            "bucket",
+            "strategy_fit_summary",
+            "team_summary",
+            "potential_summary",
+        ):
+            if key in ranking:
+                summary_row[key] = _serialize(ranking.get(key))
+        for key in ("key_points", "red_flags"):
+            if key not in ranking:
+                continue
+            value = _serialize(ranking.get(key))
+            summary_row[key] = "\n".join(value) if isinstance(value, list) else value
+
+        slug = (
+            summary_row.get("startup_slug")
+            or payload.get("startup_slug")
+            or _normalize_text_token(summary_row.get("company_name") or payload.get("company_name"))
+        )
+        founders = _serialize(payload.get("founders") or summary_row.get("founders") or [])
+        team_members = _serialize(payload.get("team_members") or summary_row.get("team_members") or founders)
+        summary_row["founders"] = founders
+        summary_row["team_members"] = team_members
+        founders_by_slug[slug] = founders
+        team_members_by_slug[slug] = team_members
+        summary_rows.append(summary_row)
+        argument_rows.extend(_serialize(payload.get("argument_rows") or []))
+        qa_rows.extend(_serialize(payload.get("qa_provenance_rows") or []))
+
+    results_payload = {
+        "mode": "batch",
+        "num_companies": len(summary_rows),
+        "num_skipped": 0,
+        "summary_rows": summary_rows,
+        "argument_rows": argument_rows,
+        "qa_provenance_rows": qa_rows,
+        "failed_rows": [],
+        "founders_by_slug": founders_by_slug,
+        "team_members_by_slug": team_members_by_slug,
+    }
+    for key in ("llm", "llm_selection", "run_costs", "batch_chunking", "job_status", "job_message"):
+        if key in snapshot:
+            results_payload[key] = _serialize(snapshot.get(key))
+    return results_payload
 
 
 def _upsert_company(
@@ -597,7 +753,6 @@ def persist_analysis(
     job_id_legacy: str,
     results_list: list[dict[str, Any]],
     results_payload: dict[str, Any],
-    excel_path: str,
     run_config: dict[str, Any],
     *,
     versions: dict[str, Any] | None = None,
@@ -606,7 +761,7 @@ def persist_analysis(
 ) -> bool:
     """Persist analysis results to Supabase.
 
-    Creates/updates job, companies, pitch_decks, chunks, analyses. Uploads Excel to Storage.
+    Creates/updates job, companies, pitch_decks, chunks, analyses.
     Stores results_payload for fast retrieval without reconstruction.
     Also stores source-file metadata and model execution telemetry.
     """
@@ -614,33 +769,14 @@ def persist_analysis(
     if not client:
         return False
 
-    evaluated = [r for r in results_list if not r.get("skipped")]
-    if not evaluated:
+    snapshot_payload = _serialize(results_payload or {})
+    if not snapshot_payload:
         return False
 
     try:
-        ensure_excel_bucket()
-
         job_uuid = upsert_job(job_id_legacy, run_config=run_config, versions=versions)
         if not job_uuid:
             return False
-
-        excel_storage_path: str | None = None
-        excel_file = Path(excel_path)
-        if excel_file.exists():
-            try:
-                with open(excel_file, "rb") as f:
-                    client.storage.from_(BUCKET_EXCEL).upload(
-                        path=f"{job_id_legacy}/results.xlsx",
-                        file=f,
-                        file_options={
-                            "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            "upsert": "true",
-                        },
-                    )
-                excel_storage_path = f"{job_id_legacy}/results.xlsx"
-            except Exception:
-                pass
 
         for file_info in source_files or []:
             try:
@@ -686,32 +822,36 @@ def persist_analysis(
             except Exception:
                 pass
 
-        payload_serialized = _serialize(results_payload)
+        try:
+            client.table("analyses").delete().eq("job_id_legacy", job_id_legacy).is_("company_id", "null").execute()
+        except Exception:
+            pass
 
-        for r in evaluated:
-            company_payload = _company_payload_from_result(payload_serialized, r)
-            _persist_company_analysis_row(
-                client,
-                job_uuid=job_uuid,
-                job_id_legacy=job_id_legacy,
-                result_row=r,
-                company_payload=company_payload,
-                run_config=run_config,
-                excel_storage_path=excel_storage_path,
-                replace_documents=False,
-            )
+        client.table("analyses").insert(
+            {
+                "pitch_deck_id": None,
+                "company_id": None,
+                "job_id": job_uuid,
+                "job_id_legacy": job_id_legacy,
+                "state": {},
+                "results_payload": snapshot_payload,
+                "status": snapshot_payload.get("job_status") or "done",
+                "run_config": _serialize(run_config),
+                "excel_storage_path": None,
+            }
+        ).execute()
 
         insert_job_status_history(
             job_id_legacy,
-            status="done",
-            progress="Analysis complete",
+            status=snapshot_payload.get("job_status") or "done",
+            progress=snapshot_payload.get("job_message") or "Analysis complete",
             source="persist_analysis",
         )
         upsert_job_control(
             job_id_legacy,
             pause_requested=False,
-            stop_requested=False,
-            last_action="done",
+            stop_requested=(snapshot_payload.get("job_status") == "stopped"),
+            last_action=snapshot_payload.get("job_status") or "done",
         )
 
         return True
@@ -751,32 +891,64 @@ def persist_company_result(
         return False
 
 
-def load_job_results(job_id_legacy: str) -> dict[str, Any] | None:
-    """Load results for a job from Supabase. Returns dict with results and excel_storage_path or None."""
+def _load_latest_analysis_snapshot(
+    client: Client,
+    job_id_legacy: str,
+) -> dict[str, Any] | None:
+    try:
+        analyses = (
+            client.table("analyses")
+            .select("results_payload, status, created_at")
+            .eq("job_id_legacy", job_id_legacy)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if analyses.data:
+            return analyses.data[0]
+    except Exception:
+        return None
+    return None
+
+
+def _load_company_run_rows_for_job(client: Client, job_id_legacy: str) -> list[dict[str, Any]]:
+    try:
+        rows = (
+            client.table("company_runs")
+            .select(
+                "company_key, company_name, startup_slug, job_id_legacy, decision, total_score, "
+                "composite_score, bucket, mode, input_order, run_created_at, created_at, result_payload"
+            )
+            .eq("job_id_legacy", job_id_legacy)
+            .limit(500)
+            .execute()
+        )
+        return rows.data or []
+    except Exception:
+        return []
+
+
+def load_job_results(
+    job_id_legacy: str,
+    *,
+    preferred_mode: str | None = None,
+) -> dict[str, Any] | None:
+    """Load and reconstruct results for a job from Supabase."""
     client = _get_client()
     if not client:
         return None
 
     try:
-        analyses = (
-            client.table("analyses")
-            .select("results_payload, excel_storage_path")
-            .eq("job_id_legacy", job_id_legacy)
-            .limit(1)
-            .execute()
+        snapshot_row = _load_latest_analysis_snapshot(client, job_id_legacy) or {}
+        company_rows = _load_company_run_rows_for_job(client, job_id_legacy)
+        results = _compose_results_payload_from_company_runs(
+            company_rows,
+            preferred_mode=preferred_mode,
+            snapshot_payload=snapshot_row.get("results_payload") if isinstance(snapshot_row, dict) else None,
         )
-        if not analyses.data:
-            return None
-
-        first = analyses.data[0]
-        results = first.get("results_payload")
         if results is None:
             return None
-
-        out: dict[str, Any] = {"results": results}
-        if first.get("excel_storage_path"):
-            out["excel_storage_path"] = first["excel_storage_path"]
-        return out
+        return {"results": results}
     except Exception:
         return None
 
@@ -791,7 +963,7 @@ def load_all_completed_jobs() -> dict[str, dict[str, Any]]:
     try:
         rows = (
             client.table("analyses")
-            .select("job_id_legacy, results_payload, excel_storage_path, created_at")
+            .select("job_id_legacy, results_payload, created_at")
             .eq("status", "done")
             .order("created_at", desc=True)
             .execute()
@@ -804,13 +976,12 @@ def load_all_completed_jobs() -> dict[str, dict[str, Any]]:
             jid = r.get("job_id_legacy")
             if not jid or jid in seen:
                 continue
-            payload = r.get("results_payload")
-            if payload is None:
+            rebuilt = load_job_results(jid)
+            if not rebuilt or rebuilt.get("results") is None:
                 continue
             seen.add(jid)
             out[jid] = {
-                "results": payload,
-                "excel_storage_path": r.get("excel_storage_path"),
+                "results": rebuilt.get("results"),
             }
     except Exception:
         pass
@@ -855,7 +1026,7 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
 
         analysis_rows = (
             client.table("analyses")
-            .select("job_id_legacy, status, results_payload, excel_storage_path, created_at")
+            .select("job_id_legacy, status, results_payload, created_at")
             .in_("job_id_legacy", job_ids)
             .order("created_at", desc=True)
             .limit(max(limit * 4, 100))
@@ -878,6 +1049,7 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
             status = latest_status.get("status") or latest_analysis.get("status") or "pending"
             progress = latest_status.get("progress")
             created_at = latest_analysis.get("created_at") or row.get("created_at")
+            rebuilt = load_job_results(jid)
 
             out.append(
                 {
@@ -888,8 +1060,7 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
                     "input_mode": row.get("input_mode"),
                     "use_web_search": row.get("use_web_search"),
                     "run_config": row.get("run_config") or {},
-                    "results": latest_analysis.get("results_payload"),
-                    "excel_storage_path": latest_analysis.get("excel_storage_path"),
+                    "results": rebuilt.get("results") if rebuilt else None,
                 }
             )
 
@@ -1268,17 +1439,8 @@ def backfill_all_company_runs_from_analyses(limit_jobs: int = 500) -> int:
 
 
 def download_excel_bytes(job_id_legacy: str) -> bytes | None:
-    """Download Excel file from Supabase Storage. Returns None if not found."""
-    client = _get_client()
-    if not client:
-        return None
-
-    try:
-        path = f"{job_id_legacy}/results.xlsx"
-        data = client.storage.from_(BUCKET_EXCEL).download(path)
-        return data
-    except Exception:
-        return None
+    """Excel export has been removed."""
+    return None
 
 
 def load_analyses_by_company(company_name: str) -> list[dict[str, Any]]:
@@ -1344,14 +1506,5 @@ def load_analyses_by_company(company_name: str) -> list[dict[str, Any]]:
 
 
 def ensure_excel_bucket() -> None:
-    """Create the Excel storage bucket if it does not exist."""
-    client = _get_client()
-    if not client:
-        return
-    try:
-        client.storage.get_bucket(BUCKET_EXCEL)
-    except Exception:
-        try:
-            client.storage.create_bucket(BUCKET_EXCEL, options={"public": False})
-        except Exception:
-            pass
+    """Excel export has been removed."""
+    return None
