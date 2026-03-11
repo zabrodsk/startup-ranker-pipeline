@@ -62,6 +62,41 @@ python -m agent.batch --input ./deals --output results.xlsx
 python -m agent.batch --specter-companies companies.csv --specter-people people.csv --output results.xlsx
 ```
 
+## Collaboration
+
+Use GitHub for shared code and ChatGPT Projects for shared AI context. Do not have two people edit the same iCloud-synced working folder at the same time.
+
+### Recommended setup
+
+1. Add your collaborator to the GitHub repository.
+2. Each person clones the repo to their own machine and opens their local clone in Codex.
+3. Each person copies `.env.example` to `.env` locally and fills in their own secrets.
+4. Work on short-lived branches and merge through GitHub.
+
+### Daily workflow
+
+```bash
+git checkout main
+git pull origin main
+git checkout -b your-branch-name
+```
+
+Make changes in Codex, then:
+
+```bash
+git add .
+git commit -m "Describe the change"
+git push -u origin your-branch-name
+```
+
+Open a pull request, review, merge, then sync `main` again before starting the next task.
+
+### Shared context
+
+- Share the ChatGPT Project if you want shared project instructions, uploaded files, and related chats.
+- Use GitHub as the source of truth for code and assets in this repository.
+- Keep `.env` private and out of git. Commit changes to `.env.example` only when setup instructions need to change.
+
 ---
 
 ## Web App
