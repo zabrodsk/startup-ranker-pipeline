@@ -53,6 +53,10 @@ def _read_positive_int_env(name: str, default: int) -> int:
 
 SCORING_TIMEOUT_SECONDS = _read_positive_int_env("SCORING_TIMEOUT_SECONDS", 1800)
 SCORING_HEARTBEAT_SECONDS = _read_positive_int_env("SCORING_HEARTBEAT_SECONDS", 20)
+DECOMPOSITION_TIMEOUT_SECONDS = _read_positive_int_env("DECOMPOSITION_TIMEOUT_SECONDS", 600)
+DECOMPOSITION_HEARTBEAT_SECONDS = _read_positive_int_env("DECOMPOSITION_HEARTBEAT_SECONDS", 20)
+QA_TIMEOUT_SECONDS = _read_positive_int_env("QA_TIMEOUT_SECONDS", 1800)
+QA_HEARTBEAT_SECONDS = _read_positive_int_env("QA_HEARTBEAT_SECONDS", 20)
 
 
 async def _await_with_heartbeat(
@@ -119,6 +123,10 @@ def _scoring_retry_count(stage_name: str) -> int:
         and row.get("status") == "retrying"
         and row.get("company_slug") == current_slug
     )
+
+
+def _stage_retry_count(stage_name: str) -> int:
+    return _scoring_retry_count(stage_name)
 
 
 # ---------------------------------------------------------------------------
@@ -250,28 +258,186 @@ async def evaluate_startup(
             config=config,
             prompt_overrides=prompt_overrides or {},
         )
-        decomp_result = await decompose_all_questions(temp_state)
+        llm_runtime = get_llm_runtime_settings()
+        llm_selection = get_current_llm_selection() or {}
+        request_timeout_s = llm_runtime["request_timeout_seconds"]
+        max_retries = llm_runtime["max_retries"]
+
+        decomp_stage_name = "batch_decomposition"
+
+        def _on_decomposition_heartbeat(elapsed: int, timeout_s: int) -> None:
+            retry_count = _stage_retry_count(decomp_stage_name)
+            wait_state = (
+                "retrying after provider throttle/timeout"
+                if retry_count > 0
+                else "still decomposing questions"
+            )
+            _progress(
+                f"[3/4] Decomposing questions & gathering evidence... "
+                f"{wait_state} "
+                f"({elapsed}s elapsed, wall timeout {timeout_s}s, "
+                f"request timeout {request_timeout_s}s, retries observed {retry_count})",
+            )
+
+        collector = get_current_collector()
+        if collector:
+            collector.record_execution_event(
+                service="pipeline_stage",
+                status="started",
+                stage=decomp_stage_name,
+                provider=llm_selection.get("provider"),
+                model=llm_selection.get("model"),
+                request_timeout_seconds=request_timeout_s,
+                max_retries=max_retries,
+                metadata={
+                    "slug": slug,
+                    "wall_timeout_seconds": DECOMPOSITION_TIMEOUT_SECONDS,
+                    "heartbeat_seconds": DECOMPOSITION_HEARTBEAT_SECONDS,
+                    "source": "evaluate_startup",
+                },
+            )
+
+        started_decomposition = time.monotonic()
+        try:
+            with use_stage_context(decomp_stage_name):
+                decomp_result = await _await_with_heartbeat(
+                    decompose_all_questions(temp_state),
+                    timeout_seconds=DECOMPOSITION_TIMEOUT_SECONDS,
+                    heartbeat_seconds=DECOMPOSITION_HEARTBEAT_SECONDS,
+                    on_heartbeat=_on_decomposition_heartbeat,
+                )
+        except TimeoutError as exc:
+            if collector:
+                collector.record_execution_event(
+                    service="pipeline_stage",
+                    status="timeout",
+                    stage=decomp_stage_name,
+                    provider=llm_selection.get("provider"),
+                    model=llm_selection.get("model"),
+                    request_timeout_seconds=request_timeout_s,
+                    max_retries=max_retries,
+                    latency_ms=int((time.monotonic() - started_decomposition) * 1000),
+                    error_message=str(exc),
+                    metadata={
+                        "slug": slug,
+                        "wall_timeout_seconds": DECOMPOSITION_TIMEOUT_SECONDS,
+                        "request_timeout_seconds": request_timeout_s,
+                        "retry_events_observed": _stage_retry_count(decomp_stage_name),
+                    },
+                )
+            raise
+        else:
+            if collector:
+                collector.record_execution_event(
+                    service="pipeline_stage",
+                    status="done",
+                    stage=decomp_stage_name,
+                    provider=llm_selection.get("provider"),
+                    model=llm_selection.get("model"),
+                    request_timeout_seconds=request_timeout_s,
+                    max_retries=max_retries,
+                    latency_ms=int((time.monotonic() - started_decomposition) * 1000),
+                    metadata={
+                        "slug": slug,
+                        "wall_timeout_seconds": DECOMPOSITION_TIMEOUT_SECONDS,
+                        "retry_events_observed": _stage_retry_count(decomp_stage_name),
+                    },
+                )
         question_trees = decomp_result["question_trees"]
 
         def _on_qa_progress(current: int, total: int) -> None:
             _progress(f"[3/4] Decomposing questions & gathering evidence... ({current}/{total} Q&A)")
 
-        all_qa_pairs = await answer_all_trees_from_evidence(
-            question_trees, company, store, k=k,
-            use_web_search=use_web_search,
-            on_progress=_on_qa_progress,
-            on_cooperate=on_cooperate,
-            vc_context=_ensure_str(vc_investment_strategy).strip() or "",
-            prompt_overrides=prompt_overrides or {},
-        )
+        qa_stage_name = "batch_qa"
+
+        def _on_qa_heartbeat(elapsed: int, timeout_s: int) -> None:
+            retry_count = _stage_retry_count(qa_stage_name)
+            wait_state = (
+                "retrying after provider throttle/timeout"
+                if retry_count > 0
+                else "still answering evidence questions"
+            )
+            _progress(
+                f"[3/4] Decomposing questions & gathering evidence... "
+                f"{wait_state} "
+                f"({elapsed}s elapsed, wall timeout {timeout_s}s, "
+                f"request timeout {request_timeout_s}s, retries observed {retry_count})",
+            )
+
+        if collector:
+            collector.record_execution_event(
+                service="pipeline_stage",
+                status="started",
+                stage=qa_stage_name,
+                provider=llm_selection.get("provider"),
+                model=llm_selection.get("model"),
+                request_timeout_seconds=request_timeout_s,
+                max_retries=max_retries,
+                metadata={
+                    "slug": slug,
+                    "wall_timeout_seconds": QA_TIMEOUT_SECONDS,
+                    "heartbeat_seconds": QA_HEARTBEAT_SECONDS,
+                    "source": "evaluate_startup",
+                },
+            )
+
+        started_qa = time.monotonic()
+        try:
+            with use_stage_context(qa_stage_name):
+                all_qa_pairs = await _await_with_heartbeat(
+                    answer_all_trees_from_evidence(
+                        question_trees, company, store, k=k,
+                        use_web_search=use_web_search,
+                        on_progress=_on_qa_progress,
+                        on_cooperate=on_cooperate,
+                        vc_context=_ensure_str(vc_investment_strategy).strip() or "",
+                        prompt_overrides=prompt_overrides or {},
+                    ),
+                    timeout_seconds=QA_TIMEOUT_SECONDS,
+                    heartbeat_seconds=QA_HEARTBEAT_SECONDS,
+                    on_heartbeat=_on_qa_heartbeat,
+                )
+        except TimeoutError as exc:
+            if collector:
+                collector.record_execution_event(
+                    service="pipeline_stage",
+                    status="timeout",
+                    stage=qa_stage_name,
+                    provider=llm_selection.get("provider"),
+                    model=llm_selection.get("model"),
+                    request_timeout_seconds=request_timeout_s,
+                    max_retries=max_retries,
+                    latency_ms=int((time.monotonic() - started_qa) * 1000),
+                    error_message=str(exc),
+                    metadata={
+                        "slug": slug,
+                        "wall_timeout_seconds": QA_TIMEOUT_SECONDS,
+                        "request_timeout_seconds": request_timeout_s,
+                        "retry_events_observed": _stage_retry_count(qa_stage_name),
+                    },
+                )
+            raise
+        else:
+            if collector:
+                collector.record_execution_event(
+                    service="pipeline_stage",
+                    status="done",
+                    stage=qa_stage_name,
+                    provider=llm_selection.get("provider"),
+                    model=llm_selection.get("model"),
+                    request_timeout_seconds=request_timeout_s,
+                    max_retries=max_retries,
+                    latency_ms=int((time.monotonic() - started_qa) * 1000),
+                    metadata={
+                        "slug": slug,
+                        "wall_timeout_seconds": QA_TIMEOUT_SECONDS,
+                        "retry_events_observed": _stage_retry_count(qa_stage_name),
+                    },
+                )
         _progress(f"[3/4] {len(all_qa_pairs)} Q&A pairs generated")
 
         # 4. Run existing DIALECTIC graph (enters at argument generation)
         _progress("[4/4] Generating arguments & scoring...")
-        llm_runtime = get_llm_runtime_settings()
-        llm_selection = get_current_llm_selection() or {}
-        request_timeout_s = llm_runtime["request_timeout_seconds"]
-        max_retries = llm_runtime["max_retries"]
         stage_name = "batch_scoring"
         _progress(
             "[4/4] Runtime limits: "
@@ -297,7 +463,6 @@ async def evaluate_startup(
                 f"request timeout {request_timeout_s}s, retries observed {retry_count})",
             )
 
-        collector = get_current_collector()
         if collector:
             collector.record_execution_event(
                 service="pipeline_stage",
@@ -431,27 +596,185 @@ async def evaluate_from_specter(
             config=config,
             prompt_overrides=prompt_overrides or {},
         )
-        decomp_result = await decompose_all_questions(temp_state)
+        llm_runtime = get_llm_runtime_settings()
+        llm_selection = get_current_llm_selection() or {}
+        request_timeout_s = llm_runtime["request_timeout_seconds"]
+        max_retries = llm_runtime["max_retries"]
+
+        decomp_stage_name = "batch_decomposition"
+
+        def _on_decomposition_heartbeat(elapsed: int, timeout_s: int) -> None:
+            retry_count = _stage_retry_count(decomp_stage_name)
+            wait_state = (
+                "retrying after provider throttle/timeout"
+                if retry_count > 0
+                else "still decomposing questions"
+            )
+            _progress(
+                f"[2/3] Decomposing questions & gathering evidence... "
+                f"{wait_state} "
+                f"({elapsed}s elapsed, wall timeout {timeout_s}s, "
+                f"request timeout {request_timeout_s}s, retries observed {retry_count})",
+            )
+
+        collector = get_current_collector()
+        if collector:
+            collector.record_execution_event(
+                service="pipeline_stage",
+                status="started",
+                stage=decomp_stage_name,
+                provider=llm_selection.get("provider"),
+                model=llm_selection.get("model"),
+                request_timeout_seconds=request_timeout_s,
+                max_retries=max_retries,
+                metadata={
+                    "slug": slug,
+                    "wall_timeout_seconds": DECOMPOSITION_TIMEOUT_SECONDS,
+                    "heartbeat_seconds": DECOMPOSITION_HEARTBEAT_SECONDS,
+                    "source": "evaluate_from_specter",
+                },
+            )
+
+        started_decomposition = time.monotonic()
+        try:
+            with use_stage_context(decomp_stage_name):
+                decomp_result = await _await_with_heartbeat(
+                    decompose_all_questions(temp_state),
+                    timeout_seconds=DECOMPOSITION_TIMEOUT_SECONDS,
+                    heartbeat_seconds=DECOMPOSITION_HEARTBEAT_SECONDS,
+                    on_heartbeat=_on_decomposition_heartbeat,
+                )
+        except TimeoutError as exc:
+            if collector:
+                collector.record_execution_event(
+                    service="pipeline_stage",
+                    status="timeout",
+                    stage=decomp_stage_name,
+                    provider=llm_selection.get("provider"),
+                    model=llm_selection.get("model"),
+                    request_timeout_seconds=request_timeout_s,
+                    max_retries=max_retries,
+                    latency_ms=int((time.monotonic() - started_decomposition) * 1000),
+                    error_message=str(exc),
+                    metadata={
+                        "slug": slug,
+                        "wall_timeout_seconds": DECOMPOSITION_TIMEOUT_SECONDS,
+                        "request_timeout_seconds": request_timeout_s,
+                        "retry_events_observed": _stage_retry_count(decomp_stage_name),
+                    },
+                )
+            raise
+        else:
+            if collector:
+                collector.record_execution_event(
+                    service="pipeline_stage",
+                    status="done",
+                    stage=decomp_stage_name,
+                    provider=llm_selection.get("provider"),
+                    model=llm_selection.get("model"),
+                    request_timeout_seconds=request_timeout_s,
+                    max_retries=max_retries,
+                    latency_ms=int((time.monotonic() - started_decomposition) * 1000),
+                    metadata={
+                        "slug": slug,
+                        "wall_timeout_seconds": DECOMPOSITION_TIMEOUT_SECONDS,
+                        "retry_events_observed": _stage_retry_count(decomp_stage_name),
+                    },
+                )
         question_trees = decomp_result["question_trees"]
 
         def _on_qa_progress(current: int, total: int) -> None:
             _progress(f"[2/3] Decomposing questions & gathering evidence... ({current}/{total} Q&A)")
 
-        all_qa_pairs = await answer_all_trees_from_evidence(
-            question_trees, company, store, k=k,
-            use_web_search=use_web_search,
-            on_progress=_on_qa_progress,
-            on_cooperate=on_cooperate,
-            vc_context=_ensure_str(vc_investment_strategy).strip() or "",
-            prompt_overrides=prompt_overrides or {},
-        )
+        qa_stage_name = "batch_qa"
+
+        def _on_qa_heartbeat(elapsed: int, timeout_s: int) -> None:
+            retry_count = _stage_retry_count(qa_stage_name)
+            wait_state = (
+                "retrying after provider throttle/timeout"
+                if retry_count > 0
+                else "still answering evidence questions"
+            )
+            _progress(
+                f"[2/3] Decomposing questions & gathering evidence... "
+                f"{wait_state} "
+                f"({elapsed}s elapsed, wall timeout {timeout_s}s, "
+                f"request timeout {request_timeout_s}s, retries observed {retry_count})",
+            )
+
+        if collector:
+            collector.record_execution_event(
+                service="pipeline_stage",
+                status="started",
+                stage=qa_stage_name,
+                provider=llm_selection.get("provider"),
+                model=llm_selection.get("model"),
+                request_timeout_seconds=request_timeout_s,
+                max_retries=max_retries,
+                metadata={
+                    "slug": slug,
+                    "wall_timeout_seconds": QA_TIMEOUT_SECONDS,
+                    "heartbeat_seconds": QA_HEARTBEAT_SECONDS,
+                    "source": "evaluate_from_specter",
+                },
+            )
+
+        started_qa = time.monotonic()
+        try:
+            with use_stage_context(qa_stage_name):
+                all_qa_pairs = await _await_with_heartbeat(
+                    answer_all_trees_from_evidence(
+                        question_trees, company, store, k=k,
+                        use_web_search=use_web_search,
+                        on_progress=_on_qa_progress,
+                        on_cooperate=on_cooperate,
+                        vc_context=_ensure_str(vc_investment_strategy).strip() or "",
+                        prompt_overrides=prompt_overrides or {},
+                    ),
+                    timeout_seconds=QA_TIMEOUT_SECONDS,
+                    heartbeat_seconds=QA_HEARTBEAT_SECONDS,
+                    on_heartbeat=_on_qa_heartbeat,
+                )
+        except TimeoutError as exc:
+            if collector:
+                collector.record_execution_event(
+                    service="pipeline_stage",
+                    status="timeout",
+                    stage=qa_stage_name,
+                    provider=llm_selection.get("provider"),
+                    model=llm_selection.get("model"),
+                    request_timeout_seconds=request_timeout_s,
+                    max_retries=max_retries,
+                    latency_ms=int((time.monotonic() - started_qa) * 1000),
+                    error_message=str(exc),
+                    metadata={
+                        "slug": slug,
+                        "wall_timeout_seconds": QA_TIMEOUT_SECONDS,
+                        "request_timeout_seconds": request_timeout_s,
+                        "retry_events_observed": _stage_retry_count(qa_stage_name),
+                    },
+                )
+            raise
+        else:
+            if collector:
+                collector.record_execution_event(
+                    service="pipeline_stage",
+                    status="done",
+                    stage=qa_stage_name,
+                    provider=llm_selection.get("provider"),
+                    model=llm_selection.get("model"),
+                    request_timeout_seconds=request_timeout_s,
+                    max_retries=max_retries,
+                    latency_ms=int((time.monotonic() - started_qa) * 1000),
+                    metadata={
+                        "slug": slug,
+                        "wall_timeout_seconds": QA_TIMEOUT_SECONDS,
+                        "retry_events_observed": _stage_retry_count(qa_stage_name),
+                    },
+                )
         _progress(f"[2/3] {len(all_qa_pairs)} Q&A pairs generated")
 
         _progress("[3/3] Generating arguments & scoring...")
-        llm_runtime = get_llm_runtime_settings()
-        llm_selection = get_current_llm_selection() or {}
-        request_timeout_s = llm_runtime["request_timeout_seconds"]
-        max_retries = llm_runtime["max_retries"]
         stage_name = "batch_scoring"
         _progress(
             "[3/3] Runtime limits: "
@@ -477,7 +800,6 @@ async def evaluate_from_specter(
                 f"request timeout {request_timeout_s}s, retries observed {retry_count})",
             )
 
-        collector = get_current_collector()
         if collector:
             collector.record_execution_event(
                 service="pipeline_stage",

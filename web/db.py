@@ -1099,7 +1099,6 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
             status = latest_status.get("status") or latest_analysis.get("status") or "pending"
             progress = latest_status.get("progress")
             created_at = latest_analysis.get("created_at") or row.get("created_at")
-            rebuilt = load_job_results(jid)
 
             out.append(
                 {
@@ -1110,7 +1109,7 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
                     "input_mode": row.get("input_mode"),
                     "use_web_search": row.get("use_web_search"),
                     "run_config": row.get("run_config") or {},
-                    "results": rebuilt.get("results") if rebuilt else None,
+                    "results": None,
                 }
             )
 
@@ -1198,7 +1197,11 @@ def _reconcile_missing_company_runs(
     return inserted
 
 
-def list_company_histories(limit_runs: int = 1000) -> list[dict[str, Any]]:
+def list_company_histories(
+    limit_runs: int = 1000,
+    *,
+    perform_maintenance: bool = True,
+) -> list[dict[str, Any]]:
     """Return grouped company histories with per-run records."""
     client = _get_client()
     if not client:
@@ -1206,17 +1209,18 @@ def list_company_histories(limit_runs: int = 1000) -> list[dict[str, Any]]:
 
     try:
         rows_data = _fetch_company_run_rows(client, limit_runs)
-        if not rows_data:
-            backfill_company_runs_from_analyses()
-            rows_data = _fetch_company_run_rows(client, limit_runs)
-        else:
-            inserted = _reconcile_missing_company_runs(
-                client,
-                rows_data,
-                limit_jobs=max(limit_runs, 200),
-            )
-            if inserted:
+        if perform_maintenance:
+            if not rows_data:
+                backfill_company_runs_from_analyses()
                 rows_data = _fetch_company_run_rows(client, limit_runs)
+            else:
+                inserted = _reconcile_missing_company_runs(
+                    client,
+                    rows_data,
+                    limit_jobs=max(limit_runs, 200),
+                )
+                if inserted:
+                    rows_data = _fetch_company_run_rows(client, limit_runs)
 
         grouped: dict[str, dict[str, Any]] = {}
         for row in rows_data:
@@ -1235,7 +1239,7 @@ def list_company_histories(limit_runs: int = 1000) -> list[dict[str, Any]]:
                 "mode": row.get("mode"),
                 "input_order": row.get("input_order"),
                 "created_at": row.get("run_created_at") or row.get("created_at"),
-                "results": row.get("result_payload"),
+                "results": _compact_company_run_payload(row.get("result_payload")),
             }
             entry = grouped.setdefault(
                 group_key,
@@ -1294,6 +1298,39 @@ def list_company_histories(limit_runs: int = 1000) -> list[dict[str, Any]]:
         return []
 
 
+def _compact_company_run_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    serialized = _serialize(payload or {})
+    summary_row = ((serialized.get("summary_rows") or [{}]) or [{}])[0]
+    ranking = _serialize(serialized.get("ranking_result") or {})
+    return {
+        "mode": serialized.get("mode"),
+        "source_mode": serialized.get("source_mode"),
+        "startup_slug": serialized.get("startup_slug") or summary_row.get("startup_slug"),
+        "company_name": serialized.get("company_name") or summary_row.get("company_name"),
+        "decision": serialized.get("decision") or summary_row.get("decision"),
+        "total_score": serialized.get("total_score") or summary_row.get("total_score"),
+        "avg_pro": serialized.get("avg_pro"),
+        "avg_contra": serialized.get("avg_contra"),
+        "summary_rows": [summary_row] if summary_row else [],
+        "founders": serialized.get("founders") or summary_row.get("founders") or [],
+        "team_members": serialized.get("team_members") or summary_row.get("team_members") or [],
+        "ranking_result": {
+            "rank": ranking.get("rank") or summary_row.get("rank"),
+            "percentile": ranking.get("percentile") or summary_row.get("percentile"),
+            "composite_score": ranking.get("composite_score") or summary_row.get("composite_score"),
+            "strategy_fit_score": ranking.get("strategy_fit_score") or summary_row.get("strategy_fit_score"),
+            "team_score": ranking.get("team_score") or summary_row.get("team_score"),
+            "upside_score": ranking.get("upside_score") or summary_row.get("upside_score"),
+            "bucket": ranking.get("bucket") or summary_row.get("bucket"),
+            "strategy_fit_summary": ranking.get("strategy_fit_summary") or summary_row.get("strategy_fit_summary"),
+            "team_summary": ranking.get("team_summary") or summary_row.get("team_summary"),
+            "potential_summary": ranking.get("potential_summary") or summary_row.get("potential_summary"),
+            "key_points": ranking.get("key_points") or summary_row.get("key_points"),
+            "red_flags": ranking.get("red_flags") or summary_row.get("red_flags"),
+        },
+    }
+
+
 def _extract_company_runs_from_payload(
     job_id_legacy: str,
     payload: dict[str, Any],
@@ -1306,7 +1343,7 @@ def _extract_company_runs_from_payload(
     if payload_mode == "single":
         company_name = serialized.get("company_name") or serialized.get("startup_slug") or job_id_legacy
         company_key = _normalize_company_key(company_name, None, serialized.get("startup_slug"))
-        ranking = serialized.get("ranking_result") or {}
+        ranking = _serialize(serialized.get("ranking_result") or {})
         return [{
             "job_id_legacy": job_id_legacy,
             "company_key": company_key,
@@ -1319,49 +1356,43 @@ def _extract_company_runs_from_payload(
             "bucket": ranking.get("bucket"),
             "mode": mode or payload_mode,
             "run_created_at": created_at,
-            "result_payload": serialized,
+            "result_payload": _compact_company_run_payload(serialized),
         }]
 
-    rows = []
+    rows: list[dict[str, Any]] = []
     for summary_row in serialized.get("summary_rows") or []:
         company_name = summary_row.get("company_name") or summary_row.get("startup_slug") or job_id_legacy
         startup_slug = summary_row.get("startup_slug")
         company_key = _normalize_company_key(company_name, None, startup_slug)
-        row_payload = {
-            "mode": "single",
-            "source_mode": payload_mode or "batch",
-            "startup_slug": startup_slug,
-            "company_name": company_name,
-            "decision": summary_row.get("decision"),
-            "total_score": summary_row.get("total_score"),
-            "avg_pro": summary_row.get("avg_pro"),
-            "avg_contra": summary_row.get("avg_contra"),
-            "summary_rows": [summary_row],
-            "argument_rows": [
-                row for row in (serialized.get("argument_rows") or [])
-                if (row.get("startup_slug") or "") == startup_slug
-            ],
-            "qa_provenance_rows": [
-                row for row in (serialized.get("qa_provenance_rows") or [])
-                if (row.get("startup_slug") or "") == startup_slug
-            ],
-            "founders": summary_row.get("founders") or [],
-            "team_members": summary_row.get("team_members") or [],
-            "ranking_result": {
-                "rank": summary_row.get("rank"),
-                "percentile": summary_row.get("percentile"),
-                "composite_score": summary_row.get("composite_score"),
-                "strategy_fit_score": summary_row.get("strategy_fit_score"),
-                "team_score": summary_row.get("team_score"),
-                "upside_score": summary_row.get("upside_score"),
-                "bucket": summary_row.get("bucket"),
-                "strategy_fit_summary": summary_row.get("strategy_fit_summary"),
-                "team_summary": summary_row.get("team_summary"),
-                "potential_summary": summary_row.get("potential_summary"),
-                "key_points": summary_row.get("key_points"),
-                "red_flags": summary_row.get("red_flags"),
-            },
-        }
+        row_payload = _compact_company_run_payload(
+            {
+                "mode": "single",
+                "source_mode": payload_mode or "batch",
+                "startup_slug": startup_slug,
+                "company_name": company_name,
+                "decision": summary_row.get("decision"),
+                "total_score": summary_row.get("total_score"),
+                "avg_pro": summary_row.get("avg_pro"),
+                "avg_contra": summary_row.get("avg_contra"),
+                "summary_rows": [summary_row],
+                "founders": summary_row.get("founders") or [],
+                "team_members": summary_row.get("team_members") or [],
+                "ranking_result": {
+                    "rank": summary_row.get("rank"),
+                    "percentile": summary_row.get("percentile"),
+                    "composite_score": summary_row.get("composite_score"),
+                    "strategy_fit_score": summary_row.get("strategy_fit_score"),
+                    "team_score": summary_row.get("team_score"),
+                    "upside_score": summary_row.get("upside_score"),
+                    "bucket": summary_row.get("bucket"),
+                    "strategy_fit_summary": summary_row.get("strategy_fit_summary"),
+                    "team_summary": summary_row.get("team_summary"),
+                    "potential_summary": summary_row.get("potential_summary"),
+                    "key_points": summary_row.get("key_points"),
+                    "red_flags": summary_row.get("red_flags"),
+                },
+            }
+        )
         rows.append({
             "job_id_legacy": job_id_legacy,
             "company_key": company_key,

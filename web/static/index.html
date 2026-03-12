@@ -4808,7 +4808,7 @@ async function fetchSavedJobs({ silent = true } = {}) {
 
 async function fetchSavedCompanies({ silent = true } = {}) {
   try {
-    const data = await api('/api/company-runs', { timeoutMs: 12000, retries: 1 });
+    const data = await api('/api/company-runs', { timeoutMs: 30000, retries: 1 });
     savedCompaniesCache = data.companies || [];
     companiesFetched = true;
     renderSavedCompaniesWindow();

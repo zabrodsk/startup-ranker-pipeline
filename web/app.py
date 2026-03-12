@@ -679,7 +679,7 @@ def _get_job_summary(job_id: str, job: AnalysisStatus) -> dict[str, Any]:
         "created_at": None,
         "input_mode": results.get("mode") if isinstance(results, dict) else None,
         "use_web_search": None,
-        "results": results,
+        "results": None,
         "llm": _resolve_job_llm_label(job_id, results=results),
     }
 
@@ -704,7 +704,7 @@ def _list_jobs_for_ui() -> list[dict[str, Any]]:
                     "created_at": entry.get("created_at") or (existing or {}).get("created_at"),
                     "input_mode": entry.get("input_mode") or (existing or {}).get("input_mode"),
                     "use_web_search": entry.get("use_web_search"),
-                    "results": entry.get("results") or (existing or {}).get("results"),
+                    "results": None,
                     "llm": _resolve_job_llm_label(
                         job_id,
                         results=entry.get("results") or {},
@@ -2348,7 +2348,7 @@ async def list_company_runs(session_id: str | None = Cookie(default=None)):
     if not db or not db.is_configured():
         return {"companies": []}
 
-    return {"companies": db.list_company_histories()}
+    return {"companies": db.list_company_histories(perform_maintenance=False)}
 
 
 @app.get("/api/companies/{company_name}/analyses")
