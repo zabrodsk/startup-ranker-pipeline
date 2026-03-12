@@ -373,6 +373,9 @@ def _restart_process_for_memory_reset() -> None:
 
 def _schedule_idle_restart_if_enabled(job_id: str) -> None:
     global _restart_timer
+    job = _jobs.get(job_id)
+    if not job or not job.restart_pending or not job.terminal_results_served:
+        return
     if not RESTART_ON_IDLE_AFTER_ANALYSIS:
         return
     if not (db and db.is_configured()):
@@ -394,6 +397,14 @@ def _schedule_idle_restart_if_enabled(job_id: str) -> None:
         timer.daemon = True
         _restart_timer = timer
         timer.start()
+
+
+def _mark_terminal_results_served(job_id: str) -> None:
+    job = _jobs.get(job_id)
+    if not job or job.status not in {"done", "stopped"}:
+        return
+    job.terminal_results_served = True
+    _schedule_idle_restart_if_enabled(job_id)
 
 
 def _batch_chunking_config(
@@ -507,6 +518,8 @@ class AnalysisStatus(BaseModel):
     progress: str = ""
     progress_log: list[str] = []
     results: Any = None
+    terminal_results_served: bool = False
+    restart_pending: bool = False
 
 
 _jobs: dict[str, AnalysisStatus] = {}
@@ -1775,7 +1788,8 @@ async def _run_analysis(
                 job_id,
                 drop_results=bool(db and db.is_configured()),
             )
-            _schedule_idle_restart_if_enabled(job_id)
+            if job.status in {"done", "stopped"}:
+                job.restart_pending = True
 
 
 def _make_progress_callback(job_id: str):
@@ -2426,6 +2440,8 @@ async def get_status(job_id: str, session_id: str | None = Cookie(default=None))
             if loaded:
                 results = loaded.get("results")
                 _promote_results_metadata(job_id, results)
+        if results is not None:
+            _mark_terminal_results_served(job_id)
         return {
             "job_id": job.job_id,
             "status": job.status,
@@ -2449,6 +2465,7 @@ async def get_status(job_id: str, session_id: str | None = Cookie(default=None))
         )
         _results_cache[job_id] = {}
         _promote_results_metadata(job_id, results)
+        _mark_terminal_results_served(job_id)
         return {
             "job_id": job_id,
             "status": loaded_status,
@@ -2477,12 +2494,14 @@ async def get_analysis(job_id: str, session_id: str | None = Cookie(default=None
     cache = _results_cache.get(job_id, {})
     results = cache.get("results")
     if results:
+        _mark_terminal_results_served(job_id)
         return {"job_id": job_id, "results": results}
 
     loaded = _load_persisted_job_results(job_id, preferred_mode=cache.get("input_mode"))
     if loaded:
         results = loaded.get("results")
         _promote_results_metadata(job_id, results)
+        _mark_terminal_results_served(job_id)
         return {"job_id": job_id, "results": results}
 
     raise HTTPException(status_code=404, detail="Analysis not found")

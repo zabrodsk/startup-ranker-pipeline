@@ -626,6 +626,7 @@ def test_status_lazy_loads_terminal_results_after_memory_cleanup(monkeypatch) ->
         assert payload["llm"] == "Claude Haiku 4.5"
         assert web_app._jobs[job_id].results is None
         assert "results" not in web_app._results_cache[job_id]
+        assert web_app._jobs[job_id].terminal_results_served is True
     finally:
         web_app._jobs.pop(job_id, None)
         web_app._results_cache.pop(job_id, None)
@@ -662,12 +663,22 @@ def test_schedule_idle_restart_when_enabled(monkeypatch) -> None:
     monkeypatch.setattr(web_app.threading, "Timer", FakeTimer)
     web_app._restart_timer = None
 
+    web_app._jobs["job-done"] = web_app.AnalysisStatus(
+        job_id="job-done",
+        status="done",
+        progress="Analysis complete",
+        progress_log=[],
+        terminal_results_served=True,
+        restart_pending=True,
+    )
+
     try:
         web_app._schedule_idle_restart_if_enabled("job-done")
         assert created["interval"] == 15
         assert isinstance(web_app._restart_timer, FakeTimer)
         assert web_app._restart_timer.started is True
     finally:
+        web_app._jobs.pop("job-done", None)
         web_app._restart_timer = original_timer
 
 
@@ -696,6 +707,14 @@ def test_schedule_idle_restart_skips_when_another_job_is_active(monkeypatch) -> 
     )
     monkeypatch.setattr(web_app.threading, "Timer", FakeTimer)
     web_app._restart_timer = None
+    web_app._jobs["job-done"] = web_app.AnalysisStatus(
+        job_id="job-done",
+        status="done",
+        progress="Analysis complete",
+        progress_log=[],
+        terminal_results_served=True,
+        restart_pending=True,
+    )
     web_app._jobs["job-active"] = web_app.AnalysisStatus(
         job_id="job-active",
         status="running",
@@ -707,8 +726,56 @@ def test_schedule_idle_restart_skips_when_another_job_is_active(monkeypatch) -> 
         web_app._schedule_idle_restart_if_enabled("job-done")
         assert timer_calls["count"] == 0
     finally:
+        web_app._jobs.pop("job-done", None)
         web_app._jobs.pop("job-active", None)
         web_app._restart_timer = original_timer
+
+
+def test_mark_terminal_results_served_triggers_restart_only_for_pending_done_jobs(monkeypatch) -> None:
+    calls: list[str] = []
+    job_id = "job-terminal-served"
+    web_app._jobs[job_id] = web_app.AnalysisStatus(
+        job_id=job_id,
+        status="done",
+        progress="Analysis complete",
+        progress_log=[],
+        restart_pending=True,
+    )
+    monkeypatch.setattr(web_app, "_schedule_idle_restart_if_enabled", lambda current_job_id: calls.append(current_job_id))
+
+    try:
+        web_app._mark_terminal_results_served(job_id)
+        assert web_app._jobs[job_id].terminal_results_served is True
+        assert calls == [job_id]
+    finally:
+        web_app._jobs.pop(job_id, None)
+
+
+def test_loaded_persisted_terminal_results_do_not_arm_restart(monkeypatch) -> None:
+    job_id = "job-persisted-only"
+    results = {
+        "mode": "single",
+        "company_name": "Alpha",
+        "job_status": "done",
+        "job_message": "Analysis complete",
+    }
+
+    monkeypatch.setattr(web_app, "_check_session", lambda session_id: True)
+    monkeypatch.setattr(
+        web_app,
+        "_load_persisted_job_results",
+        lambda current_job_id, preferred_mode=None: {"results": results} if current_job_id == job_id else None,
+    )
+
+    try:
+        payload = asyncio.run(web_app.get_status(job_id, session_id="session"))
+        assert payload["status"] == "done"
+        assert payload["results"]["company_name"] == "Alpha"
+        assert web_app._jobs[job_id].terminal_results_served is True
+        assert web_app._jobs[job_id].restart_pending is False
+    finally:
+        web_app._jobs.pop(job_id, None)
+        web_app._results_cache.pop(job_id, None)
 
 
 def test_batch_chunking_config_enables_for_large_anthropic_batch() -> None:
