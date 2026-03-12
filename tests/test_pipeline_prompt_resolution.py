@@ -49,7 +49,7 @@ def test_parallel_decomposition_uses_overridden_root_questions(monkeypatch):
     assert result["question_trees"]["market"].root_node.question == "Custom market root question?"
 
 
-def test_parallel_decomposition_cache_reuses_by_industry_not_company_name(monkeypatch):
+def test_parallel_decomposition_cache_remains_company_scoped(monkeypatch):
     seen = {}
     cached_tree = QuestionTree(
         aspect="market",
@@ -79,6 +79,6 @@ def test_parallel_decomposition_cache_reuses_by_industry_not_company_name(monkey
         )
     )
 
-    assert seen["company_name"] == "industry:vertical-saas-hospitality"
+    assert seen["company_name"] == "Apaleo"
     assert seen["industry"] == "Vertical SaaS / Hospitality"
     assert result["tree"] == cached_tree

@@ -12,7 +12,6 @@ The 4 questions cover:
 """
 
 import hashlib
-import re
 from typing import Dict
 
 from agent.dataclasses.company import Company
@@ -71,10 +70,9 @@ async def _get_or_decompose_question(
     Returns:
         Dict with aspect key and QuestionTree (cached or newly decomposed)
     """
-    normalized_industry = re.sub(r"[^a-z0-9]+", "-", (industry or "unknown").strip().lower()).strip("-") or "unknown"
-    # Decomposition only depends on root question, prompt version, and industry.
-    # Keying by company name prevents reuse across same-industry analyses.
-    cache_company = Company(name=f"industry:{normalized_industry}", industry=industry)
+    # Keep decomposition caches company-scoped to preserve company-specific
+    # question shaping even if prompts or upstream context evolve.
+    cache_company = Company(name=company_name, industry=industry)
     decomposition_signature = hashlib.sha256(
         (
             str(get_prompt("decomposition.system", prompt_overrides))
