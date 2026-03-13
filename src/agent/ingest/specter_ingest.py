@@ -159,6 +159,10 @@ def _read_tabular(path: str | Path) -> pd.DataFrame:
     return pd.read_csv(str(path))
 
 
+def _company_slug(company_name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", company_name.lower()).strip("-")
+
+
 def load_people(people_csv: str | Path) -> dict[str, tuple[Person, pd.Series]]:
     """Load people CSV/Excel and return a dict keyed by Specter Person ID."""
     df = _read_tabular(people_csv)
@@ -169,6 +173,26 @@ def load_people(people_csv: str | Path) -> dict[str, tuple[Person, pd.Series]]:
             continue
         people[pid] = (_parse_person(row), row)
     return people
+
+
+def list_specter_companies(companies_csv: str | Path) -> list[dict[str, Any]]:
+    """Return lightweight company descriptors without building EvidenceStores."""
+    companies_df = _read_tabular(companies_csv)
+    descriptors: list[dict[str, Any]] = []
+    for idx, row in companies_df.iterrows():
+        company_name = _safe(row.get("Company Name"))
+        if not company_name:
+            continue
+        descriptors.append(
+            {
+                "index": int(idx),
+                "name": company_name,
+                "slug": _company_slug(company_name),
+                "industry": _safe(row.get("Industry")),
+                "domain": _safe(row.get("Domain")),
+            }
+        )
+    return descriptors
 
 
 # ---------------------------------------------------------------------------
@@ -512,6 +536,120 @@ def _build_person_detail_chunk(
     return _chunk(idx, "specter-people", f"Team Member: {name}", "\n".join(parts))
 
 
+def _build_company_and_store(
+    row: pd.Series,
+    people_map: dict[str, tuple[Person, pd.Series]],
+) -> tuple[Company, EvidenceStore] | None:
+    company_name = _safe(row.get("Company Name"))
+    if not company_name:
+        return None
+
+    slug = _company_slug(company_name)
+
+    founders_json = _parse_json_field(row.get("Founders"))
+    founder_ids: list[str] = []
+    if isinstance(founders_json, list):
+        for f in founders_json:
+            pid = f.get("specter_person_id") if isinstance(f, dict) else None
+            if pid:
+                founder_ids.append(pid)
+
+    team_persons: list[Person] = []
+    team_rows: list[pd.Series] = []
+    seen_ids: set[str] = set()
+    for pid in founder_ids:
+        if pid in people_map and pid not in seen_ids:
+            person, prow = people_map[pid]
+            team_persons.append(person)
+            team_rows.append(prow)
+            seen_ids.add(pid)
+
+    company_domain = _safe(row.get("Domain"))
+    for pid, (person, prow) in people_map.items():
+        if pid in seen_ids:
+            continue
+        current_company_website = _safe(prow.get("Current Position Company Website"))
+        current_company_name = _safe(prow.get("Current Position Company Name"))
+        if (
+            (company_domain and current_company_website and company_domain.lower() in current_company_website.lower())
+            or (current_company_name and current_company_name.lower() == company_name.lower())
+        ):
+            team_persons.append(person)
+            team_rows.append(prow)
+            seen_ids.add(pid)
+
+    company = Company(
+        name=company_name,
+        industry=_safe(row.get("Industry")),
+        tagline=_safe(row.get("Tagline")),
+        about=_safe(row.get("Description")),
+        team=team_persons or None,
+        domain=_safe(row.get("Domain")),
+    )
+
+    chunks: list[Chunk] = []
+    idx = 0
+
+    overview = _build_overview_chunk(row, idx)
+    chunks.append(overview)
+    idx += 1
+
+    funding = _build_funding_chunk(row, idx)
+    if funding:
+        chunks.append(funding)
+        idx += 1
+
+    growth = _build_growth_chunk(row, idx)
+    if growth:
+        chunks.append(growth)
+        idx += 1
+
+    reviews = _build_reviews_chunk(row, idx)
+    if reviews:
+        chunks.append(reviews)
+        idx += 1
+
+    glassdoor = _build_glassdoor_chunk(row, idx)
+    if glassdoor:
+        chunks.append(glassdoor)
+        idx += 1
+
+    founder_highlights_raw = _safe(row.get("Founder Highlights"))
+    founder_highlights = (
+        [h.strip() for h in founder_highlights_raw.split(",")]
+        if founder_highlights_raw else []
+    )
+
+    if team_persons:
+        team_overview = _build_team_overview_chunk(
+            team_persons,
+            founder_highlights,
+            company_name,
+            _safe_int(row.get("Number of Founders")),
+            idx,
+        )
+        chunks.append(team_overview)
+        idx += 1
+
+        for person, prow in zip(team_persons, team_rows):
+            detail = _build_person_detail_chunk(person, prow, company_name, idx)
+            chunks.append(detail)
+            idx += 1
+    elif founder_highlights:
+        chunks.append(
+            _chunk(
+                idx,
+                "specter-company",
+                "Founder Highlights",
+                f"Founder Highlights for {company_name}: {', '.join(founder_highlights)}",
+            )
+        )
+        idx += 1
+
+    store = EvidenceStore(startup_slug=slug, chunks=chunks)
+    return company, store
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -535,113 +673,26 @@ def ingest_specter(
     results: list[tuple[Company, EvidenceStore]] = []
 
     for _, row in companies_df.iterrows():
-        company_name = _safe(row.get("Company Name"))
-        if not company_name:
-            continue
-
-        slug = re.sub(r"[^a-z0-9]+", "-", company_name.lower()).strip("-")
-
-        # --- Join people ---
-        founders_json = _parse_json_field(row.get("Founders"))
-        founder_ids: list[str] = []
-        if isinstance(founders_json, list):
-            for f in founders_json:
-                pid = f.get("specter_person_id") if isinstance(f, dict) else None
-                if pid:
-                    founder_ids.append(pid)
-
-        team_persons: list[Person] = []
-        team_rows: list[pd.Series] = []
-        seen_ids: set[str] = set()
-        for pid in founder_ids:
-            if pid in people_map and pid not in seen_ids:
-                person, prow = people_map[pid]
-                team_persons.append(person)
-                team_rows.append(prow)
-                seen_ids.add(pid)
-
-        # Also pick up people whose current company matches
-        company_domain = _safe(row.get("Domain"))
-        for pid, (person, prow) in people_map.items():
-            if pid in seen_ids:
-                continue
-            current_company_website = _safe(prow.get("Current Position Company Website"))
-            current_company_name = _safe(prow.get("Current Position Company Name"))
-            if (
-                (company_domain and current_company_website
-                 and company_domain.lower() in current_company_website.lower())
-                or (current_company_name
-                    and current_company_name.lower() == company_name.lower())
-            ):
-                team_persons.append(person)
-                team_rows.append(prow)
-                seen_ids.add(pid)
-
-        # --- Build Company ---
-        company = Company(
-            name=company_name,
-            industry=_safe(row.get("Industry")),
-            tagline=_safe(row.get("Tagline")),
-            about=_safe(row.get("Description")),
-            team=team_persons or None,
-            domain=_safe(row.get("Domain")),
-        )
-
-        # --- Build EvidenceStore ---
-        chunks: list[Chunk] = []
-        idx = 0
-
-        overview = _build_overview_chunk(row, idx)
-        chunks.append(overview)
-        idx += 1
-
-        funding = _build_funding_chunk(row, idx)
-        if funding:
-            chunks.append(funding)
-            idx += 1
-
-        growth = _build_growth_chunk(row, idx)
-        if growth:
-            chunks.append(growth)
-            idx += 1
-
-        reviews = _build_reviews_chunk(row, idx)
-        if reviews:
-            chunks.append(reviews)
-            idx += 1
-
-        glassdoor = _build_glassdoor_chunk(row, idx)
-        if glassdoor:
-            chunks.append(glassdoor)
-            idx += 1
-
-        # Team chunks
-        founder_highlights_raw = _safe(row.get("Founder Highlights"))
-        founder_highlights = (
-            [h.strip() for h in founder_highlights_raw.split(",")]
-            if founder_highlights_raw else []
-        )
-
-        if team_persons:
-            team_overview = _build_team_overview_chunk(
-                team_persons, founder_highlights, company_name,
-                _safe_int(row.get("Number of Founders")), idx,
-            )
-            chunks.append(team_overview)
-            idx += 1
-
-            for person, prow in zip(team_persons, team_rows):
-                detail = _build_person_detail_chunk(person, prow, company_name, idx)
-                chunks.append(detail)
-                idx += 1
-        elif founder_highlights:
-            chunks.append(_chunk(
-                idx, "specter-company", "Founder Highlights",
-                f"Founder Highlights for {company_name}: {', '.join(founder_highlights)}"
-            ))
-            idx += 1
-
-        store = EvidenceStore(startup_slug=slug, chunks=chunks)
-        results.append((company, store))
+        built = _build_company_and_store(row, people_map)
+        if built is not None:
+            results.append(built)
 
     return results
+
+
+def ingest_specter_company(
+    companies_csv: str | Path,
+    people_csv: str | Path | None = None,
+    *,
+    company_index: int,
+) -> tuple[Company, EvidenceStore]:
+    """Parse exactly one Specter company row and build its Company/EvidenceStore."""
+    companies_df = _read_tabular(companies_csv)
+    people_map = load_people(people_csv) if people_csv else {}
+    if company_index < 0 or company_index >= len(companies_df.index):
+        raise IndexError(f"Specter company index {company_index} out of range")
+    row = companies_df.iloc[company_index]
+    built = _build_company_and_store(row, people_map)
+    if built is None:
+        raise ValueError(f"Specter company row {company_index} has no company name")
+    return built

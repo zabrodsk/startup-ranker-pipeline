@@ -4,6 +4,8 @@ FastAPI backend serving the Rockaway-branded UI with password protection.
 Provider API keys stay server-side only and are never exposed to the client.
 """
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import contextlib
@@ -23,7 +25,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-import pandas as pd
 from dotenv import load_dotenv
 from fastapi import Cookie, FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,16 +37,6 @@ load_dotenv()
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from agent.batch import (
-    build_argument_rows,
-    build_evidence_rows,
-    build_failed_rows,
-    build_qa_provenance_rows,
-    build_summary_rows,
-    evaluate_from_specter,
-    evaluate_startup,
-    rank_batch_companies,
-)
 from agent.llm_catalog import (
     available_models_payload,
     current_default_selection,
@@ -74,10 +65,6 @@ from agent.run_context import (
     build_run_costs_from_model_executions,
     use_run_context,
 )
-from agent.dataclasses.company import Company
-from agent.ingest import ingest_startup_folder
-from agent.ingest.store import Chunk, EvidenceStore
-from agent.ingest.specter_ingest import ingest_specter
 
 try:
     import web.db as db
@@ -150,9 +137,102 @@ _results_cache: dict[str, dict[str, Any]] = {}
 _restart_timer: threading.Timer | None = None
 _restart_lock = threading.Lock()
 SPECTER_CHUNK_EVENT_PREFIX = "__SPECTER_CHUNK_EVENT__"
+SPECTER_COMPANY_EVENT_PREFIX = "__SPECTER_COMPANY_EVENT__"
 
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+def _lazy_import_pandas():
+    import pandas as pd
+
+    return pd
+
+
+def _lazy_import_batch():
+    from agent import batch as batch_module
+
+    return batch_module
+
+
+def _lazy_import_company():
+    from agent.dataclasses.company import Company
+
+    return Company
+
+
+def _lazy_import_ingest_store():
+    from agent.ingest.store import Chunk, EvidenceStore
+
+    return Chunk, EvidenceStore
+
+
+def _lazy_import_ingest_startup_folder():
+    from agent.ingest import ingest_startup_folder
+
+    return ingest_startup_folder
+
+
+def _lazy_import_ingest_specter():
+    from agent.ingest.specter_ingest import ingest_specter
+
+    return ingest_specter
+
+
+def _lazy_import_list_specter_companies():
+    from agent.ingest.specter_ingest import list_specter_companies
+
+    return list_specter_companies
+
+
+def _lazy_import_ingest_specter_company():
+    from agent.ingest.specter_ingest import ingest_specter_company
+
+    return ingest_specter_company
+
+
+def build_argument_rows(results_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _lazy_import_batch().build_argument_rows(results_list)
+
+
+def build_failed_rows(results_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _lazy_import_batch().build_failed_rows(results_list)
+
+
+def build_qa_provenance_rows(results_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _lazy_import_batch().build_qa_provenance_rows(results_list)
+
+
+def build_summary_rows(results_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _lazy_import_batch().build_summary_rows(results_list)
+
+
+async def evaluate_from_specter(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    return await _lazy_import_batch().evaluate_from_specter(*args, **kwargs)
+
+
+async def evaluate_startup(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    return await _lazy_import_batch().evaluate_startup(*args, **kwargs)
+
+
+def ingest_specter(*args: Any, **kwargs: Any) -> list[tuple[Any, Any]]:
+    return _lazy_import_ingest_specter()(*args, **kwargs)
+
+
+def list_specter_companies(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+    return _lazy_import_list_specter_companies()(*args, **kwargs)
+
+
+def ingest_specter_company(*args: Any, **kwargs: Any) -> tuple[Any, Any]:
+    return _lazy_import_ingest_specter_company()(*args, **kwargs)
+
+
+def ingest_startup_folder(*args: Any, **kwargs: Any) -> Any:
+    return _lazy_import_ingest_startup_folder()(*args, **kwargs)
+
+
+def rank_batch_companies(results_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _lazy_import_batch().rank_batch_companies(results_list)
 
 
 def _set_no_store_headers(response: Response | None) -> None:
@@ -530,6 +610,31 @@ def _batch_chunking_config(
 def _chunk_items(items: list[Any], chunk_size: int) -> list[list[Any]]:
     size = max(1, chunk_size)
     return [items[idx: idx + size] for idx in range(0, len(items), size)]
+
+
+def _persisted_company_key(name: str | None, slug: str | None) -> str:
+    base = (slug or name or "").strip().lower()
+    base = re.sub(r"[^a-z0-9]+", "-", base).strip("-")
+    return base or "unknown"
+
+
+def _load_persisted_company_keys(job_id: str) -> set[str]:
+    if not (db and db.is_configured()):
+        return set()
+    try:
+        rows = db.load_job_company_runs(job_id)
+    except Exception:
+        return set()
+
+    keys: set[str] = set()
+    for row in rows or []:
+        keys.add(
+            _persisted_company_key(
+                row.get("company_name"),
+                row.get("startup_slug"),
+            )
+        )
+    return keys
 
 
 class LoginRequest(BaseModel):
@@ -1245,6 +1350,7 @@ def _detect_specter_csvs(upload_dir: Path, filenames: list[str]) -> dict | None:
         return lower.endswith(".csv") or lower.endswith(".xlsx") or lower.endswith(".xls")
 
     def _sniff_specter_kind(path: Path) -> str | None:
+        pd = _lazy_import_pandas()
         try:
             if path.suffix.lower() in {".xlsx", ".xls"}:
                 df = pd.read_excel(path, nrows=3)
@@ -1824,32 +1930,32 @@ def _handle_specter_chunk_worker_event(
         )
 
 
-async def _run_specter_chunk_subprocess(
+async def _run_specter_company_subprocess(
     job_id: str,
     *,
     upload_dir: Path,
     specter: dict[str, Any],
+    company_index: int,
+    absolute_index: int,
     chunk_idx: int,
     total_chunks: int,
-    chunk_start_index: int,
-    chunk_size: int,
     total: int,
     use_web_search: bool,
     vc_investment_strategy: str | None,
 ) -> None:
-    config_path = _write_chunk_worker_config(upload_dir, job_id, chunk_idx)
+    config_path = _write_chunk_worker_config(upload_dir, job_id, absolute_index)
     cmd = [
         sys.executable,
         "-m",
-        "agent.specter_chunk_worker",
+        "agent.specter_company_worker",
         "--job-id",
         job_id,
         "--specter-companies",
         str(specter["companies"]),
-        "--start-index",
-        str(chunk_start_index),
-        "--end-index",
-        str(chunk_start_index + chunk_size),
+        "--company-index",
+        str(company_index),
+        "--absolute-index",
+        str(absolute_index),
         "--config-path",
         str(config_path),
     ]
@@ -1890,9 +1996,9 @@ async def _run_specter_chunk_subprocess(
             if not text:
                 continue
 
-            if text.startswith(SPECTER_CHUNK_EVENT_PREFIX):
+            if text.startswith(SPECTER_COMPANY_EVENT_PREFIX):
                 try:
-                    event = json.loads(text[len(SPECTER_CHUNK_EVENT_PREFIX):])
+                    event = json.loads(text[len(SPECTER_COMPANY_EVENT_PREFIX):])
                 except Exception:
                     print(text)
                 else:
@@ -1909,8 +2015,8 @@ async def _run_specter_chunk_subprocess(
         return_code = await process.wait()
         if return_code != 0:
             raise RuntimeError(
-                f"Specter chunk worker exited with code {return_code} "
-                f"for chunk {chunk_idx}/{total_chunks}."
+                f"Specter company worker exited with code {return_code} "
+                f"for chunk {chunk_idx}/{total_chunks}, company {absolute_index}/{total}."
             )
     finally:
         with contextlib.suppress(Exception):
@@ -1920,8 +2026,8 @@ async def _run_specter_chunk_subprocess(
 def _failure_result_payload(
     job_id: str,
     *,
-    company: Company,
-    store: EvidenceStore,
+    company: Any,
+    store: Any,
     slug: str,
     status: str,
     error_message: str,
@@ -2042,8 +2148,8 @@ def _persist_company_result_to_db(job_id: str, result: dict[str, Any]) -> bool:
 def _persist_failed_company_result_to_db(
     job_id: str,
     *,
-    company: Company,
-    store: EvidenceStore,
+    company: Any,
+    store: Any,
     slug: str,
     error_message: str,
     status: str,
@@ -2241,11 +2347,12 @@ def _sanitize_slug(name: str) -> str:
 
 
 def _merge_evidence_stores(
-    primary: EvidenceStore,
-    secondary: EvidenceStore,
+    primary: Any,
+    secondary: Any,
     startup_slug: str,
-) -> EvidenceStore:
+) -> Any:
     """Combine two evidence stores and normalize chunk IDs."""
+    Chunk, EvidenceStore = _lazy_import_ingest_store()
     merged_chunks: list[Chunk] = []
     for idx, chunk in enumerate([*primary.chunks, *secondary.chunks]):
         merged_chunks.append(
@@ -2262,7 +2369,7 @@ def _merge_evidence_stores(
 def _build_single_company_specter_overlay(
     upload_dir: Path,
     specter: dict | None,
-) -> tuple[Company | None, EvidenceStore | None, int | None]:
+) -> tuple[Any | None, Any | None, int | None]:
     """Build a merged one-company dossier when a single-company Specter export is present."""
     if not specter:
         return None, None, None
@@ -2444,8 +2551,8 @@ async def _run_document_analysis(
                         )
                         _persist_failed_company_result_to_db(
                             job_id,
-                            company=Company(name=fname),
-                            store=EvidenceStore(startup_slug=_sanitize_slug(fname), chunks=[]),
+                            company=_lazy_import_company()(name=fname),
+                            store=_lazy_import_ingest_store()[1](startup_slug=_sanitize_slug(fname), chunks=[]),
                             slug=_sanitize_slug(fname),
                             error_message=str(exc)[:1000],
                             status="timeout" if isinstance(exc, TimeoutError) else "error",
@@ -2527,11 +2634,8 @@ async def _run_specter_analysis(
     await _cooperate_with_job_control(job_id)
     _append_progress(job_id, "Parsing Specter CSV files...")
 
-    company_store_pairs = ingest_specter(
-        specter["companies"],
-        specter.get("people"),
-    )
-    parsed_total = len(company_store_pairs)
+    company_descriptors = list_specter_companies(specter["companies"])
+    parsed_total = len(company_descriptors)
     print(f"Specter ingest: parsed {parsed_total} companies.")
 
     max_startups = _parse_max_startups_from_instructions(instructions)
@@ -2540,13 +2644,13 @@ async def _run_specter_analysis(
             f"Applying explicit instruction limit: "
             f"first {max_startups} company(ies) out of {parsed_total}.",
         )
-        company_store_pairs = company_store_pairs[:max_startups]
+        company_descriptors = company_descriptors[:max_startups]
 
-    if not company_store_pairs:
+    if not company_descriptors:
         _set_job_status(job_id, "error", "No companies found in Specter data.", source="run_specter_analysis")
         return
 
-    total = len(company_store_pairs)
+    total = len(company_descriptors)
     results_list: list[dict] = []
     chunking = _batch_chunking_config(job_id, total_items=total, mode="specter")
     chunked_db_mode = bool(
@@ -2555,12 +2659,29 @@ async def _run_specter_analysis(
         and db
         and db.is_configured()
     )
-    subprocess_chunk_mode = bool(
+    subprocess_company_mode = bool(
         chunked_db_mode
         and ENABLE_SPECTER_SUBPROCESS_CHUNKS
     )
     _results_cache[job_id]["batch_chunking"] = chunking
-    company_chunks = _chunk_items(company_store_pairs, chunking["chunk_size"]) if chunking["enabled"] else [company_store_pairs]
+    if subprocess_company_mode:
+        company_chunks = (
+            _chunk_items(company_descriptors, chunking["chunk_size"])
+            if chunking["enabled"]
+            else [company_descriptors]
+        )
+    else:
+        company_store_pairs = ingest_specter(
+            specter["companies"],
+            specter.get("people"),
+        )
+        if max_startups is not None:
+            company_store_pairs = company_store_pairs[:max_startups]
+        company_chunks = (
+            _chunk_items(company_store_pairs, chunking["chunk_size"])
+            if chunking["enabled"]
+            else [company_store_pairs]
+        )
     if chunking["enabled"]:
         _append_progress_and_log(
             job_id,
@@ -2570,6 +2691,14 @@ async def _run_specter_analysis(
         )
 
     last_error: str | None = None
+    persisted_company_keys = _load_persisted_company_keys(job_id) if chunked_db_mode else set()
+    if persisted_company_keys:
+        _refresh_persisted_batch_results(
+            job_id,
+            progress_message=(
+                f"Resuming batch — {len(persisted_company_keys)}/{total} companies already persisted."
+            ),
+        )
     try:
         processed = 0
         for chunk_idx, company_chunk in enumerate(company_chunks, 1):
@@ -2580,20 +2709,28 @@ async def _run_specter_analysis(
                     job_id,
                     f"Starting chunk {chunk_idx}/{chunking['total_chunks']} — companies {chunk_start}-{chunk_end} of {total}.",
                 )
-            if subprocess_chunk_mode:
-                await _run_specter_chunk_subprocess(
-                    job_id,
-                    upload_dir=upload_dir,
-                    specter=specter,
-                    chunk_idx=chunk_idx,
-                    total_chunks=chunking["total_chunks"],
-                    chunk_start_index=processed,
-                    chunk_size=len(company_chunk),
-                    total=total,
-                    use_web_search=use_web_search,
-                    vc_investment_strategy=vc_investment_strategy,
-                )
-                processed += len(company_chunk)
+            if subprocess_company_mode:
+                for descriptor in company_chunk:
+                    processed += 1
+                    company_key = _persisted_company_key(
+                        descriptor.get("name"),
+                        descriptor.get("slug"),
+                    )
+                    if company_key in persisted_company_keys:
+                        continue
+                    await _run_specter_company_subprocess(
+                        job_id,
+                        upload_dir=upload_dir,
+                        specter=specter,
+                        company_index=int(descriptor["index"]),
+                        absolute_index=processed,
+                        chunk_idx=chunk_idx,
+                        total_chunks=chunking["total_chunks"],
+                        total=total,
+                        use_web_search=use_web_search,
+                        vc_investment_strategy=vc_investment_strategy,
+                    )
+                    persisted_company_keys.add(company_key)
                 if (
                     chunking["enabled"]
                     and chunk_idx < chunking["total_chunks"]

@@ -1049,6 +1049,14 @@ def _load_company_run_rows_for_job(client: Client, job_id_legacy: str) -> list[d
         return []
 
 
+def load_job_company_runs(job_id_legacy: str) -> list[dict[str, Any]]:
+    """Return persisted company-run rows for a job."""
+    client = _get_client()
+    if not client:
+        return []
+    return _load_company_run_rows_for_job(client, job_id_legacy)
+
+
 def load_run_costs(job_id_legacy: str) -> dict[str, Any] | None:
     client = _get_client()
     if not client:

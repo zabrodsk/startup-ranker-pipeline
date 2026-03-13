@@ -18,7 +18,11 @@ from agent.dataclasses.company import Company
 from agent.dataclasses.question_tree import QuestionNode, QuestionTree
 from agent.evidence_answering import answer_all_trees_from_evidence
 from agent.ingest.store import Chunk, EvidenceStore
-from agent.ingest.specter_ingest import ingest_specter
+from agent.ingest.specter_ingest import (
+    ingest_specter,
+    ingest_specter_company,
+    list_specter_companies,
+)
 from agent.run_context import RunTelemetryCollector
 from web import app as web_app
 
@@ -36,6 +40,86 @@ def test_ingest_specter_companies_only_returns_all_rows(tmp_path: Path) -> None:
     results = ingest_specter(companies_path)
 
     assert [company.name for company, _ in results] == ["Alpha", "Beta", "Gamma"]
+
+
+def test_list_specter_companies_returns_lightweight_descriptors(tmp_path: Path) -> None:
+    companies_path = tmp_path / "specter-export.csv"
+    pd.DataFrame(
+        [
+            {"Company Name": "Alpha Health", "Industry": "Health", "Domain": "alpha.example"},
+            {"Company Name": "Beta AI", "Industry": "AI", "Domain": "beta.example"},
+        ]
+    ).to_csv(companies_path, index=False)
+
+    descriptors = list_specter_companies(companies_path)
+
+    assert descriptors == [
+        {
+            "index": 0,
+            "name": "Alpha Health",
+            "slug": "alpha-health",
+            "industry": "Health",
+            "domain": "alpha.example",
+        },
+        {
+            "index": 1,
+            "name": "Beta AI",
+            "slug": "beta-ai",
+            "industry": "AI",
+            "domain": "beta.example",
+        },
+    ]
+
+
+def test_ingest_specter_company_builds_only_selected_company(tmp_path: Path) -> None:
+    companies_path = tmp_path / "companies.csv"
+    people_path = tmp_path / "people.csv"
+    pd.DataFrame(
+        [
+            {
+                "Company Name": "Alpha",
+                "Industry": "SaaS",
+                "Description": "Alpha company",
+                "Domain": "alpha.com",
+                "Founders": '[{"specter_person_id":"p-1"}]',
+            },
+            {
+                "Company Name": "Beta",
+                "Industry": "Fintech",
+                "Description": "Beta company",
+                "Domain": "beta.com",
+                "Founders": '[{"specter_person_id":"p-2"}]',
+            },
+        ]
+    ).to_csv(companies_path, index=False)
+    pd.DataFrame(
+        [
+            {
+                "Specter - Person ID": "p-1",
+                "Full Name": "Alice Founder",
+                "Current Position Title": "CEO",
+                "Current Position Company Name": "Alpha",
+            },
+            {
+                "Specter - Person ID": "p-2",
+                "Full Name": "Bob Founder",
+                "Current Position Title": "CEO",
+                "Current Position Company Name": "Beta",
+            },
+        ]
+    ).to_csv(people_path, index=False)
+
+    company, store = ingest_specter_company(
+        companies_path,
+        people_path,
+        company_index=1,
+    )
+
+    assert company.name == "Beta"
+    assert store.startup_slug == "beta"
+    assert company.team and [member.name for member in company.team] == ["Bob Founder"]
+    assert any("Beta" in chunk.text for chunk in store.chunks)
+    assert all("Alpha company" not in chunk.text for chunk in store.chunks)
 
 
 def test_detect_specter_csvs_by_headers_without_people_file(tmp_path: Path) -> None:
@@ -251,6 +335,14 @@ def test_run_specter_analysis_persists_partial_results_on_stop(
             "summary_rows": [{"startup_slug": "alpha", "company_name": "Alpha"}],
         }
 
+    monkeypatch.setattr(
+        web_app,
+        "list_specter_companies",
+        lambda companies: [
+            {"index": 0, "name": "Alpha", "slug": "alpha"},
+            {"index": 1, "name": "Beta", "slug": "beta"},
+        ],
+    )
     monkeypatch.setattr(web_app, "ingest_specter", lambda companies, people=None: [(company_a, store_a), (company_b, store_b)])
     monkeypatch.setattr(web_app, "evaluate_from_specter", fake_evaluate_from_specter)
     monkeypatch.setattr(web_app, "_build_results_payload", fake_build_results_payload)
@@ -349,6 +441,14 @@ def test_run_specter_analysis_persists_first_company_before_starting_second(
             "summary_rows": summary_rows,
         }
 
+    monkeypatch.setattr(
+        web_app,
+        "list_specter_companies",
+        lambda companies: [
+            {"index": 0, "name": "Alpha", "slug": "alpha"},
+            {"index": 1, "name": "Beta", "slug": "beta"},
+        ],
+    )
     monkeypatch.setattr(web_app, "ingest_specter", lambda companies, people=None: [(company_a, store_a), (company_b, store_b)])
     monkeypatch.setattr(web_app, "evaluate_from_specter", fake_evaluate_from_specter)
     monkeypatch.setattr(web_app, "_build_results_payload", fake_build_results_payload)
@@ -393,6 +493,110 @@ def test_run_specter_analysis_persists_first_company_before_starting_second(
             "persisted_at": results["alpha"]["persisted_at"],
         }
     finally:
+        web_app._jobs.pop(job_id, None)
+        web_app._job_controls.pop(job_id, None)
+        web_app._results_cache.pop(job_id, None)
+
+
+def test_run_specter_analysis_subprocess_mode_avoids_parent_full_ingest(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_id = "job-subprocess-company-mode"
+    descriptors = [
+        {"index": 0, "name": "Alpha", "slug": "alpha", "industry": "SaaS", "domain": "alpha.com"},
+        {"index": 1, "name": "Beta", "slug": "beta", "industry": "AI", "domain": "beta.com"},
+        {"index": 2, "name": "Gamma", "slug": "gamma", "industry": "Health", "domain": "gamma.com"},
+    ]
+    subprocess_calls: list[tuple[int, int]] = []
+
+    async def fake_run_subprocess(current_job_id, *, company_index, absolute_index, **kwargs):
+        assert current_job_id == job_id
+        subprocess_calls.append((company_index, absolute_index))
+
+    class FakeDb:
+        @staticmethod
+        def is_configured() -> bool:
+            return True
+
+        @staticmethod
+        def load_job_results(job_id_legacy, preferred_mode=None):
+            assert job_id_legacy == job_id
+            return {
+                "results": {
+                    "summary_rows": [
+                        {"startup_slug": "alpha"},
+                        {"startup_slug": "beta"},
+                        {"startup_slug": "gamma"},
+                    ],
+                    "failed_rows": [],
+                }
+            }
+
+    original_db = web_app.db
+    original_chunked = web_app.ENABLE_CHUNKED_SPECTER_PERSISTENCE
+    original_subprocess = web_app.ENABLE_SPECTER_SUBPROCESS_CHUNKS
+    web_app.db = FakeDb()
+    web_app.ENABLE_CHUNKED_SPECTER_PERSISTENCE = True
+    web_app.ENABLE_SPECTER_SUBPROCESS_CHUNKS = True
+
+    monkeypatch.setattr(web_app, "list_specter_companies", lambda companies_csv: descriptors)
+    monkeypatch.setattr(
+        web_app,
+        "ingest_specter",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("parent should not ingest full specter payload")),
+    )
+    monkeypatch.setattr(web_app, "_batch_chunking_config", lambda *args, **kwargs: {
+        "enabled": True,
+        "label": "specter batch",
+        "total_chunks": 2,
+        "chunk_size": 2,
+        "cooldown_seconds": 0,
+    })
+    monkeypatch.setattr(web_app, "_run_specter_company_subprocess", fake_run_subprocess)
+    monkeypatch.setattr(web_app, "_load_persisted_company_keys", lambda current_job_id: set())
+    def fake_refresh(current_job_id, *, progress_message=None):
+        web_app._results_cache[current_job_id]["results"] = {
+            "mode": "batch",
+            "summary_rows": [
+                {"startup_slug": "alpha"},
+                {"startup_slug": "beta"},
+                {"startup_slug": "gamma"},
+            ],
+        }
+        return True
+
+    monkeypatch.setattr(web_app, "_refresh_persisted_batch_results", fake_refresh)
+    monkeypatch.setattr(web_app, "_flush_chunk_telemetry", lambda *args, **kwargs: None)
+    monkeypatch.setattr(web_app, "_persist_jobs", lambda: None)
+    monkeypatch.setattr(web_app, "_persist_results_to_db", lambda *args, **kwargs: None)
+    monkeypatch.setattr(web_app, "_mark_terminal_persistence_complete", lambda *args, **kwargs: None)
+
+    web_app._jobs[job_id] = web_app.AnalysisStatus(
+        job_id=job_id,
+        status="running",
+        progress="Starting...",
+        progress_log=[],
+    )
+    web_app._job_controls[job_id] = {"pause_requested": False, "stop_requested": False}
+    web_app._results_cache[job_id] = {"input_mode": "specter"}
+
+    try:
+        asyncio.run(
+            web_app._run_specter_analysis(
+                job_id,
+                tmp_path,
+                {"companies": "companies.csv", "people": "people.csv"},
+                use_web_search=False,
+            )
+        )
+
+        assert subprocess_calls == [(0, 1), (1, 2), (2, 3)]
+        assert web_app._jobs[job_id].status == "done"
+    finally:
+        web_app.db = original_db
+        web_app.ENABLE_CHUNKED_SPECTER_PERSISTENCE = original_chunked
+        web_app.ENABLE_SPECTER_SUBPROCESS_CHUNKS = original_subprocess
         web_app._jobs.pop(job_id, None)
         web_app._job_controls.pop(job_id, None)
         web_app._results_cache.pop(job_id, None)
@@ -569,6 +773,11 @@ def test_run_specter_analysis_persists_timeout_company_record(
         web_app,
         "ingest_specter",
         lambda companies, people=None: [(company, store)],
+    )
+    monkeypatch.setattr(
+        web_app,
+        "list_specter_companies",
+        lambda companies: [{"index": 0, "name": "Alpha", "slug": "alpha"}],
     )
     monkeypatch.setattr(web_app, "evaluate_from_specter", fake_evaluate_from_specter)
     monkeypatch.setattr(web_app, "_persist_jobs", lambda: None)
@@ -1334,6 +1543,14 @@ def test_run_specter_analysis_chunks_large_anthropic_batch_with_cooldown(
 
     monkeypatch.setattr(
         web_app,
+        "list_specter_companies",
+        lambda companies_path: [
+            {"index": idx, "name": company.name, "slug": store.startup_slug}
+            for idx, (company, store) in enumerate(zip(companies, stores))
+        ],
+    )
+    monkeypatch.setattr(
+        web_app,
         "ingest_specter",
         lambda companies_path, people=None: list(zip(companies, stores)),
     )
@@ -1398,22 +1615,17 @@ def test_run_specter_analysis_uses_subprocess_chunk_workers(
     sleep_calls: list[int] = []
     progress_counts = {"completed": 0}
 
-    async def fake_chunk_subprocess(
+    async def fake_company_subprocess(
         current_job_id: str,
         *,
-        upload_dir: Path,
-        specter: dict[str, object],
+        company_index: int,
+        absolute_index: int,
         chunk_idx: int,
-        total_chunks: int,
-        chunk_start_index: int,
-        chunk_size: int,
-        total: int,
-        use_web_search: bool,
-        vc_investment_strategy: str | None,
+        **kwargs,
     ) -> None:
         assert current_job_id == job_id
-        chunk_calls.append((chunk_idx, chunk_start_index, chunk_size))
-        progress_counts["completed"] += chunk_size
+        chunk_calls.append((chunk_idx, company_index, absolute_index))
+        progress_counts["completed"] += 1
 
     async def fake_sleep(seconds):
         sleep_calls.append(seconds)
@@ -1470,10 +1682,18 @@ def test_run_specter_analysis_uses_subprocess_chunk_workers(
     monkeypatch.setenv("BATCH_CHUNKING_COOLDOWN_SECONDS", "15")
     monkeypatch.setattr(
         web_app,
-        "ingest_specter",
-        lambda companies_path, people=None: list(zip(companies, stores)),
+        "list_specter_companies",
+        lambda companies_path: [
+            {"index": idx, "name": company.name, "slug": store.startup_slug}
+            for idx, (company, store) in enumerate(zip(companies, stores))
+        ],
     )
-    monkeypatch.setattr(web_app, "_run_specter_chunk_subprocess", fake_chunk_subprocess)
+    monkeypatch.setattr(
+        web_app,
+        "ingest_specter",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("parent should not ingest full specter payload")),
+    )
+    monkeypatch.setattr(web_app, "_run_specter_company_subprocess", fake_company_subprocess)
     monkeypatch.setattr(web_app, "_refresh_persisted_batch_results", fake_refresh)
     monkeypatch.setattr(web_app, "_persist_jobs", lambda: None)
     monkeypatch.setattr(web_app, "_persist_results_to_db", lambda current_job_id, results_list: None)
@@ -1512,7 +1732,18 @@ def test_run_specter_analysis_uses_subprocess_chunk_workers(
             )
         )
 
-        assert chunk_calls == [(1, 0, 5), (2, 5, 5)]
+        assert chunk_calls == [
+            (1, 0, 1),
+            (1, 1, 2),
+            (1, 2, 3),
+            (1, 3, 4),
+            (1, 4, 5),
+            (2, 5, 6),
+            (2, 6, 7),
+            (2, 7, 8),
+            (2, 8, 9),
+            (2, 9, 10),
+        ]
         assert sleep_calls == [15]
         assert web_app._jobs[job_id].status == "done"
         assert "10/10 companies ranked" in web_app._jobs[job_id].progress
