@@ -670,6 +670,7 @@ def test_schedule_idle_restart_when_enabled(monkeypatch) -> None:
         progress_log=[],
         terminal_results_served=True,
         restart_pending=True,
+        persistence_complete=True,
     )
 
     try:
@@ -714,6 +715,7 @@ def test_schedule_idle_restart_skips_when_another_job_is_active(monkeypatch) -> 
         progress_log=[],
         terminal_results_served=True,
         restart_pending=True,
+        persistence_complete=True,
     )
     web_app._jobs["job-active"] = web_app.AnalysisStatus(
         job_id="job-active",
@@ -731,7 +733,7 @@ def test_schedule_idle_restart_skips_when_another_job_is_active(monkeypatch) -> 
         web_app._restart_timer = original_timer
 
 
-def test_mark_terminal_results_served_triggers_restart_only_for_pending_done_jobs(monkeypatch) -> None:
+def test_mark_terminal_results_served_triggers_restart_only_after_persistence(monkeypatch) -> None:
     calls: list[str] = []
     job_id = "job-terminal-served"
     web_app._jobs[job_id] = web_app.AnalysisStatus(
@@ -740,12 +742,79 @@ def test_mark_terminal_results_served_triggers_restart_only_for_pending_done_job
         progress="Analysis complete",
         progress_log=[],
         restart_pending=True,
+        persistence_complete=True,
     )
     monkeypatch.setattr(web_app, "_schedule_idle_restart_if_enabled", lambda current_job_id: calls.append(current_job_id))
 
     try:
         web_app._mark_terminal_results_served(job_id)
         assert web_app._jobs[job_id].terminal_results_served is True
+        assert calls == [job_id]
+    finally:
+        web_app._jobs.pop(job_id, None)
+
+
+def test_mark_terminal_results_served_does_not_trigger_restart_before_persistence(monkeypatch) -> None:
+    timer_calls = {"count": 0}
+    job_id = "job-terminal-served-not-persisted"
+
+    class FakeTimer:
+        def __init__(self, interval, func):
+            timer_calls["count"] += 1
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return False
+
+        def cancel(self):
+            pass
+
+    original_timer = web_app._restart_timer
+    monkeypatch.setattr(web_app, "RESTART_ON_IDLE_AFTER_ANALYSIS", True)
+    monkeypatch.setattr(
+        web_app,
+        "db",
+        type("DbStub", (), {"is_configured": staticmethod(lambda: True)})(),
+    )
+    monkeypatch.setattr(web_app.threading, "Timer", FakeTimer)
+    web_app._restart_timer = None
+
+    web_app._jobs[job_id] = web_app.AnalysisStatus(
+        job_id=job_id,
+        status="done",
+        progress="Analysis complete",
+        progress_log=[],
+        restart_pending=True,
+        persistence_complete=False,
+    )
+
+    try:
+        web_app._mark_terminal_results_served(job_id)
+        assert web_app._jobs[job_id].terminal_results_served is True
+        assert timer_calls["count"] == 0
+    finally:
+        web_app._jobs.pop(job_id, None)
+        web_app._restart_timer = original_timer
+
+
+def test_mark_terminal_persistence_complete_triggers_restart_after_results_served(monkeypatch) -> None:
+    calls: list[str] = []
+    job_id = "job-terminal-persisted"
+    web_app._jobs[job_id] = web_app.AnalysisStatus(
+        job_id=job_id,
+        status="done",
+        progress="Analysis complete",
+        progress_log=[],
+        restart_pending=True,
+        terminal_results_served=True,
+    )
+    monkeypatch.setattr(web_app, "_schedule_idle_restart_if_enabled", lambda current_job_id: calls.append(current_job_id))
+
+    try:
+        web_app._mark_terminal_persistence_complete(job_id)
+        assert web_app._jobs[job_id].persistence_complete is True
         assert calls == [job_id]
     finally:
         web_app._jobs.pop(job_id, None)
@@ -773,6 +842,7 @@ def test_loaded_persisted_terminal_results_do_not_arm_restart(monkeypatch) -> No
         assert payload["results"]["company_name"] == "Alpha"
         assert web_app._jobs[job_id].terminal_results_served is True
         assert web_app._jobs[job_id].restart_pending is False
+        assert web_app._jobs[job_id].persistence_complete is True
     finally:
         web_app._jobs.pop(job_id, None)
         web_app._results_cache.pop(job_id, None)

@@ -374,7 +374,7 @@ def _restart_process_for_memory_reset() -> None:
 def _schedule_idle_restart_if_enabled(job_id: str) -> None:
     global _restart_timer
     job = _jobs.get(job_id)
-    if not job or not job.restart_pending or not job.terminal_results_served:
+    if not job or not job.restart_pending or not job.terminal_results_served or not job.persistence_complete:
         return
     if not RESTART_ON_IDLE_AFTER_ANALYSIS:
         return
@@ -404,6 +404,14 @@ def _mark_terminal_results_served(job_id: str) -> None:
     if not job or job.status not in {"done", "stopped"}:
         return
     job.terminal_results_served = True
+    _schedule_idle_restart_if_enabled(job_id)
+
+
+def _mark_terminal_persistence_complete(job_id: str) -> None:
+    job = _jobs.get(job_id)
+    if not job or job.status not in {"done", "stopped"}:
+        return
+    job.persistence_complete = True
     _schedule_idle_restart_if_enabled(job_id)
 
 
@@ -520,6 +528,7 @@ class AnalysisStatus(BaseModel):
     results: Any = None
     terminal_results_served: bool = False
     restart_pending: bool = False
+    persistence_complete: bool = False
 
 
 _jobs: dict[str, AnalysisStatus] = {}
@@ -717,6 +726,7 @@ def _finalize_stopped_results(
     _set_job_status(job_id, "stopped", message, source="stop_finalize")
     _persist_jobs()
     _persist_results_to_db(job_id, results_list)
+    _mark_terminal_persistence_complete(job_id)
     if db and db.is_configured():
         db.upsert_job_control(
             job_id,
@@ -804,6 +814,7 @@ def _load_jobs() -> None:
                         progress=data.get("progress", "Analysis complete"),
                         progress_log=(data.get("progress_log") or [])[-MAX_PROGRESS_LOG_ENTRIES:],
                         results=None,
+                        persistence_complete=True,
                     )
                     _results_cache[job_id] = {}
                     _promote_results_metadata(job_id, results)
@@ -1927,12 +1938,14 @@ async def _run_document_analysis(
             )
             _persist_jobs()
             _persist_results_to_db(job_id, [result])
+            _mark_terminal_persistence_complete(job_id)
             return
         _append_progress(job_id, "Finalizing complete.")
         _set_job_status(job_id, "done", "Analysis complete", source="run_document_analysis")
         _jobs[job_id].results = _results_cache[job_id]["results"]
         _persist_jobs()
         _persist_results_to_db(job_id, [result])
+        _mark_terminal_persistence_complete(job_id)
         return
 
     results_list: list[dict] = []
@@ -2076,6 +2089,7 @@ async def _run_document_analysis(
     _jobs[job_id].results = _results_cache[job_id]["results"]
     _persist_jobs()
     _persist_results_to_db(job_id, results_list)
+    _mark_terminal_persistence_complete(job_id)
 
 
 async def _run_specter_analysis(
@@ -2249,6 +2263,7 @@ async def _run_specter_analysis(
     _jobs[job_id].results = _results_cache[job_id]["results"]
     _persist_jobs()
     _persist_results_to_db(job_id, results_list)
+    _mark_terminal_persistence_complete(job_id)
 
 
 async def _run_person_profile_job(job_id: str, req: PersonProfileJobRequest) -> None:
@@ -2462,6 +2477,7 @@ async def get_status(job_id: str, session_id: str | None = Cookie(default=None))
             progress=loaded_progress,
             progress_log=[],
             results=None,
+            persistence_complete=True,
         )
         _results_cache[job_id] = {}
         _promote_results_metadata(job_id, results)
