@@ -5699,9 +5699,10 @@ async function openSavedRun(jobId) {
   if (statsEl) statsEl.innerHTML = '';
   if (costStripEl) costStripEl.innerHTML = '';
   showScreen('results-screen');
+  let savedRunLoadError = null;
 
   try {
-    const analysis = await api(`/api/analyses/${jobId}`, { timeoutMs: 15000, retries: 1 });
+    const analysis = await api(`/api/analyses/${jobId}`, { timeoutMs: 60000, retries: 0 });
     const results = analysis.results || null;
     if (!results || typeof results !== 'object') {
       throw new Error('Saved report payload is missing.');
@@ -5730,6 +5731,7 @@ async function openSavedRun(jobId) {
     }
     return;
   } catch (renderErr) {
+    savedRunLoadError = renderErr;
     console.error('openSavedRun: failed to load fresh saved results:', renderErr);
     if (run?.results) {
       try {
@@ -5742,9 +5744,12 @@ async function openSavedRun(jobId) {
     }
   }
 
+  const friendlyError = (typeof savedRunLoadError?.message === 'string' && savedRunLoadError.message.trim())
+    ? savedRunLoadError.message.trim()
+    : 'This saved report could not be loaded right now.';
   if (subtitleEl) subtitleEl.textContent = `Could not open saved results for ${jobId.toUpperCase()}.`;
   if (rankingsEl) {
-    rankingsEl.innerHTML = '<p style="color:var(--text-dim)">This saved report could not be loaded right now. Refresh the Analysis page and try again.</p>';
+    rankingsEl.innerHTML = `<p style="color:var(--text-dim)">${escapeHtml(friendlyError)}</p>`;
   }
 }
 
