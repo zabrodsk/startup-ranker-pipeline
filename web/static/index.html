@@ -3548,6 +3548,7 @@ let personIntelState = {};
 let rankingsSortMode = DEFAULT_RANKINGS_SORT;
 let statusWatchdogTimer = null;
 let savedJobsCache = [];
+let savedJobsLoaded = false;
 let savedCompaniesCache = [];
 let companiesFetched = false;
 let savedJobsRefreshTimer = null;
@@ -4400,7 +4401,23 @@ function renderAnalysisHistoryScreen() {
   const content = getAnalysisContentEl();
   if (!content) return;
 
-  const runs = mergeSavedAndRecentRuns();
+  if (!savedJobsLoaded) {
+    content.innerHTML = `
+      <div class="analysis-history-section">
+        <div class="analysis-history-head">
+          <div class="analysis-history-title">Analysis</div>
+        </div>
+        <div class="saved-jobs-empty">Loading saved analyses...</div>
+      </div>
+    `;
+    return;
+  }
+
+  const runs = [...savedJobsCache].sort((a, b) => {
+    const aTs = new Date(a.createdAt || 0).getTime();
+    const bTs = new Date(b.createdAt || 0).getTime();
+    return bTs - aTs;
+  });
 
   if (!runs.length) {
     content.innerHTML = `
@@ -4849,11 +4866,13 @@ async function fetchSavedJobs({ silent = true } = {}) {
       canViewLog: job.can_view_log === true,
       llm: job.llm || null,
     }));
+    savedJobsLoaded = true;
     renderRecentRuns();
     renderSavedJobsWindow();
     renderAnalysisHistoryScreen();
     return savedJobsCache;
   } catch (err) {
+    savedJobsLoaded = true;
     if (!silent) {
       const message = `<div class="saved-jobs-empty">${escapeHtml(err.message || 'Failed to load saved jobs.')}</div>`;
       const activeScreenId = getActiveScreenId();
@@ -4899,6 +4918,7 @@ function openCompaniesPage() {
 function openAnalysisPage() {
   const activeScreenId = getActiveScreenId();
   if (activeScreenId && activeScreenId !== 'analysis-screen') previousScreenBeforeAnalysis = activeScreenId;
+  savedJobsLoaded = false;
   showScreen('analysis-screen');
   renderAnalysisHistoryScreen();
   fetchSavedJobs({ silent: false });
