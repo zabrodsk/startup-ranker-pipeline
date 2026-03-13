@@ -4892,6 +4892,7 @@ async function api(path, opts = {}) {
         ...opts,
         headers: { 'Content-Type': 'application/json', ...opts.headers },
         credentials: 'include',
+        cache: 'no-store',
         signal: controller.signal,
       });
       if (!res.ok) {

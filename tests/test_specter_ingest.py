@@ -4,6 +4,7 @@ import sys
 from types import SimpleNamespace
 
 import pandas as pd
+from fastapi import Response
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -673,7 +674,7 @@ def test_status_endpoint_returns_partial_results_for_running_job(monkeypatch) ->
     monkeypatch.setattr(web_app, "_check_session", lambda session_id: True)
 
     try:
-        payload = asyncio.run(web_app.get_status(job_id, session_id="session"))
+        payload = asyncio.run(web_app.get_status(job_id, response=Response(), session_id="session"))
         assert payload["status"] == "running"
         assert payload["results"]["summary_rows"] == [{"startup_slug": "alpha", "company_name": "Alpha"}]
         assert payload["results"]["job_status"] == "running"
@@ -720,7 +721,7 @@ def test_status_endpoint_promotes_running_job_when_persisted_report_is_terminal(
     monkeypatch.setattr(web_app.time, "monotonic", lambda: 100.0)
 
     try:
-        payload = asyncio.run(web_app.get_status(job_id, session_id="session"))
+        payload = asyncio.run(web_app.get_status(job_id, response=Response(), session_id="session"))
         assert payload["status"] == "done"
         assert payload["progress"] == "Analysis complete"
         assert payload["results"]["summary_rows"] == [{"startup_slug": "alpha", "company_name": "Alpha"}]
@@ -828,7 +829,7 @@ def test_status_lazy_loads_terminal_results_after_memory_cleanup(monkeypatch) ->
     )
 
     try:
-        payload = asyncio.run(web_app.get_status(job_id, session_id="session"))
+        payload = asyncio.run(web_app.get_status(job_id, response=Response(), session_id="session"))
         assert payload["status"] == "done"
         assert payload["results"]["company_name"] == "Alpha"
         assert payload["llm"] == "Claude Haiku 4.5"
@@ -1045,7 +1046,7 @@ def test_loaded_persisted_terminal_results_do_not_arm_restart(monkeypatch) -> No
     )
 
     try:
-        payload = asyncio.run(web_app.get_status(job_id, session_id="session"))
+        payload = asyncio.run(web_app.get_status(job_id, response=Response(), session_id="session"))
         assert payload["status"] == "done"
         assert payload["results"]["company_name"] == "Alpha"
         assert web_app._jobs[job_id].terminal_results_served is True

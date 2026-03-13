@@ -25,9 +25,9 @@ from typing import Any, Literal
 
 import pandas as pd
 from dotenv import load_dotenv
-from fastapi import Cookie, FastAPI, File, HTTPException, UploadFile
+from fastapi import Cookie, FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
@@ -153,6 +153,14 @@ SPECTER_CHUNK_EVENT_PREFIX = "__SPECTER_CHUNK_EVENT__"
 
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+def _set_no_store_headers(response: Response | None) -> None:
+    if response is None:
+        return
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
 
 def _get_llm_display() -> str:
     """Return a display string for the configured default LLM."""
@@ -2926,9 +2934,14 @@ async def get_config(session_id: str | None = Cookie(default=None)):
 
 
 @app.get("/api/status/{job_id}")
-async def get_status(job_id: str, session_id: str | None = Cookie(default=None)):
+async def get_status(
+    job_id: str,
+    response: Response,
+    session_id: str | None = Cookie(default=None),
+):
     if not _check_session(session_id):
         raise HTTPException(status_code=401, detail="Not authenticated")
+    _set_no_store_headers(response)
 
     if job_id in _jobs:
         job = _jobs[job_id]
@@ -2992,10 +3005,15 @@ async def download_excel(job_id: str, session_id: str | None = Cookie(default=No
 
 
 @app.get("/api/analyses/{job_id}")
-async def get_analysis(job_id: str, session_id: str | None = Cookie(default=None)):
+async def get_analysis(
+    job_id: str,
+    response: Response,
+    session_id: str | None = Cookie(default=None),
+):
     """Return analysis results for a completed job. Uses in-memory cache or Supabase."""
     if not _check_session(session_id):
         raise HTTPException(status_code=401, detail="Not authenticated")
+    _set_no_store_headers(response)
 
     cache = _results_cache.get(job_id, {})
     results = cache.get("results")
