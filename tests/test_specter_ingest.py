@@ -807,6 +807,35 @@ def test_status_endpoint_marks_persisted_running_job_as_interrupted_when_not_liv
     assert payload["progress_log"] == []
 
 
+def test_status_endpoint_marks_saved_job_without_status_history_as_interrupted(monkeypatch) -> None:
+    job_id = "job-saved-only"
+    monkeypatch.setattr(web_app, "_check_session", lambda session_id: True)
+    monkeypatch.setattr(
+        web_app,
+        "db",
+        SimpleNamespace(
+            is_configured=lambda: True,
+            load_job_status=lambda current_job_id: None,
+            load_saved_job=lambda current_job_id: {
+                "job_id": job_id,
+                "status": "interrupted",
+                "progress": "Run interrupted before completion.",
+                "llm": "Gemini 3.1 Flash Lite",
+            }
+            if current_job_id == job_id
+            else None,
+        ),
+    )
+    monkeypatch.setattr(web_app, "_load_persisted_job_results", lambda current_job_id, preferred_mode=None: None)
+
+    payload = asyncio.run(web_app.get_status(job_id, response=Response(), session_id="session"))
+
+    assert payload["status"] == "stopped"
+    assert payload["progress"] == "Run interrupted before completion."
+    assert payload["results"] is None
+    assert payload["llm"] == "Gemini 3.1 Flash Lite"
+
+
 def test_append_progress_caps_in_memory_log(monkeypatch) -> None:
     job_id = "job-progress-cap"
     web_app._jobs[job_id] = web_app.AnalysisStatus(

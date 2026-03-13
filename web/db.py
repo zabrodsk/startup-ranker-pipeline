@@ -1154,6 +1154,14 @@ def load_job_status(job_id_legacy: str) -> dict[str, Any] | None:
     }
 
 
+def load_saved_job(job_id_legacy: str) -> dict[str, Any] | None:
+    """Load a single saved job row merged with latest status/analysis metadata."""
+    for row in list_saved_jobs(limit=500):
+        if row.get("job_id") == job_id_legacy:
+            return row
+    return None
+
+
 def load_all_completed_jobs() -> dict[str, dict[str, Any]]:
     """Load all completed analyses from Supabase, keyed by job_id_legacy."""
     client = _get_client()

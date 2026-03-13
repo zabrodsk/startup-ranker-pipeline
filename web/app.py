@@ -3025,6 +3025,16 @@ async def get_status(
                 "results": None,
                 "llm": _resolve_job_llm_label(job_id, results=None),
             }
+        saved_job = db.load_saved_job(job_id)
+        if saved_job:
+            return {
+                "job_id": job_id,
+                "status": "stopped",
+                "progress": "Run interrupted before completion.",
+                "progress_log": [],
+                "results": None,
+                "llm": saved_job.get("llm") or _resolve_job_llm_label(job_id, results=None),
+            }
 
     raise HTTPException(status_code=404, detail="Job not found")
 
