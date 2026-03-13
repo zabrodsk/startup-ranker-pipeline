@@ -3724,6 +3724,26 @@ function getPersistedActiveJob() {
   return (v && v !== 'null' && v !== 'undefined') ? v : null;
 }
 
+function isLiveRunStatus(status) {
+  return status === 'pending' || status === 'running' || status === 'paused';
+}
+
+function shouldResumePersistedJob(jobId) {
+  if (!jobId) return false;
+  const run = savedJobsCache.find((r) => r.jobId === jobId);
+  if (!run) return true;
+  if (run.canViewLog === true) return true;
+  if (run.canOpenResults === true || run.hasResults === true) return false;
+  return isLiveRunStatus(run.status);
+}
+
+function clearPersistedJobIfStale(jobId = getPersistedActiveJob()) {
+  if (!jobId) return false;
+  if (shouldResumePersistedJob(jobId)) return false;
+  persistActiveJob(null);
+  return true;
+}
+
 function loadRecentRuns() {
   try {
     const runs = JSON.parse(localStorage.getItem(RECENT_RUNS_KEY) || '[]');
@@ -4905,6 +4925,7 @@ async function fetchSavedJobs({ silent = true } = {}) {
       canViewLog: job.can_view_log === true,
       llm: job.llm || null,
     }));
+    clearPersistedJobIfStale();
     savedJobsLoaded = true;
     renderRecentRuns();
     renderSavedJobsWindow();
@@ -5584,6 +5605,7 @@ async function checkWebSearchAvailable() {
 async function resumeActiveJob() {
   const savedJobId = getPersistedActiveJob();
   if (!savedJobId) return false;
+  if (clearPersistedJobIfStale(savedJobId)) return false;
 
   persistActiveJob(savedJobId);
   showScreen('processing-screen');
@@ -6850,6 +6872,7 @@ window.addEventListener('storage', (event) => {
     renderRecentRuns();
   }
   if (event.key === ACTIVE_JOB_KEY && getPersistedActiveJob() && !currentJobId) {
+    if (clearPersistedJobIfStale()) return;
     resumeActiveJob();
   }
 });
