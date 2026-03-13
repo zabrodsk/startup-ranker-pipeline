@@ -265,6 +265,20 @@ def test_load_job_results_reconstructs_from_company_runs(monkeypatch) -> None:
             }
         ],
     )
+    monkeypatch.setattr(
+        web_db,
+        "load_run_costs",
+        lambda job_id_legacy: {
+            "currency": "USD",
+            "status": "complete",
+            "total_usd": 0.0123,
+            "llm_usd": 0.0123,
+            "perplexity_usd": 0.0,
+            "llm_tokens": {"prompt": 123, "completion": 45, "total": 168},
+            "perplexity_search": {"requests": 0, "total_usd": 0.0},
+            "by_model": [],
+        },
+    )
 
     loaded = web_db.load_job_results("job-123", preferred_mode="batch")
 
@@ -272,3 +286,4 @@ def test_load_job_results_reconstructs_from_company_runs(monkeypatch) -> None:
     assert loaded["results"]["mode"] == "batch"
     assert loaded["results"]["summary_rows"][0]["startup_slug"] == "alpha"
     assert loaded["results"]["job_status"] == "done"
+    assert loaded["results"]["run_costs"]["total_usd"] == 0.0123

@@ -129,6 +129,12 @@ ENABLE_CHUNKED_SPECTER_PERSISTENCE = os.getenv("ENABLE_CHUNKED_SPECTER_PERSISTEN
     "yes",
     "on",
 }
+ENABLE_SPECTER_SUBPROCESS_CHUNKS = os.getenv("ENABLE_SPECTER_SUBPROCESS_CHUNKS", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 try:
     RESTART_ON_IDLE_DELAY_SECONDS = max(5, int(os.getenv("RESTART_ON_IDLE_DELAY_SECONDS", "15")))
 except Exception:
@@ -137,6 +143,7 @@ _sessions: dict[str, float] = {}
 _results_cache: dict[str, dict[str, Any]] = {}
 _restart_timer: threading.Timer | None = None
 _restart_lock = threading.Lock()
+SPECTER_CHUNK_EVENT_PREFIX = "__SPECTER_CHUNK_EVENT__"
 
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -780,6 +787,11 @@ def _append_progress(job_id: str, msg: str, *, allow_stopped: bool = False) -> N
             db.insert_analysis_event(job_id, message=msg, event_type="progress")
         except Exception:
             pass
+
+
+def _append_progress_and_log(job_id: str, msg: str, *, allow_stopped: bool = False) -> None:
+    _append_progress(job_id, msg, allow_stopped=allow_stopped)
+    print(msg)
 
 
 def _set_job_status(job_id: str, status: str, progress: str | None = None, source: str = "app") -> None:
@@ -1655,6 +1667,163 @@ def _run_config_from_cache(job_id: str) -> dict[str, Any]:
     }
 
 
+def _chunk_worker_config_path(upload_dir: Path, job_id: str, chunk_idx: int) -> Path:
+    return upload_dir / f".specter-chunk-{job_id}-{chunk_idx}.json"
+
+
+def _write_chunk_worker_config(upload_dir: Path, job_id: str, chunk_idx: int) -> Path:
+    path = _chunk_worker_config_path(upload_dir, job_id, chunk_idx)
+    payload = {
+        "run_config": _run_config_from_cache(job_id),
+        "versions": _results_cache.get(job_id, {}).get("versions") or _runtime_versions(),
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _handle_specter_chunk_worker_event(
+    job_id: str,
+    *,
+    chunk_idx: int,
+    total_chunks: int,
+    total: int,
+    event: dict[str, Any],
+) -> None:
+    event_type = str(event.get("type") or "").strip().lower()
+    company_name = str(event.get("company_name") or "").strip()
+    absolute_index = int(event.get("absolute_index") or 0)
+    prefix = (
+        f"Chunk {chunk_idx}/{total_chunks} — Evaluating {company_name} ({absolute_index}/{total})"
+        if company_name and absolute_index > 0
+        else f"Chunk {chunk_idx}/{total_chunks}"
+    )
+
+    if event_type == "progress":
+        message = str(event.get("message") or "").strip()
+        if message:
+            _append_progress(job_id, f"{prefix} — {message}")
+        return
+
+    if event_type == "company_complete":
+        refreshed = _refresh_persisted_batch_results(
+            job_id,
+            progress_message=f"{prefix} — Persisting partial result...",
+        )
+        completed_count = (
+            len(((_results_cache.get(job_id, {}).get("results") or {}).get("summary_rows") or []))
+            if refreshed
+            else max(absolute_index, 0)
+        )
+        _append_progress(
+            job_id,
+            f"Partial results updated — {completed_count}/{total} companies completed.",
+        )
+        error_message = str(event.get("error") or "").strip()
+        status = str(event.get("status") or "").strip().lower()
+        if error_message and status in {"error", "timeout"}:
+            _append_progress(job_id, f"{prefix} — {status}: {error_message}")
+        return
+
+    if event_type == "chunk_complete":
+        print(
+            f"Chunk worker finished chunk {chunk_idx}/{total_chunks} "
+            f"for job {job_id}.",
+        )
+
+
+async def _run_specter_chunk_subprocess(
+    job_id: str,
+    *,
+    upload_dir: Path,
+    specter: dict[str, Any],
+    chunk_idx: int,
+    total_chunks: int,
+    chunk_start_index: int,
+    chunk_size: int,
+    total: int,
+    use_web_search: bool,
+    vc_investment_strategy: str | None,
+) -> None:
+    config_path = _write_chunk_worker_config(upload_dir, job_id, chunk_idx)
+    cmd = [
+        sys.executable,
+        "-m",
+        "agent.specter_chunk_worker",
+        "--job-id",
+        job_id,
+        "--specter-companies",
+        str(specter["companies"]),
+        "--start-index",
+        str(chunk_start_index),
+        "--end-index",
+        str(chunk_start_index + chunk_size),
+        "--config-path",
+        str(config_path),
+    ]
+    if specter.get("people"):
+        cmd.extend(["--specter-people", str(specter["people"])])
+    if use_web_search:
+        cmd.append("--use-web-search")
+    if vc_investment_strategy:
+        cmd.extend(["--vc-investment-strategy", vc_investment_strategy])
+
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+    )
+
+    try:
+        assert process.stdout is not None
+        while True:
+            if _is_stop_requested(job_id):
+                with contextlib.suppress(ProcessLookupError):
+                    process.terminate()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(process.wait(), timeout=10)
+                raise _JobStoppedError("Job stopped by user")
+
+            try:
+                line = await asyncio.wait_for(process.stdout.readline(), timeout=0.5)
+            except asyncio.TimeoutError:
+                await _wait_if_paused(job_id)
+                continue
+
+            if not line:
+                break
+
+            text = line.decode("utf-8", errors="replace").rstrip()
+            if not text:
+                continue
+
+            if text.startswith(SPECTER_CHUNK_EVENT_PREFIX):
+                try:
+                    event = json.loads(text[len(SPECTER_CHUNK_EVENT_PREFIX):])
+                except Exception:
+                    print(text)
+                else:
+                    _handle_specter_chunk_worker_event(
+                        job_id,
+                        chunk_idx=chunk_idx,
+                        total_chunks=total_chunks,
+                        total=total,
+                        event=event,
+                    )
+            else:
+                print(text)
+
+        return_code = await process.wait()
+        if return_code != 0:
+            raise RuntimeError(
+                f"Specter chunk worker exited with code {return_code} "
+                f"for chunk {chunk_idx}/{total_chunks}."
+            )
+    finally:
+        with contextlib.suppress(Exception):
+            config_path.unlink()
+
+
 def _failure_result_payload(
     job_id: str,
     *,
@@ -2115,7 +2284,7 @@ async def _run_document_analysis(
     _results_cache[job_id]["batch_chunking"] = chunking
     file_chunks = _chunk_items(files, chunking["chunk_size"]) if chunking["enabled"] else [files]
     if chunking["enabled"]:
-        _append_progress(
+        _append_progress_and_log(
             job_id,
             "Large batch chunking enabled "
             f"for {chunking['label']} — {chunking['total_chunks']} chunks of up to "
@@ -2127,7 +2296,7 @@ async def _run_document_analysis(
             if chunking["enabled"]:
                 chunk_start = processed + 1
                 chunk_end = processed + len(file_chunk)
-                _append_progress(
+                _append_progress_and_log(
                     job_id,
                     f"Starting chunk {chunk_idx}/{chunking['total_chunks']} — companies {chunk_start}-{chunk_end} of {total}.",
                 )
@@ -2200,7 +2369,7 @@ async def _run_document_analysis(
                 and chunk_idx < chunking["total_chunks"]
                 and chunking["cooldown_seconds"] > 0
             ):
-                _append_progress(
+                _append_progress_and_log(
                     job_id,
                     f"Chunk {chunk_idx}/{chunking['total_chunks']} complete — cooling down for {chunking['cooldown_seconds']}s before next chunk.",
                 )
@@ -2293,10 +2462,14 @@ async def _run_specter_analysis(
         and db
         and db.is_configured()
     )
+    subprocess_chunk_mode = bool(
+        chunked_db_mode
+        and ENABLE_SPECTER_SUBPROCESS_CHUNKS
+    )
     _results_cache[job_id]["batch_chunking"] = chunking
     company_chunks = _chunk_items(company_store_pairs, chunking["chunk_size"]) if chunking["enabled"] else [company_store_pairs]
     if chunking["enabled"]:
-        _append_progress(
+        _append_progress_and_log(
             job_id,
             "Large batch chunking enabled "
             f"for {chunking['label']} — {chunking['total_chunks']} chunks of up to "
@@ -2310,10 +2483,43 @@ async def _run_specter_analysis(
             if chunking["enabled"]:
                 chunk_start = processed + 1
                 chunk_end = processed + len(company_chunk)
-                _append_progress(
+                _append_progress_and_log(
                     job_id,
                     f"Starting chunk {chunk_idx}/{chunking['total_chunks']} — companies {chunk_start}-{chunk_end} of {total}.",
                 )
+            if subprocess_chunk_mode:
+                await _run_specter_chunk_subprocess(
+                    job_id,
+                    upload_dir=upload_dir,
+                    specter=specter,
+                    chunk_idx=chunk_idx,
+                    total_chunks=chunking["total_chunks"],
+                    chunk_start_index=processed,
+                    chunk_size=len(company_chunk),
+                    total=total,
+                    use_web_search=use_web_search,
+                    vc_investment_strategy=vc_investment_strategy,
+                )
+                processed += len(company_chunk)
+                if (
+                    chunking["enabled"]
+                    and chunk_idx < chunking["total_chunks"]
+                    and chunking["cooldown_seconds"] > 0
+                ):
+                    _refresh_persisted_batch_results(
+                        job_id,
+                        progress_message=(
+                            f"Chunk {chunk_idx}/{chunking['total_chunks']} complete — "
+                            f"cooling down for {chunking['cooldown_seconds']}s before next chunk."
+                        ),
+                    )
+                    gc.collect()
+                    _append_progress_and_log(
+                        job_id,
+                        f"Chunk {chunk_idx}/{chunking['total_chunks']} complete — cooling down for {chunking['cooldown_seconds']}s before next chunk.",
+                    )
+                    await asyncio.sleep(chunking["cooldown_seconds"])
+                continue
             for company, store in company_chunk:
                 await _cooperate_with_job_control(job_id)
                 processed += 1
@@ -2403,7 +2609,7 @@ async def _run_specter_analysis(
                         ),
                     )
                     gc.collect()
-                _append_progress(
+                _append_progress_and_log(
                     job_id,
                     f"Chunk {chunk_idx}/{chunking['total_chunks']} complete — cooling down for {chunking['cooldown_seconds']}s before next chunk.",
                 )
@@ -2440,6 +2646,11 @@ async def _run_specter_analysis(
 
     if chunked_db_mode:
         _flush_chunk_telemetry(job_id)
+    if chunking["enabled"]:
+        _append_progress_and_log(
+            job_id,
+            f"Chunked batch processing complete — finalizing {evaluated_count}/{total} company result(s).",
+        )
     _append_progress(job_id, "Finalizing batch results...")
     if chunked_db_mode:
         if not _refresh_persisted_batch_results(job_id, progress_message="Finalizing batch results..."):

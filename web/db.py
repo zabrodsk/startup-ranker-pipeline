@@ -9,6 +9,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 from supabase import Client, create_client
+from agent.run_context import build_run_costs_from_model_executions
 
 load_dotenv()
 
@@ -1027,6 +1028,39 @@ def _load_company_run_rows_for_job(client: Client, job_id_legacy: str) -> list[d
         return []
 
 
+def load_run_costs(job_id_legacy: str) -> dict[str, Any] | None:
+    client = _get_client()
+    if not client:
+        return None
+
+    try:
+        batch_size = 1000
+        start = 0
+        rows: list[dict[str, Any]] = []
+        while True:
+            resp = (
+                client.table("model_executions")
+                .select(
+                    "service, provider, model, prompt_tokens, completion_tokens, "
+                    "total_tokens, estimated_cost_usd, request_count"
+                )
+                .eq("job_id_legacy", job_id_legacy)
+                .range(start, start + batch_size - 1)
+                .execute()
+            )
+            batch = list(resp.data or [])
+            if not batch:
+                break
+            rows.extend(batch)
+            if len(batch) < batch_size:
+                break
+            start += batch_size
+
+        return build_run_costs_from_model_executions(rows)
+    except Exception:
+        return None
+
+
 def load_job_results(
     job_id_legacy: str,
     *,
@@ -1047,6 +1081,11 @@ def load_job_results(
         )
         if results is None:
             return None
+        run_costs = load_run_costs(job_id_legacy)
+        if isinstance(run_costs, dict) and (
+            run_costs.get("status") != "unavailable" or "run_costs" not in results
+        ):
+            results["run_costs"] = run_costs
         return {"results": results}
     except Exception:
         return None

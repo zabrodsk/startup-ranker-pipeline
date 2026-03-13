@@ -1045,6 +1045,7 @@ def test_run_specter_analysis_chunks_large_anthropic_batch_with_cooldown(
     stores = [type("Store", (), {"startup_slug": company.name.lower()})() for company in companies]
     evaluate_order: list[str] = []
     sleep_calls: list[int] = []
+    printed: list[str] = []
 
     async def fake_evaluate_from_specter(company, store, *args, **kwargs):
         evaluate_order.append(company.name)
@@ -1069,6 +1070,7 @@ def test_run_specter_analysis_chunks_large_anthropic_batch_with_cooldown(
     monkeypatch.setattr(web_app, "_persist_results_to_db", lambda job_id, results_list: None)
     monkeypatch.setattr(web_app, "_persist_company_result_to_db", lambda current_job_id, result: None)
     monkeypatch.setattr(web_app.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr("builtins.print", lambda *args, **kwargs: printed.append(" ".join(str(arg) for arg in args)))
 
     web_app._jobs[job_id] = web_app.AnalysisStatus(
         job_id=job_id,
@@ -1102,8 +1104,148 @@ def test_run_specter_analysis_chunks_large_anthropic_batch_with_cooldown(
         assert any("Starting chunk 1/3" in entry for entry in progress_log)
         assert any("Starting chunk 2/3" in entry for entry in progress_log)
         assert any("Starting chunk 3/3" in entry for entry in progress_log)
+        assert any("Large batch chunking enabled" in entry for entry in printed)
+        assert any("Starting chunk 1/3" in entry for entry in printed)
+        assert any("Chunk 1/3 complete" in entry for entry in printed)
+        assert any("Chunked batch processing complete" in entry for entry in printed)
         assert web_app._results_cache[job_id]["batch_chunking"]["enabled"] is True
     finally:
+        web_app._jobs.pop(job_id, None)
+        web_app._job_controls.pop(job_id, None)
+        web_app._results_cache.pop(job_id, None)
+
+
+def test_run_specter_analysis_uses_subprocess_chunk_workers(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    job_id = "job-subprocess-chunked"
+    companies = [Company(name=f"Company {idx}") for idx in range(1, 11)]
+    stores = [type("Store", (), {"startup_slug": f"company-{idx}"})() for idx in range(1, 11)]
+    chunk_calls: list[tuple[int, int, int]] = []
+    sleep_calls: list[int] = []
+    progress_counts = {"completed": 0}
+
+    async def fake_chunk_subprocess(
+        current_job_id: str,
+        *,
+        upload_dir: Path,
+        specter: dict[str, object],
+        chunk_idx: int,
+        total_chunks: int,
+        chunk_start_index: int,
+        chunk_size: int,
+        total: int,
+        use_web_search: bool,
+        vc_investment_strategy: str | None,
+    ) -> None:
+        assert current_job_id == job_id
+        chunk_calls.append((chunk_idx, chunk_start_index, chunk_size))
+        progress_counts["completed"] += chunk_size
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    def fake_refresh(current_job_id: str, *, progress_message: str | None = None) -> bool:
+        web_app._results_cache[current_job_id]["results"] = {
+            "mode": "batch",
+            "summary_rows": [{"startup_slug": f"company-{idx}"} for idx in range(progress_counts["completed"])],
+            "run_costs": {
+                "currency": "USD",
+                "status": "complete",
+                "total_usd": 0.1,
+                "llm_usd": 0.1,
+                "perplexity_usd": 0.0,
+                "llm_tokens": {"prompt": 1, "completion": 1, "total": 2},
+                "perplexity_search": {"requests": 0, "total_usd": 0.0},
+                "by_model": [],
+            },
+        }
+        if progress_message:
+            web_app._results_cache[current_job_id]["results"]["job_message"] = progress_message
+        web_app._jobs[current_job_id].results = web_app._results_cache[current_job_id]["results"]
+        return True
+
+    class FakeDb:
+        @staticmethod
+        def is_configured() -> bool:
+            return True
+
+        @staticmethod
+        def load_job_results(job_id_legacy, preferred_mode=None):
+            return {
+                "results": {
+                    "mode": "batch",
+                    "summary_rows": [{"startup_slug": f"company-{idx}"} for idx in range(progress_counts["completed"])],
+                    "failed_rows": [],
+                    "run_costs": {
+                        "currency": "USD",
+                        "status": "complete",
+                        "total_usd": 0.1,
+                        "llm_usd": 0.1,
+                        "perplexity_usd": 0.0,
+                        "llm_tokens": {"prompt": 1, "completion": 1, "total": 2},
+                        "perplexity_search": {"requests": 0, "total_usd": 0.0},
+                        "by_model": [],
+                    },
+                }
+            }
+
+    monkeypatch.setattr(web_app, "ENABLE_CHUNKED_SPECTER_PERSISTENCE", True)
+    monkeypatch.setattr(web_app, "ENABLE_SPECTER_SUBPROCESS_CHUNKS", True)
+    monkeypatch.setenv("BATCH_CHUNKING_THRESHOLD", "5")
+    monkeypatch.setenv("BATCH_CHUNKING_SIZE", "5")
+    monkeypatch.setenv("BATCH_CHUNKING_COOLDOWN_SECONDS", "15")
+    monkeypatch.setattr(
+        web_app,
+        "ingest_specter",
+        lambda companies_path, people=None: list(zip(companies, stores)),
+    )
+    monkeypatch.setattr(web_app, "_run_specter_chunk_subprocess", fake_chunk_subprocess)
+    monkeypatch.setattr(web_app, "_refresh_persisted_batch_results", fake_refresh)
+    monkeypatch.setattr(web_app, "_persist_jobs", lambda: None)
+    monkeypatch.setattr(web_app, "_persist_results_to_db", lambda current_job_id, results_list: None)
+    monkeypatch.setattr(web_app.asyncio, "sleep", fake_sleep)
+
+    original_db = web_app.db
+    web_app.db = FakeDb()
+    web_app._jobs[job_id] = web_app.AnalysisStatus(
+        job_id=job_id,
+        status="running",
+        progress="Starting...",
+        progress_log=[],
+    )
+    web_app._job_controls[job_id] = {"pause_requested": False, "stop_requested": False}
+    web_app._results_cache[job_id] = {
+        "llm_selection": {
+            "provider": "openai",
+            "model": "gpt-5",
+            "label": "GPT-5",
+        },
+        "run_config": {
+            "input_mode": "specter",
+            "llm_provider": "openai",
+            "llm_model": "gpt-5",
+        },
+        "versions": {"app_version": "test"},
+    }
+
+    try:
+        asyncio.run(
+            web_app._run_specter_analysis(
+                job_id,
+                tmp_path,
+                {"companies": "companies.csv", "people": "people.csv"},
+                use_web_search=False,
+            )
+        )
+
+        assert chunk_calls == [(1, 0, 5), (2, 5, 5)]
+        assert sleep_calls == [15]
+        assert web_app._jobs[job_id].status == "done"
+        assert "10/10 companies ranked" in web_app._jobs[job_id].progress
+    finally:
+        web_app.db = original_db
         web_app._jobs.pop(job_id, None)
         web_app._job_controls.pop(job_id, None)
         web_app._results_cache.pop(job_id, None)
