@@ -1091,6 +1091,48 @@ def load_job_results(
         return None
 
 
+def load_job_status(job_id_legacy: str) -> dict[str, Any] | None:
+    """Load the latest persisted job status, preferring terminal saved analyses."""
+    client = _get_client()
+    if not client:
+        return None
+
+    latest_status: dict[str, Any] = {}
+    try:
+        status_resp = (
+            client.table("job_status_history")
+            .select("status, progress, created_at")
+            .eq("job_id_legacy", job_id_legacy)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        latest_status = (status_resp.data or [{}])[0] or {}
+    except Exception:
+        latest_status = {}
+
+    latest_analysis = _load_latest_analysis_snapshot(client, job_id_legacy) or {}
+    if not latest_status and not latest_analysis:
+        return None
+
+    analysis_status = str(latest_analysis.get("status") or "").strip().lower()
+    status = str(latest_status.get("status") or analysis_status or "pending").strip().lower()
+    progress = latest_status.get("progress")
+    snapshot_payload = latest_analysis.get("results_payload")
+    if isinstance(snapshot_payload, dict) and not progress:
+        progress = snapshot_payload.get("job_message")
+
+    if analysis_status in {"done", "error", "stopped"} and status not in {"done", "error", "stopped"}:
+        status = analysis_status
+        if isinstance(snapshot_payload, dict):
+            progress = snapshot_payload.get("job_message") or progress
+
+    return {
+        "status": status or "pending",
+        "progress": progress,
+    }
+
+
 def load_all_completed_jobs() -> dict[str, dict[str, Any]]:
     """Load all completed analyses from Supabase, keyed by job_id_legacy."""
     client = _get_client()
@@ -1184,8 +1226,14 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
 
             latest_status = latest_status_by_job.get(jid, {})
             latest_analysis = latest_analysis_by_job.get(jid, {})
-            status = latest_status.get("status") or latest_analysis.get("status") or "pending"
+            analysis_status = str(latest_analysis.get("status") or "").strip().lower()
+            status = latest_status.get("status") or analysis_status or "pending"
             progress = latest_status.get("progress")
+            snapshot_payload = latest_analysis.get("results_payload")
+            if analysis_status in {"done", "error", "stopped"} and str(status).strip().lower() not in {"done", "error", "stopped"}:
+                status = analysis_status
+                if isinstance(snapshot_payload, dict):
+                    progress = snapshot_payload.get("job_message") or progress
             created_at = latest_analysis.get("created_at") or row.get("created_at")
 
             out.append(

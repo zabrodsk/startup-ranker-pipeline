@@ -117,6 +117,12 @@ try:
     MAX_PROGRESS_LOG_ENTRIES = max(1, int(os.getenv("MAX_PROGRESS_LOG_ENTRIES", "200")))
 except Exception:
     MAX_PROGRESS_LOG_ENTRIES = 200
+try:
+    PERSISTED_STATUS_SYNC_INTERVAL_SECONDS = max(
+        1, int(os.getenv("PERSISTED_STATUS_SYNC_INTERVAL_SECONDS", "10"))
+    )
+except Exception:
+    PERSISTED_STATUS_SYNC_INTERVAL_SECONDS = 10
 RESTART_ON_IDLE_AFTER_ANALYSIS = os.getenv("RESTART_ON_IDLE_AFTER_ANALYSIS", "").strip().lower() in {
     "1",
     "true",
@@ -370,6 +376,56 @@ def _has_active_analysis_jobs() -> bool:
     return any(job.status in {"pending", "running", "paused"} for job in _jobs.values())
 
 
+def _maybe_promote_terminal_persisted_results(
+    job_id: str,
+    *,
+    cache: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    job = _jobs.get(job_id)
+    if not job or job.status in {"done", "error", "stopped"}:
+        return None
+    if not db or not db.is_configured():
+        return None
+
+    now = time.monotonic()
+    last_check = float(getattr(job, "last_persisted_status_check_at", 0.0) or 0.0)
+    if now - last_check < PERSISTED_STATUS_SYNC_INTERVAL_SECONDS:
+        return None
+    job.last_persisted_status_check_at = now
+
+    try:
+        persisted_status = db.load_job_status(job_id)
+    except Exception:
+        persisted_status = None
+    if not isinstance(persisted_status, dict):
+        return None
+
+    status = str(persisted_status.get("status") or "").strip().lower()
+    if status not in {"done", "error", "stopped"}:
+        return None
+
+    loaded = _load_persisted_job_results(
+        job_id,
+        preferred_mode=(cache or {}).get("input_mode"),
+    )
+    results = (loaded or {}).get("results")
+    if not isinstance(results, dict):
+        return None
+
+    progress = (
+        str(results.get("job_message") or "").strip()
+        or str(persisted_status.get("progress") or "").strip()
+        or ("Analysis complete" if status == "done" else job.progress)
+    )
+    job.status = status
+    job.progress = progress
+    job.persistence_complete = True
+    _results_cache.setdefault(job_id, {})["results"] = results
+    job.results = results
+    _promote_results_metadata(job_id, results)
+    return results
+
+
 def _has_active_person_jobs() -> bool:
     return any(job.status in {"pending", "running"} for job in _person_jobs.values())
 
@@ -546,6 +602,7 @@ class AnalysisStatus(BaseModel):
     terminal_results_served: bool = False
     restart_pending: bool = False
     persistence_complete: bool = False
+    last_persisted_status_check_at: float = 0.0
 
 
 _jobs: dict[str, AnalysisStatus] = {}
@@ -2869,6 +2926,9 @@ async def get_status(job_id: str, session_id: str | None = Cookie(default=None))
         job = _jobs[job_id]
         cache = _results_cache.get(job_id, {})
         results = cache.get("results")
+        if results is None and job.status in {"pending", "running", "paused"}:
+            results = _maybe_promote_terminal_persisted_results(job_id, cache=cache)
+            job = _jobs[job_id]
         if results is None and job.status in {"done", "error", "stopped"}:
             loaded = _load_persisted_job_results(
                 job_id,

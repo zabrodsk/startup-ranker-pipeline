@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -676,6 +677,57 @@ def test_status_endpoint_returns_partial_results_for_running_job(monkeypatch) ->
         assert payload["status"] == "running"
         assert payload["results"]["summary_rows"] == [{"startup_slug": "alpha", "company_name": "Alpha"}]
         assert payload["results"]["job_status"] == "running"
+    finally:
+        web_app._jobs.pop(job_id, None)
+        web_app._results_cache.pop(job_id, None)
+
+
+def test_status_endpoint_promotes_running_job_when_persisted_report_is_terminal(monkeypatch) -> None:
+    job_id = "job-running-promoted"
+    results = {
+        "mode": "batch",
+        "summary_rows": [{"startup_slug": "alpha", "company_name": "Alpha"}],
+        "job_status": "done",
+        "job_message": "Analysis complete",
+    }
+    web_app._jobs[job_id] = web_app.AnalysisStatus(
+        job_id=job_id,
+        status="running",
+        progress="Chunk 1/2 — Evaluating Alpha",
+        progress_log=[],
+    )
+    web_app._results_cache[job_id] = {"input_mode": "batch"}
+
+    monkeypatch.setattr(web_app, "_check_session", lambda session_id: True)
+    monkeypatch.setattr(
+        web_app,
+        "db",
+        SimpleNamespace(
+            is_configured=lambda: True,
+            load_job_status=lambda current_job_id: {
+                "status": "done",
+                "progress": "Analysis complete",
+            }
+            if current_job_id == job_id
+            else None,
+        ),
+    )
+    monkeypatch.setattr(
+        web_app,
+        "_load_persisted_job_results",
+        lambda current_job_id, preferred_mode=None: {"results": results} if current_job_id == job_id else None,
+    )
+    monkeypatch.setattr(web_app.time, "monotonic", lambda: 100.0)
+
+    try:
+        payload = asyncio.run(web_app.get_status(job_id, session_id="session"))
+        assert payload["status"] == "done"
+        assert payload["progress"] == "Analysis complete"
+        assert payload["results"]["summary_rows"] == [{"startup_slug": "alpha", "company_name": "Alpha"}]
+        assert web_app._jobs[job_id].status == "done"
+        assert web_app._jobs[job_id].progress == "Analysis complete"
+        assert web_app._jobs[job_id].terminal_results_served is True
+        assert web_app._results_cache[job_id]["results"]["job_status"] == "done"
     finally:
         web_app._jobs.pop(job_id, None)
         web_app._results_cache.pop(job_id, None)
