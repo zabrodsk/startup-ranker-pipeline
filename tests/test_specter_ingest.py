@@ -428,6 +428,33 @@ def test_merge_run_cost_summaries_prefers_available_status() -> None:
     assert merged["by_model"][0]["provider"] == "gemini"
 
 
+def test_append_progress_updates_cached_results_metadata() -> None:
+    job_id = "job-progress-sync"
+    web_app._jobs[job_id] = web_app.AnalysisStatus(
+        job_id=job_id,
+        status="running",
+        progress="Starting...",
+        progress_log=[],
+    )
+    web_app._results_cache[job_id] = {
+        "results": {
+            "mode": "batch",
+            "job_status": "running",
+            "job_message": "Starting...",
+        }
+    }
+
+    try:
+        web_app._append_progress(job_id, "Chunk 2/2 — Evaluating Joe AI (6/10) — [2/3] Decomposing...")
+
+        assert web_app._jobs[job_id].progress.startswith("Chunk 2/2")
+        assert web_app._results_cache[job_id]["results"]["job_message"].startswith("Chunk 2/2")
+        assert web_app._jobs[job_id].results == web_app._results_cache[job_id]["results"]
+    finally:
+        web_app._jobs.pop(job_id, None)
+        web_app._results_cache.pop(job_id, None)
+
+
 def test_flush_chunk_telemetry_persists_incremental_rows_and_updates_aggregate() -> None:
     job_id = "job-flush-telemetry"
     collector = RunTelemetryCollector()

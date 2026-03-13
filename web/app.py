@@ -782,6 +782,11 @@ def _append_progress(job_id: str, msg: str, *, allow_stopped: bool = False) -> N
     log = getattr(job, "progress_log", []) or []
     trimmed = log[-(MAX_PROGRESS_LOG_ENTRIES - 1):] if MAX_PROGRESS_LOG_ENTRIES > 1 else []
     job.progress_log = trimmed + [msg]
+    cache = _results_cache.get(job_id)
+    if isinstance(cache, dict) and isinstance(cache.get("results"), dict):
+        cache["results"]["job_message"] = msg
+        cache["results"]["job_status"] = job.status
+        job.results = cache["results"]
     if db and db.is_configured():
         try:
             db.insert_analysis_event(job_id, message=msg, event_type="progress")
