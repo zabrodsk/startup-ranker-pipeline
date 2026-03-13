@@ -4925,7 +4925,12 @@ async function fetchSavedJobs({ silent = true } = {}) {
       canViewLog: job.can_view_log === true,
       llm: job.llm || null,
     }));
-    clearPersistedJobIfStale();
+    const clearedStaleActiveJob = clearPersistedJobIfStale();
+    if (clearedStaleActiveJob) {
+      pollStatus.failures = 0;
+      pollStatus.lastProgress = '';
+      pollStatus.stallTicks = 0;
+    }
     savedJobsLoaded = true;
     renderRecentRuns();
     renderSavedJobsWindow();
@@ -5703,7 +5708,7 @@ async function openSavedRun(jobId) {
     }
     renderResults(results);
     showScreen('results-screen');
-    persistActiveJob(jobId);
+    persistActiveJob(null);
     try {
       upsertRecentRun({
         jobId,
@@ -5754,7 +5759,7 @@ async function openSavedRun(jobId) {
         await loadAnalysisConfig();
         renderRecentRuns();
         renderSavedCompaniesWindow();
-        fetchSavedJobs();
+        await fetchSavedJobs();
         fetchSavedCompanies();
         backfillRecentRunsWithLlm();
         const resumed = await resumeActiveJob();
@@ -6060,6 +6065,9 @@ async function pollStatus() {
       $('#processing-status').textContent =
         'This run ID is no longer available. Please start a new analysis.';
       persistActiveJob(null);
+      pollStatus.failures = 0;
+      pollStatus.lastProgress = '';
+      pollStatus.stallTicks = 0;
       setProcessingControls('error');
       return;
     }
