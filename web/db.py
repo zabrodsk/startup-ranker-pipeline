@@ -1251,7 +1251,7 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
             status = latest_status.get("status") or analysis_status or "pending"
             progress = latest_status.get("progress")
             snapshot_payload = latest_analysis.get("results_payload")
-            if analysis_status in {"done", "error", "stopped"}:
+            if analysis_status in {"done", "error", "stopped"} and str(status).strip().lower() not in {"done", "error", "stopped"}:
                 status = analysis_status
                 if isinstance(snapshot_payload, dict):
                     progress = snapshot_payload.get("job_message") or progress
