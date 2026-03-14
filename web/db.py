@@ -735,7 +735,10 @@ def ensure_source_files_bucket() -> None:
     except Exception:
         pass
     try:
-        client.storage.create_bucket(SOURCE_FILES_BUCKET, {"public": False})
+        client.storage.create_bucket(
+            SOURCE_FILES_BUCKET,
+            options={"public": False},
+        )
     except Exception as exc:
         _log_supabase_error("ensure_source_files_bucket", "storage", exc)
 
@@ -760,7 +763,7 @@ def upload_source_file(
     storage_path = f"jobs/{job_id_legacy}/inputs/{file_token}"
     try:
         payload = source_path.read_bytes()
-        options = {"upsert": True}
+        options = {"upsert": "true"}
         if mime_type:
             options["content-type"] = mime_type
         client.storage.from_(SOURCE_FILES_BUCKET).upload(storage_path, payload, options)

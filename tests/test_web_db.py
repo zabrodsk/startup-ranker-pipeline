@@ -631,6 +631,70 @@ def test_ensure_source_files_bucket_accepts_dict_bucket_rows(monkeypatch) -> Non
     assert calls == []
 
 
+def test_ensure_source_files_bucket_creates_private_bucket_with_options(monkeypatch) -> None:
+    import web.db as web_db
+
+    calls: list[tuple[str, object, object]] = []
+
+    class FakeStorage:
+        def list_buckets(self):
+            return []
+
+        def create_bucket(self, bucket_id, name=None, options=None):
+            calls.append((bucket_id, name, options))
+
+    class FakeClient:
+        storage = FakeStorage()
+
+    monkeypatch.setattr(web_db, "_get_client", lambda: FakeClient())
+
+    web_db.ensure_source_files_bucket()
+
+    assert calls == [(web_db.SOURCE_FILES_BUCKET, None, {"public": False})]
+
+
+def test_upload_source_file_uses_string_upsert(monkeypatch, tmp_path: Path) -> None:
+    import web.db as web_db
+
+    uploads: list[tuple[str, bytes, dict[str, object]]] = []
+
+    class FakeBucket:
+        def upload(self, storage_path, payload, options):
+            uploads.append((storage_path, payload, options))
+            return {"Key": storage_path}
+
+    class FakeStorage:
+        def list_buckets(self):
+            return [{"name": web_db.SOURCE_FILES_BUCKET}]
+
+        def from_(self, bucket_name):
+            assert bucket_name == web_db.SOURCE_FILES_BUCKET
+            return FakeBucket()
+
+    class FakeClient:
+        storage = FakeStorage()
+
+    file_path = tmp_path / "companies.csv"
+    file_path.write_text("Company Name\nAlpha\n", encoding="utf-8")
+
+    monkeypatch.setattr(web_db, "_get_client", lambda: FakeClient())
+
+    storage_path = web_db.upload_source_file(
+        "job-123",
+        file_path,
+        mime_type="text/csv",
+    )
+
+    assert storage_path == "jobs/job-123/inputs/companies.csv"
+    assert uploads == [
+        (
+            "jobs/job-123/inputs/companies.csv",
+            b"Company Name\nAlpha\n",
+            {"upsert": "true", "content-type": "text/csv"},
+        )
+    ]
+
+
 def test_load_run_costs_rehydrates_service_and_cost_fields_from_metadata(monkeypatch) -> None:
     import web.db as web_db
 
