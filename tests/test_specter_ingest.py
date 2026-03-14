@@ -1142,6 +1142,70 @@ def test_start_analysis_queues_worker_backed_specter_job_without_starting_thread
         web_app._results_cache.pop(job_id, None)
 
 
+def test_start_analysis_worker_queue_failure_does_not_fallback_to_web(tmp_path: Path, monkeypatch) -> None:
+    job_id = "job-worker-fail-closed"
+    original_flag = web_app.ENABLE_SPECTER_WORKER_SERVICE
+    web_app.ENABLE_SPECTER_WORKER_SERVICE = True
+    web_app._jobs[job_id] = web_app.AnalysisStatus(job_id=job_id, status="pending", progress="Queued", progress_log=[])
+    web_app._results_cache[job_id] = {
+        "files": [
+            {
+                "name": "companies.csv",
+                "local_path": str(tmp_path / "companies.csv"),
+                "mime_type": "text/csv",
+                "size": 123,
+            }
+        ],
+        "specter": {"companies": str(tmp_path / "companies.csv")},
+    }
+    (tmp_path / "companies.csv").write_text("Company Name\nAlpha\n", encoding="utf-8")
+
+    thread_started = {"value": False}
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            thread_started["value"] = True
+
+    monkeypatch.setattr(web_app, "_check_session", lambda session_id: True)
+    monkeypatch.setattr(
+        web_app,
+        "validate_requested_selection",
+        lambda provider, model: SimpleNamespace(provider="openai", model="gpt-5"),
+    )
+    monkeypatch.setattr(web_app, "_runtime_versions", lambda: {"app_version": "test"})
+    monkeypatch.setattr(web_app.threading, "Thread", FakeThread)
+    monkeypatch.setattr(
+        web_app,
+        "_queue_worker_backed_specter_job",
+        lambda current_job_id: (False, "Could not persist Specter source file metadata.")
+        if current_job_id == job_id
+        else (False, None),
+    )
+
+    try:
+        with pytest.raises(web_app.HTTPException) as exc_info:
+            asyncio.run(
+                web_app.start_analysis(
+                    job_id,
+                    web_app.AnalyzeRequest(input_mode="specter"),
+                    session_id="session",
+                )
+            )
+
+        assert exc_info.value.status_code == 503
+        assert "Specter worker queue failed" in exc_info.value.detail
+        assert thread_started["value"] is False
+        assert web_app._jobs[job_id].status == "error"
+        assert "Worker queue failed" in web_app._jobs[job_id].progress
+    finally:
+        web_app.ENABLE_SPECTER_WORKER_SERVICE = original_flag
+        web_app._jobs.pop(job_id, None)
+        web_app._results_cache.pop(job_id, None)
+
+
 def test_append_progress_caps_in_memory_log(monkeypatch) -> None:
     job_id = "job-progress-cap"
     web_app._jobs[job_id] = web_app.AnalysisStatus(

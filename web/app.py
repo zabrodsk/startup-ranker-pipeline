@@ -1647,14 +1647,16 @@ async def start_analysis(
 
     vc_str = _ensure_str(req.vc_investment_strategy).strip() or None
     inst = _ensure_str(req.instructions).strip() or None
-    if req.input_mode == "specter":
+    if req.input_mode == "specter" and ENABLE_SPECTER_WORKER_SERVICE:
         queued, worker_message = _queue_worker_backed_specter_job(job_id)
         if queued:
             _set_job_status(job_id, "running", worker_message or "Queued for worker...", source="start_analysis")
             _append_progress_and_log(job_id, worker_message or "Queued for worker...")
             return {"status": "running", "use_web_search": req.use_web_search, "llm": llm_display}
-        if worker_message:
-            _append_progress_and_log(job_id, f"Worker queue unavailable — falling back to in-web execution. {worker_message}")
+        queue_error = worker_message or "Unknown worker queue error."
+        _set_job_status(job_id, "error", f"Worker queue failed. {queue_error}", source="start_analysis")
+        _append_progress_and_log(job_id, f"Worker queue failed — {queue_error}")
+        raise HTTPException(status_code=503, detail=f"Specter worker queue failed: {queue_error}")
 
     # Run the analysis loop in a dedicated thread/event-loop to keep
     # the main FastAPI loop responsive for pause/resume/stop controls.
@@ -2020,19 +2022,25 @@ def _prepare_worker_source_files(job_id: str) -> list[dict[str, Any]] | None:
 
 
 def _queue_worker_backed_specter_job(job_id: str) -> tuple[bool, str | None]:
-    if not (ENABLE_SPECTER_WORKER_SERVICE and db and db.is_configured()):
+    def _failure(message: str) -> tuple[bool, str]:
+        print(f"Specter worker queue failed for job {job_id}: {message}")
+        return (False, message)
+
+    if not ENABLE_SPECTER_WORKER_SERVICE:
         return (False, None)
+    if not (db and db.is_configured()):
+        return _failure("Database is not configured for worker-backed Specter runs.")
 
     cache = _results_cache.get(job_id, {})
     specter = cache.get("specter") or {}
     companies_csv = specter.get("companies")
     companies_storage_path = specter.get("companies_storage_path")
     if not companies_csv:
-        return (False, "Missing Specter company export.")
+        return _failure("Missing Specter company export.")
 
     source_files = _prepare_worker_source_files(job_id)
     if not source_files:
-        return (False, "Could not prepare shared Specter source files.")
+        return _failure("Could not prepare shared Specter source files.")
 
     companies_storage_path = companies_storage_path or (
         next(
@@ -2045,7 +2053,7 @@ def _queue_worker_backed_specter_job(job_id: str) -> tuple[bool, str | None]:
         )
     )
     if not companies_storage_path:
-        return (False, "Could not upload Specter company export to shared storage.")
+        return _failure("Could not upload Specter company export to shared storage.")
     specter["companies_storage_path"] = companies_storage_path
 
     if specter.get("people"):
@@ -2058,7 +2066,7 @@ def _queue_worker_backed_specter_job(job_id: str) -> tuple[bool, str | None]:
             None,
         )
         if not people_storage_path:
-            return (False, "Could not upload Specter people export to shared storage.")
+            return _failure("Could not upload Specter people export to shared storage.")
         specter["people_storage_path"] = people_storage_path
 
     company_descriptors = list_specter_companies(companies_csv)
@@ -2067,7 +2075,7 @@ def _queue_worker_backed_specter_job(job_id: str) -> tuple[bool, str | None]:
         company_descriptors = company_descriptors[:max_startups]
     total_companies = len(company_descriptors)
     if total_companies <= 0:
-        return (False, "No companies found in Specter data.")
+        return _failure("No companies found in Specter data.")
 
     cache["specter"] = specter
     run_config = dict(_run_config_from_cache(job_id))
@@ -2094,7 +2102,7 @@ def _queue_worker_backed_specter_job(job_id: str) -> tuple[bool, str | None]:
             "failed_companies": 0,
         },
     ):
-        return (False, "Could not persist Specter source file metadata.")
+        return _failure("Could not persist Specter source file metadata.")
 
     if not db.queue_specter_worker_job(
         job_id,
@@ -2103,7 +2111,7 @@ def _queue_worker_backed_specter_job(job_id: str) -> tuple[bool, str | None]:
         total_companies=total_companies,
         progress=progress,
     ):
-        return (False, "Could not queue Specter worker job.")
+        return _failure("Could not queue Specter worker job.")
 
     cache["worker_backed"] = True
     cache["results"] = None
