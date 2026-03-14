@@ -1049,12 +1049,76 @@ def _load_company_run_rows_for_job(client: Client, job_id_legacy: str) -> list[d
         return []
 
 
+def _load_company_progress_rows_for_job(client: Client, job_id_legacy: str) -> list[dict[str, Any]]:
+    try:
+        rows = (
+            client.table("company_runs")
+            .select("decision")
+            .eq("job_id_legacy", job_id_legacy)
+            .limit(500)
+            .execute()
+        )
+        return rows.data or []
+    except Exception:
+        return []
+
+
 def load_job_company_runs(job_id_legacy: str) -> list[dict[str, Any]]:
     """Return persisted company-run rows for a job."""
     client = _get_client()
     if not client:
         return []
     return _load_company_run_rows_for_job(client, job_id_legacy)
+
+
+def load_job_progress_snapshot(
+    job_id_legacy: str,
+    *,
+    preferred_mode: str | None = None,
+) -> dict[str, Any] | None:
+    """Return a lightweight progress snapshot without reconstructing the full report."""
+    client = _get_client()
+    if not client:
+        return None
+
+    try:
+        snapshot_row = _load_latest_analysis_snapshot(client, job_id_legacy) or {}
+        snapshot_payload = _serialize(snapshot_row.get("results_payload") or {})
+        progress_rows = _load_company_progress_rows_for_job(client, job_id_legacy)
+        total_rows = len(progress_rows)
+        failed_rows = sum(
+            1
+            for row in progress_rows
+            if str(row.get("decision") or "").strip().lower() in {"error", "timeout"}
+        )
+        completed_rows = max(0, total_rows - failed_rows)
+        mode = preferred_mode or snapshot_payload.get("mode")
+        if not mode:
+            mode = "single" if total_rows == 1 else "batch"
+
+        payload = {
+            "mode": mode,
+            "num_companies": completed_rows,
+            "num_skipped": failed_rows,
+            "summary_rows_count": completed_rows,
+            "failed_rows_count": failed_rows,
+            "job_status": snapshot_payload.get("job_status"),
+            "job_message": snapshot_payload.get("job_message"),
+        }
+        if mode == "single":
+            for key in (
+                "company_name",
+                "startup_slug",
+                "decision",
+                "total_score",
+                "avg_pro",
+                "avg_contra",
+            ):
+                if key in snapshot_payload:
+                    payload[key] = snapshot_payload.get(key)
+        return {"results": payload}
+    except Exception:
+        return None
 
 
 def load_run_costs(job_id_legacy: str) -> dict[str, Any] | None:

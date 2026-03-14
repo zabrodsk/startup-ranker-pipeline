@@ -430,6 +430,59 @@ def _load_persisted_job_results(
     return loaded or _load_local_job_results(job_id)
 
 
+def _is_compact_results_payload(results: dict[str, Any] | None) -> bool:
+    return bool(isinstance(results, dict) and results.get("_memory_compact"))
+
+
+def _completed_count_from_results_payload(results: dict[str, Any] | None) -> int:
+    if not isinstance(results, dict):
+        return 0
+    if isinstance(results.get("summary_rows_count"), int):
+        return int(results["summary_rows_count"])
+    summary_rows = results.get("summary_rows")
+    if isinstance(summary_rows, list):
+        return len(summary_rows)
+    if results.get("mode") == "single" and (results.get("company_name") or results.get("startup_slug")):
+        return 1
+    if isinstance(results.get("num_companies"), int):
+        return int(results["num_companies"])
+    return 0
+
+
+def _compact_results_for_runtime(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+
+    compact: dict[str, Any] = {
+        "_memory_compact": True,
+        "mode": payload.get("mode"),
+        "job_status": payload.get("job_status"),
+        "job_message": payload.get("job_message"),
+        "llm": payload.get("llm"),
+        "llm_selection": payload.get("llm_selection"),
+        "run_costs": payload.get("run_costs"),
+        "batch_chunking": payload.get("batch_chunking"),
+        "num_companies": payload.get("num_companies"),
+        "num_skipped": payload.get("num_skipped"),
+        "summary_rows_count": _completed_count_from_results_payload(payload),
+        "failed_rows_count": len(payload.get("failed_rows") or []) if isinstance(payload.get("failed_rows"), list) else int(payload.get("failed_rows_count") or 0),
+        "argument_rows_count": len(payload.get("argument_rows") or []) if isinstance(payload.get("argument_rows"), list) else int(payload.get("argument_rows_count") or 0),
+        "qa_provenance_rows_count": len(payload.get("qa_provenance_rows") or []) if isinstance(payload.get("qa_provenance_rows"), list) else int(payload.get("qa_provenance_rows_count") or 0),
+    }
+    if payload.get("mode") == "single":
+        for key in (
+            "company_name",
+            "startup_slug",
+            "decision",
+            "total_score",
+            "avg_pro",
+            "avg_contra",
+        ):
+            if key in payload:
+                compact[key] = payload.get(key)
+    return compact
+
+
 def _release_job_runtime_resources(job_id: str, *, drop_results: bool) -> None:
     cache = _results_cache.get(job_id)
     if cache is None:
@@ -443,7 +496,14 @@ def _release_job_runtime_resources(job_id: str, *, drop_results: bool) -> None:
         with contextlib.suppress(Exception):
             shutil.rmtree(upload_dir, ignore_errors=True)
 
-    for key in ("files", "specter", "telemetry_collector", "model_executions"):
+    for key in (
+        "files",
+        "specter",
+        "telemetry_collector",
+        "model_executions",
+        "run_costs_aggregate",
+        "versions",
+    ):
         cache.pop(key, None)
 
     job = _jobs.get(job_id)
@@ -901,11 +961,22 @@ def _flush_chunk_telemetry(job_id: str) -> None:
         cache["model_executions"] = pending_rows
 
 
-def _refresh_persisted_batch_results(job_id: str, *, progress_message: str | None = None) -> bool:
+def _refresh_persisted_batch_results(
+    job_id: str,
+    *,
+    progress_message: str | None = None,
+    full: bool = False,
+) -> bool:
     if not (db and db.is_configured()):
         return False
     cache = _results_cache.get(job_id, {})
-    loaded = db.load_job_results(job_id, preferred_mode=cache.get("input_mode"))
+    if full:
+        loaded = db.load_job_results(job_id, preferred_mode=cache.get("input_mode"))
+    else:
+        loaded = (
+            db.load_job_progress_snapshot(job_id, preferred_mode=cache.get("input_mode"))
+            or db.load_job_results(job_id, preferred_mode=cache.get("input_mode"))
+        )
     if not loaded or not isinstance(loaded.get("results"), dict):
         return False
 
@@ -913,9 +984,9 @@ def _refresh_persisted_batch_results(job_id: str, *, progress_message: str | Non
     if progress_message:
         payload["job_status"] = _jobs.get(job_id).status if _jobs.get(job_id) else "running"
         payload["job_message"] = progress_message
-    cache["results"] = payload
+    cache["results"] = payload if full else (_compact_results_for_runtime(payload) or payload)
     if _jobs.get(job_id):
-        _jobs[job_id].results = payload
+        _jobs[job_id].results = cache["results"]
     return True
 
 
@@ -1053,14 +1124,14 @@ def _finalize_stopped_results(
 ) -> bool:
     evaluated = [r for r in results_list if not r.get("skipped")]
     if not evaluated:
-        if not _refresh_persisted_batch_results(job_id):
+        if not _refresh_persisted_batch_results(job_id, full=True):
             return False
 
     if evaluated:
         _build_results_payload(results_list, job_id, upload_dir)
     message = (
         "Stopped by user. Partial results ready — "
-        f"{len(evaluated) if evaluated else len((_results_cache.get(job_id, {}).get('results') or {}).get('summary_rows') or [])}/{total} companies ranked"
+        f"{len(evaluated) if evaluated else _completed_count_from_results_payload(_results_cache.get(job_id, {}).get('results'))}/{total} companies ranked"
         if total > 1
         else "Stopped by user. Completed analysis is available."
     )
@@ -1175,7 +1246,7 @@ _load_jobs()
 def _get_job_summary(job_id: str, job: AnalysisStatus) -> dict[str, Any]:
     cache = _results_cache.get(job_id, {})
     results = cache.get("results")
-    has_results = bool(results)
+    has_results = bool(results) and not _is_compact_results_payload(results)
     is_active = job.status in {"pending", "running", "paused"}
     return {
         "job_id": job_id,
@@ -1909,7 +1980,7 @@ def _handle_specter_chunk_worker_event(
             progress_message=f"{prefix} — Persisting partial result...",
         )
         completed_count = (
-            len(((_results_cache.get(job_id, {}).get("results") or {}).get("summary_rows") or []))
+            _completed_count_from_results_payload(_results_cache.get(job_id, {}).get("results"))
             if refreshed
             else max(absolute_index, 0)
         )
@@ -2123,7 +2194,8 @@ def _update_partial_results_cache(
     except TypeError:
         # Compatibility for tests monkeypatching the older 3-arg helper.
         _build_results_payload(results_list, job_id, upload_dir)
-    payload = _results_cache[job_id].setdefault("results", {})
+    payload = _compact_results_for_runtime(_results_cache[job_id].get("results")) or {}
+    _results_cache[job_id]["results"] = payload
     payload["job_status"] = _jobs.get(job_id).status if _jobs.get(job_id) else "running"
     payload["job_message"] = _jobs.get(job_id).progress if _jobs.get(job_id) else ""
     if _jobs.get(job_id):
@@ -2784,7 +2856,11 @@ async def _run_specter_analysis(
                             job_id,
                             progress_message=f"Partial results updated — {processed}/{total} companies processed.",
                         )
-                        completed_count = len(((_results_cache.get(job_id, {}).get("results") or {}).get("summary_rows") or [])) if refreshed else processed
+                        completed_count = (
+                            _completed_count_from_results_payload(_results_cache.get(job_id, {}).get("results"))
+                            if refreshed
+                            else processed
+                        )
                     else:
                         _update_partial_results_cache(job_id, upload_dir, results_list)
                         completed_count = len([r for r in results_list if not r.get('skipped')])
@@ -2883,7 +2959,11 @@ async def _run_specter_analysis(
         )
     _append_progress(job_id, "Finalizing batch results...")
     if chunked_db_mode:
-        if not _refresh_persisted_batch_results(job_id, progress_message="Finalizing batch results..."):
+        if not _refresh_persisted_batch_results(
+            job_id,
+            progress_message="Finalizing batch results...",
+            full=True,
+        ):
             raise RuntimeError("Failed to reconstruct chunked batch results from persistence.")
     else:
         _build_results_payload(results_list, job_id, upload_dir)
@@ -3099,6 +3179,8 @@ async def get_status(
         job = _jobs[job_id]
         cache = _results_cache.get(job_id, {})
         results = cache.get("results")
+        if _is_compact_results_payload(results) and job.status in {"done", "error", "stopped"}:
+            results = None
         if results is None and job.status in {"pending", "running", "paused"}:
             results = _maybe_promote_terminal_persisted_results(job_id, cache=cache)
             job = _jobs[job_id]
@@ -3110,7 +3192,7 @@ async def get_status(
             if loaded:
                 results = loaded.get("results")
                 _promote_results_metadata(job_id, results)
-        if results is not None:
+        if results is not None and not _is_compact_results_payload(results):
             _mark_terminal_results_served(job_id)
         return {
             "job_id": job.job_id,
@@ -3223,7 +3305,7 @@ async def get_analysis(
 
     cache = _results_cache.get(job_id, {})
     results = cache.get("results")
-    if results:
+    if results and not _is_compact_results_payload(results):
         _mark_terminal_results_served(job_id)
         return {"job_id": job_id, "results": results}
 

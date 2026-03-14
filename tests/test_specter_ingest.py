@@ -423,7 +423,8 @@ def test_run_specter_analysis_persists_first_company_before_starting_second(
         if state["calls"] == 2:
             assert persisted == ["alpha"]
             current = web_app._results_cache[job_id]["results"]
-            assert current["summary_rows"] == [{"startup_slug": "alpha", "company_name": "Alpha"}]
+            assert current["_memory_compact"] is True
+            assert current["summary_rows_count"] == 1
             saw_partial_status["value"] = True
         return results[store.startup_slug]
 
@@ -555,14 +556,10 @@ def test_run_specter_analysis_subprocess_mode_avoids_parent_full_ingest(
     })
     monkeypatch.setattr(web_app, "_run_specter_company_subprocess", fake_run_subprocess)
     monkeypatch.setattr(web_app, "_load_persisted_company_keys", lambda current_job_id: set())
-    def fake_refresh(current_job_id, *, progress_message=None):
+    def fake_refresh(current_job_id, *, progress_message=None, full=False):
         web_app._results_cache[current_job_id]["results"] = {
             "mode": "batch",
-            "summary_rows": [
-                {"startup_slug": "alpha"},
-                {"startup_slug": "beta"},
-                {"startup_slug": "gamma"},
-            ],
+            "summary_rows_count": 3,
         }
         return True
 
@@ -1093,6 +1090,8 @@ def test_release_job_runtime_resources_drops_heavy_cache(tmp_path: Path) -> None
         "specter": {"companies": "companies.csv"},
         "telemetry_collector": object(),
         "model_executions": [{"provider": "openai"}],
+        "run_costs_aggregate": {"status": "available"},
+        "versions": {"app_version": "test"},
         "results": results,
     }
 
@@ -1102,12 +1101,110 @@ def test_release_job_runtime_resources_drops_heavy_cache(tmp_path: Path) -> None
         assert web_app._jobs[job_id].results is None
         assert "results" not in web_app._results_cache[job_id]
         assert "files" not in web_app._results_cache[job_id]
+        assert "run_costs_aggregate" not in web_app._results_cache[job_id]
+        assert "versions" not in web_app._results_cache[job_id]
         assert job_id not in web_app._job_controls
         assert web_app._results_cache[job_id]["input_mode"] == "single"
     finally:
         web_app._jobs.pop(job_id, None)
         web_app._results_cache.pop(job_id, None)
         web_app._job_controls.pop(job_id, None)
+
+
+def test_refresh_persisted_batch_results_stores_compact_runtime_payload(monkeypatch) -> None:
+    job_id = "job-compact-refresh"
+    web_app._jobs[job_id] = web_app.AnalysisStatus(
+        job_id=job_id,
+        status="running",
+        progress="Working",
+        progress_log=[],
+    )
+    web_app._results_cache[job_id] = {
+        "input_mode": "specter",
+        "llm_selection": {
+            "provider": "google",
+            "model": "gemini-3.1-flash-lite-preview",
+            "label": "Gemini 3.1 Flash Lite",
+        },
+    }
+    fake_db = SimpleNamespace(
+        is_configured=lambda: True,
+        load_job_progress_snapshot=lambda current_job_id, preferred_mode=None: {
+            "results": {
+                "mode": "batch",
+                "num_companies": 3,
+                "summary_rows_count": 3,
+                "failed_rows_count": 1,
+                "summary_rows": [
+                    {"company_name": "A"},
+                    {"company_name": "B"},
+                    {"company_name": "C"},
+                ],
+                "argument_rows": [{"company_name": "A"}],
+                "qa_provenance_rows": [{"company_name": "A"}],
+            }
+        } if current_job_id == job_id else None,
+        load_job_results=lambda current_job_id, preferred_mode=None: None,
+    )
+    monkeypatch.setattr(web_app, "db", fake_db)
+
+    try:
+        refreshed = web_app._refresh_persisted_batch_results(job_id, progress_message="Partial results updated")
+        assert refreshed is True
+        payload = web_app._results_cache[job_id]["results"]
+        assert payload["_memory_compact"] is True
+        assert payload["summary_rows_count"] == 3
+        assert payload["argument_rows_count"] == 1
+        assert payload["qa_provenance_rows_count"] == 1
+        assert "summary_rows" not in payload
+        assert web_app._jobs[job_id].results == payload
+    finally:
+        web_app._jobs.pop(job_id, None)
+        web_app._results_cache.pop(job_id, None)
+
+
+def test_status_terminal_compact_results_loads_full_persisted_report(monkeypatch) -> None:
+    job_id = "job-compact-terminal"
+    compact_results = {
+        "_memory_compact": True,
+        "mode": "batch",
+        "summary_rows_count": 2,
+        "job_status": "done",
+        "job_message": "Analysis complete",
+    }
+    full_results = {
+        "mode": "batch",
+        "summary_rows": [{"company_name": "Alpha"}, {"company_name": "Beta"}],
+        "job_status": "done",
+        "job_message": "Analysis complete",
+    }
+    web_app._jobs[job_id] = web_app.AnalysisStatus(
+        job_id=job_id,
+        status="done",
+        progress="Analysis complete",
+        progress_log=[],
+        results=compact_results,
+    )
+    web_app._results_cache[job_id] = {
+        "input_mode": "specter",
+        "results": compact_results,
+    }
+
+    monkeypatch.setattr(web_app, "_check_session", lambda session_id: True)
+    monkeypatch.setattr(
+        web_app,
+        "_load_persisted_job_results",
+        lambda current_job_id, preferred_mode=None: {"results": full_results} if current_job_id == job_id else None,
+    )
+
+    try:
+        payload = asyncio.run(web_app.get_status(job_id, response=Response(), session_id="session"))
+        assert payload["status"] == "done"
+        assert payload["results"]["summary_rows"] == full_results["summary_rows"]
+        assert payload["results"].get("_memory_compact") is None
+    finally:
+        web_app._jobs.pop(job_id, None)
+        web_app._results_cache.pop(job_id, None)
 
 
 def test_status_lazy_loads_terminal_results_after_memory_cleanup(monkeypatch) -> None:
@@ -1399,21 +1496,20 @@ def test_list_jobs_for_ui_prefers_persisted_terminal_state_over_live_running(mon
 
     try:
         rows = web_app._list_jobs_for_ui()
-        assert rows == [
-            {
-                "job_id": job_id,
-                "status": "done",
-                "progress": "Analysis complete",
-                "created_at": "2026-03-13T10:05:00Z",
-                "input_mode": "specter",
-                "use_web_search": True,
-                "results": None,
-                "has_results": True,
-                "can_open_results": True,
-                "can_view_log": False,
-                "llm": web_app._get_llm_display(),
-            }
-        ]
+        row = next(item for item in rows if item["job_id"] == job_id)
+        assert row == {
+            "job_id": job_id,
+            "status": "done",
+            "progress": "Analysis complete",
+            "created_at": "2026-03-13T10:05:00Z",
+            "input_mode": "specter",
+            "use_web_search": True,
+            "results": None,
+            "has_results": True,
+            "can_open_results": True,
+            "can_view_log": False,
+            "llm": web_app._get_llm_display(),
+        }
     finally:
         web_app._jobs.pop(job_id, None)
 
@@ -1441,21 +1537,20 @@ def test_list_jobs_for_ui_marks_persisted_running_without_live_job_as_interrupte
     )
 
     rows = web_app._list_jobs_for_ui()
-    assert rows == [
-        {
-            "job_id": job_id,
-            "status": "interrupted",
-            "progress": "Run interrupted before completion.",
-            "created_at": "2026-03-13T10:05:00Z",
-            "input_mode": "specter",
-            "use_web_search": True,
-            "results": None,
-            "has_results": False,
-            "can_open_results": False,
-            "can_view_log": False,
-            "llm": web_app._get_llm_display(),
-        }
-    ]
+    row = next(item for item in rows if item["job_id"] == job_id)
+    assert row == {
+        "job_id": job_id,
+        "status": "interrupted",
+        "progress": "Run interrupted before completion.",
+        "created_at": "2026-03-13T10:05:00Z",
+        "input_mode": "specter",
+        "use_web_search": True,
+        "results": None,
+        "has_results": False,
+        "can_open_results": False,
+        "can_view_log": False,
+        "llm": web_app._get_llm_display(),
+    }
 
 
 def test_batch_chunking_config_enables_for_large_anthropic_batch() -> None:
@@ -1630,10 +1725,15 @@ def test_run_specter_analysis_uses_subprocess_chunk_workers(
     async def fake_sleep(seconds):
         sleep_calls.append(seconds)
 
-    def fake_refresh(current_job_id: str, *, progress_message: str | None = None) -> bool:
+    def fake_refresh(
+        current_job_id: str,
+        *,
+        progress_message: str | None = None,
+        full: bool = False,
+    ) -> bool:
         web_app._results_cache[current_job_id]["results"] = {
             "mode": "batch",
-            "summary_rows": [{"startup_slug": f"company-{idx}"} for idx in range(progress_counts["completed"])],
+            "summary_rows_count": progress_counts["completed"],
             "run_costs": {
                 "currency": "USD",
                 "status": "complete",

@@ -289,6 +289,46 @@ def test_load_job_results_reconstructs_from_company_runs(monkeypatch) -> None:
     assert loaded["results"]["run_costs"]["total_usd"] == 0.0123
 
 
+def test_load_job_progress_snapshot_returns_lightweight_counts(monkeypatch) -> None:
+    import web.db as web_db
+
+    monkeypatch.setattr(web_db, "_get_client", lambda: object())
+    monkeypatch.setattr(
+        web_db,
+        "_load_latest_analysis_snapshot",
+        lambda client, job_id_legacy: {
+            "results_payload": {
+                "mode": "batch",
+                "job_status": "running",
+                "job_message": "Partial results updated",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        web_db,
+        "_load_company_progress_rows_for_job",
+        lambda client, job_id_legacy: [
+            {"decision": "invest"},
+            {"decision": "watch"},
+            {"decision": "timeout"},
+        ],
+    )
+
+    payload = web_db.load_job_progress_snapshot("job-123", preferred_mode="batch")
+
+    assert payload == {
+        "results": {
+            "mode": "batch",
+            "num_companies": 2,
+            "num_skipped": 1,
+            "summary_rows_count": 2,
+            "failed_rows_count": 1,
+            "job_status": "running",
+            "job_message": "Partial results updated",
+        }
+    }
+
+
 def test_load_job_status_prefers_terminal_analysis_over_stale_running_status(monkeypatch) -> None:
     import web.db as web_db
 
