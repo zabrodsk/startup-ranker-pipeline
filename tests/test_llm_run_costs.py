@@ -39,6 +39,25 @@ def _login(client: TestClient) -> None:
     client.cookies.set("session_id", response.json()["session_id"])
 
 
+def test_upload_creates_pending_job_without_model_rebuild_error() -> None:
+    from web import app as web_app_module
+
+    with TestClient(app) as client:
+        _login(client)
+        response = client.post(
+            "/api/upload",
+            files={"files": ("deck.txt", io.BytesIO(b"sample content"), "text/plain")},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    job_id = payload["job_id"]
+    assert job_id
+    assert AnalysisStatus.model_fields
+    assert job_id in web_app_module._jobs
+    assert web_app_module._jobs[job_id].status == "pending"
+
+
 def test_model_catalog_validation_accepts_only_available_entries(monkeypatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     entry = validate_requested_selection("anthropic", "claude-haiku-4-5-20251001")

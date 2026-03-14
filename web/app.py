@@ -784,6 +784,8 @@ class AnalysisStatus(BaseModel):
     last_persisted_status_check_at: float = 0.0
 
 
+AnalysisStatus.model_rebuild()
+
 _jobs: dict[str, AnalysisStatus] = {}
 _job_controls: dict[str, dict[str, bool]] = {}
 
