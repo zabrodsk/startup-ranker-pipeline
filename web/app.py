@@ -30,7 +30,7 @@ from fastapi import Cookie, FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 load_dotenv()
 
@@ -776,8 +776,8 @@ class AnalysisStatus(BaseModel):
     job_id: str
     status: str  # "pending" | "running" | "stopped" | "done" | "error"
     progress: str = ""
-    progress_log: list[str] = []
-    results: Any = None
+    progress_log: list[str] = Field(default_factory=list)
+    results: object | None = None
     terminal_results_served: bool = False
     restart_pending: bool = False
     persistence_complete: bool = False
