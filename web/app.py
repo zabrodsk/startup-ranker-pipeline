@@ -3426,6 +3426,8 @@ async def get_status(
             if loaded:
                 results = loaded.get("results")
                 _promote_results_metadata(job_id, results)
+        if results is not None and not _is_terminal_job_status(job.status):
+            results = None
         if results is not None and not _is_compact_results_payload(results):
             _mark_terminal_results_served(job_id)
         return {

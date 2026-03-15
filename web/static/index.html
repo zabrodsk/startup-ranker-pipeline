@@ -3784,6 +3784,16 @@ function compactResultsForStorage(results) {
   };
 }
 
+function isCompactResultsPayload(results) {
+  if (!results || typeof results !== 'object') return false;
+  if (Array.isArray(results.summary_rows)) return false;
+  return (
+    typeof results.summary_rows_count === 'number'
+    || typeof results.num_companies === 'number'
+    || typeof results.failed_rows_count === 'number'
+  );
+}
+
 function compactRunForStorage(run) {
   if (!run || typeof run !== 'object') return run;
   const compact = { ...run };
@@ -4174,6 +4184,15 @@ function upsertRecentRun(update) {
     ...update,
     updatedAt: Date.now(),
   };
+  const nextStatus = String(next.status || '').toLowerCase();
+  const terminal = isTerminalRunStatus(nextStatus);
+  if (!terminal || isCompactResultsPayload(next.results)) {
+    next.results = null;
+  }
+  if (!terminal) {
+    next.hasResults = false;
+    next.canOpenResults = false;
+  }
   if (!next.createdAt) next.createdAt = Date.now();
   if (idx >= 0) runs.splice(idx, 1);
   runs.unshift(next);
@@ -4225,8 +4244,10 @@ function mergeSavedAndRecentRuns() {
     const existing = merged.get(run.jobId) || {};
     const savedHasResults = existing.hasResults === true;
     const savedTerminal = isTerminalRunStatus(existing.status);
+    const savedActive = existing.canViewLog === true || isLiveRunStatus(existing.status);
     const recentTerminal = isTerminalRunStatus(run.status);
     const preferSavedTerminal = savedTerminal && !recentTerminal;
+    const recentHasResults = run.hasResults === true || (!!run.results && !isCompactResultsPayload(run.results));
 
     const mergedRun = {
       ...existing,
@@ -4234,11 +4255,18 @@ function mergeSavedAndRecentRuns() {
       createdAt: existing.createdAt || run.createdAt || null,
       updatedAt: run.updatedAt || existing.updatedAt || null,
       results: run.results || existing.results || null,
-      hasResults: savedHasResults || run.hasResults === true || !!run.results,
+      hasResults: savedHasResults || recentHasResults,
       llm: run.llm || existing.llm || null,
     };
 
-    if (preferSavedTerminal) {
+    if (savedActive) {
+      mergedRun.status = existing.status || 'running';
+      mergedRun.progress = existing.progress || run.progress || 'Analysis in progress';
+      mergedRun.results = existing.results || null;
+      mergedRun.hasResults = savedHasResults;
+      mergedRun.canOpenResults = existing.canOpenResults === true;
+      mergedRun.canViewLog = existing.canViewLog === true;
+    } else if (preferSavedTerminal) {
       mergedRun.status = savedHasResults ? 'done' : (existing.status || 'done');
       mergedRun.progress = existing.progress || run.progress || 'Analysis complete';
       mergedRun.results = existing.results || run.results || null;

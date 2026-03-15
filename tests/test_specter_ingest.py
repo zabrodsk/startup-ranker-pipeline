@@ -1087,6 +1087,59 @@ def test_status_endpoint_does_not_return_partial_persisted_results_for_active_wo
     assert payload["progress_log"] == ["Queued for worker...", "Worker evaluating beta (2/6)"]
 
 
+def test_status_endpoint_strips_compact_cached_results_for_active_job(monkeypatch) -> None:
+    job_id = "job-active-compact-cache"
+    compact_results = {
+        "mode": "batch",
+        "num_companies": 2,
+        "summary_rows_count": 2,
+        "job_status": "running",
+        "job_message": "Partial results updated — 2/5 companies completed.",
+    }
+    web_app._jobs[job_id] = web_app.AnalysisStatus(
+        job_id=job_id,
+        status="running",
+        progress="Worker evaluating gamma (3/5)",
+        progress_log=["Queued for worker...", "Worker evaluating gamma (3/5)"],
+        results=compact_results,
+    )
+    web_app._results_cache[job_id] = {
+        "worker_backed": True,
+        "results": compact_results,
+    }
+
+    monkeypatch.setattr(web_app, "_check_session", lambda session_id: True)
+    monkeypatch.setattr(
+        web_app,
+        "db",
+        SimpleNamespace(
+            is_configured=lambda: True,
+            load_job_status=lambda current_job_id: {
+                "status": "running",
+                "progress": "Worker evaluating gamma (3/5)",
+            }
+            if current_job_id == job_id
+            else None,
+            load_saved_job=lambda current_job_id: None,
+            load_analysis_events=lambda current_job_id, limit=200: [
+                "Queued for worker...",
+                "Worker evaluating gamma (3/5)",
+            ]
+            if current_job_id == job_id
+            else [],
+        ),
+    )
+
+    try:
+        payload = asyncio.run(web_app.get_status(job_id, response=Response(), session_id="session"))
+        assert payload["status"] == "running"
+        assert payload["progress"] == "Worker evaluating gamma (3/5)"
+        assert payload["results"] is None
+    finally:
+        web_app._jobs.pop(job_id, None)
+        web_app._results_cache.pop(job_id, None)
+
+
 def test_status_endpoint_marks_saved_job_without_status_history_as_interrupted(monkeypatch) -> None:
     job_id = "job-saved-only"
     monkeypatch.setattr(web_app, "_check_session", lambda session_id: True)
