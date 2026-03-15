@@ -1952,6 +1952,53 @@ def test_list_jobs_for_ui_carries_optional_run_name(monkeypatch) -> None:
     assert row["run_name"] == "Germany shortlist"
 
 
+def test_list_jobs_for_ui_uses_persisted_run_config_for_active_llm_label(monkeypatch) -> None:
+    job_id = "job-overview-phase-llm"
+    monkeypatch.setattr(
+        web_app,
+        "db",
+        SimpleNamespace(
+            is_configured=lambda: True,
+            list_saved_jobs=lambda: [
+                {
+                    "job_id": job_id,
+                    "status": "running",
+                    "progress": "Worker evaluating Apaleo (1/1)",
+                    "created_at": "2026-03-15T09:01:16Z",
+                    "input_mode": "specter",
+                    "use_web_search": True,
+                    "run_name": "Apaleo",
+                    "results": None,
+                    "has_results": False,
+                    "worker_active": True,
+                    "run_config": {
+                        "phase_models": {
+                            "decomposition": {"provider": "openai", "model": "gpt-5-mini"},
+                            "answering": {"provider": "openai", "model": "gpt-5-mini"},
+                            "generation": {"provider": "openai", "model": "gpt-5-mini"},
+                            "evaluation": {"provider": "openai", "model": "gpt-5-mini"},
+                            "ranking": {"provider": "openai", "model": "gpt-5-mini"},
+                        },
+                        "effective_phase_models": {
+                            "decomposition": {"provider": "openai", "model": "gpt-5-mini", "label": "GPT-5 mini"},
+                            "answering": {"provider": "openai", "model": "gpt-5-mini", "label": "GPT-5 mini"},
+                            "generation": {"provider": "openai", "model": "gpt-5-mini", "label": "GPT-5 mini"},
+                            "critique": {"provider": "openai", "model": "gpt-5-mini", "label": "GPT-5 mini"},
+                            "evaluation": {"provider": "openai", "model": "gpt-5-mini", "label": "GPT-5 mini"},
+                            "refinement": {"provider": "openai", "model": "gpt-5-mini", "label": "GPT-5 mini"},
+                            "ranking": {"provider": "openai", "model": "gpt-5-mini", "label": "GPT-5 mini"},
+                        },
+                    },
+                }
+            ],
+        ),
+    )
+
+    rows = web_app._list_jobs_for_ui()
+    row = next(item for item in rows if item["job_id"] == job_id)
+    assert row["llm"] == "Per-phase · D GPT-5 mini · A GPT-5 mini · G GPT-5 mini · E GPT-5 mini · R GPT-5 mini"
+
+
 def test_batch_chunking_config_enables_for_large_anthropic_batch() -> None:
     job_id = "job-chunking-config"
     web_app._results_cache[job_id] = {

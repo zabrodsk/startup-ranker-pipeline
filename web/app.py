@@ -315,6 +315,27 @@ def _selection_from_payload(payload: dict[str, Any] | None) -> dict[str, str] | 
     return None
 
 
+def _llm_label_from_payload(payload: dict[str, Any] | None) -> str | None:
+    pipeline_meta = _pipeline_meta_from_payload(payload)
+    if pipeline_meta:
+        if pipeline_meta.get("phase_models"):
+            return build_phase_policy_display_label(
+                pipeline_meta.get("effective_phase_models") or pipeline_meta["phase_models"]
+            )
+        return build_tier_display_label(
+            pipeline_meta["quality_tier"],
+            effective_phase_models=pipeline_meta.get("effective_phase_models"),
+        )
+    if isinstance(payload, dict):
+        explicit = (payload.get("llm") or "").strip()
+        if explicit and not _selection_from_payload(payload):
+            return explicit
+    selection = _selection_from_payload(payload)
+    if selection:
+        return selection["label"]
+    return None
+
+
 def _resolve_job_llm_selection(job_id: str, *, results: dict[str, Any] | None = None) -> dict[str, str]:
     cache = _results_cache.get(job_id, {})
     for candidate in (
@@ -341,20 +362,15 @@ def _resolve_job_pipeline_meta(job_id: str, *, results: dict[str, Any] | None = 
 
 
 def _resolve_job_llm_label(job_id: str, *, results: dict[str, Any] | None = None) -> str:
-    pipeline_meta = _resolve_job_pipeline_meta(job_id, results=results)
-    if pipeline_meta:
-        if pipeline_meta.get("phase_models"):
-            return build_phase_policy_display_label(
-                pipeline_meta.get("effective_phase_models") or pipeline_meta["phase_models"]
-            )
-        return build_tier_display_label(
-            pipeline_meta["quality_tier"],
-            effective_phase_models=pipeline_meta.get("effective_phase_models"),
-        )
-    if isinstance(results, dict):
-        explicit = (results.get("llm") or "").strip()
-        if explicit and not _selection_from_payload(results):
-            return explicit
+    cache = _results_cache.get(job_id, {})
+    for candidate in (
+        _llm_label_from_payload(results),
+        _llm_label_from_payload(cache.get("results")),
+        _llm_label_from_payload(cache.get("run_config")),
+        _llm_label_from_payload(cache.get("llm_selection")),
+    ):
+        if candidate:
+            return candidate
     return _resolve_job_llm_selection(job_id, results=results)["label"]
 
 
@@ -1336,10 +1352,12 @@ def _list_jobs_for_ui() -> list[dict[str, Any]]:
                     "has_results": entry.get("has_results") or (existing or {}).get("has_results") or False,
                     "can_open_results": False,
                     "can_view_log": False,
-                    "llm": _resolve_job_llm_label(
-                        job_id,
-                        results=entry.get("results") or {},
-                    ) if entry.get("results") else (existing or {}).get("llm") or _get_llm_display(),
+                    "llm": (
+                        _llm_label_from_payload(entry.get("results"))
+                        or _llm_label_from_payload(entry.get("run_config"))
+                        or (existing or {}).get("llm")
+                        or _get_llm_display()
+                    ),
                 }
                 has_live_job = bool(existing) and (existing or {}).get("status") in {"pending", "running", "paused"}
                 worker_active = bool(entry.get("worker_active"))
