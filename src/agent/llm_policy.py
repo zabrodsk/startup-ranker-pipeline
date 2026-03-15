@@ -239,31 +239,54 @@ def _first_available_entry(
 
 
 def default_phase_model_selections() -> dict[UserSelectablePhase, dict[str, str]]:
+    decomposition = _first_available_entry(
+        ("gemini", "gemini-3.1-pro-preview"),
+        ("gemini", "gemini-2.5-flash"),
+        ("openai", "gpt-5.2"),
+        ("openai", "gpt-5"),
+    )
     answering = _first_available_entry(
+        ("gemini", "gemini-2.5-flash"),
         ("gemini", "gemini-3.1-flash-lite-preview"),
         ("anthropic", "claude-haiku-4-5-20251001"),
         ("openai", "gpt-5-mini"),
     )
+    generation = _first_available_entry(
+        ("openai", "gpt-5.2"),
+        ("openai", "gpt-5"),
+        ("openai", "gpt-5-mini"),
+        ("gemini", "gemini-3.1-pro-preview"),
+    )
+    evaluation = _first_available_entry(
+        ("openai", "o4-mini"),
+        ("openai", "gpt-5-mini"),
+        ("openai", "gpt-4.1-mini"),
+        ("anthropic", "claude-haiku-4-5-20251001"),
+    )
+    ranking = _first_available_entry(
+        ("openai", "gpt-5.2"),
+        ("openai", "gpt-5"),
+        ("openai", "o4-mini"),
+        ("anthropic", "claude-haiku-4-5-20251001"),
+    )
+
+    if decomposition is None:
+        raise ValueError("No available models are configured for decomposition.")
     if answering is None:
         raise ValueError("No available models are configured for question answering.")
+    if generation is None:
+        raise ValueError("No available models are configured for generation.")
+    if evaluation is None:
+        raise ValueError("No available models are configured for evaluation.")
+    if ranking is None:
+        raise ValueError("No available models are configured for ranking.")
 
-    critical = _first_available_entry(
-        ("openai", "gpt-5"),
-        ("anthropic", "claude-haiku-4-5-20251001"),
-        ("openai", "gpt-5-mini"),
-        ("gemini", "gemini-3.1-flash-lite-preview"),
-    )
-    if critical is None:
-        raise ValueError("No available models are configured for critical pipeline phases.")
-
-    answering_selection = _serialize_entry(answering)
-    critical_selection = _serialize_entry(critical)
     return {
-        "decomposition": dict(critical_selection),
-        "answering": dict(answering_selection),
-        "generation": dict(critical_selection),
-        "evaluation": dict(critical_selection),
-        "ranking": dict(critical_selection),
+        "decomposition": _serialize_entry(decomposition),
+        "answering": _serialize_entry(answering),
+        "generation": _serialize_entry(generation),
+        "evaluation": _serialize_entry(evaluation),
+        "ranking": _serialize_entry(ranking),
     }
 
 

@@ -182,6 +182,40 @@ def test_build_phase_model_policy_resolves_five_user_facing_phases(monkeypatch) 
     assert policy.ranking["model"] == "gpt-4.1-mini"
 
 
+def test_phase_model_defaults_follow_new_analysis_recommendations(monkeypatch) -> None:
+    monkeypatch.setenv("GOOGLE_API_KEY", "google")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic")
+
+    defaults = phase_model_defaults_payload()
+
+    assert defaults["decomposition"] == {
+        "provider": "gemini",
+        "model": "gemini-3.1-pro-preview",
+        "label": "Gemini 3.1 Pro Preview",
+    }
+    assert defaults["answering"] == {
+        "provider": "gemini",
+        "model": "gemini-2.5-flash",
+        "label": "Gemini 2.5 Flash",
+    }
+    assert defaults["generation"] == {
+        "provider": "openai",
+        "model": "gpt-5.2",
+        "label": "GPT-5.2",
+    }
+    assert defaults["evaluation"] == {
+        "provider": "openai",
+        "model": "o4-mini",
+        "label": "o4-mini",
+    }
+    assert defaults["ranking"] == {
+        "provider": "openai",
+        "model": "gpt-5.2",
+        "label": "GPT-5.2",
+    }
+
+
 def test_build_phase_model_policy_requires_all_user_facing_phases(monkeypatch) -> None:
     monkeypatch.setenv("GOOGLE_API_KEY", "google")
     monkeypatch.setenv("OPENAI_API_KEY", "openai")
