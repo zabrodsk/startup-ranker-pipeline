@@ -3363,7 +3363,6 @@
     <div class="header-right">
       <button type="button" class="btn-ghost is-active" id="analysis-current-tab" data-nav-section="analysis" aria-current="page">Analysis</button>
       <button type="button" class="btn-ghost" id="saved-jobs-open-analysis" data-nav-section="companies">Companies</button>
-      <button type="button" class="btn-ghost" id="analysis-refresh-btn">Refresh</button>
       <button class="btn-ghost" id="new-analysis-btn-history">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         New Analysis
@@ -7105,7 +7104,6 @@ document.querySelectorAll('.input-mode-option').forEach((btn) => {
 
 $('#info-show-how-btn')?.addEventListener('click', () => renderInfoScreen('how-it-works'));
 $('#info-show-docs-btn')?.addEventListener('click', () => renderInfoScreen('documentation'));
-$('#analysis-refresh-btn').addEventListener('click', () => fetchSavedJobs({ silent: false }));
 $('#companies-refresh-btn').addEventListener('click', () => fetchSavedCompanies({ silent: false }));
 $('#audit-modal-overlay').addEventListener('click', (e) => {
   if (e.target === $('#audit-modal-overlay')) hideAuditLog();
