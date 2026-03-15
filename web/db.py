@@ -594,6 +594,8 @@ def _execution_metadata(exec_row: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(metadata, dict):
         metadata = {}
     metadata.setdefault("service", exec_row.get("service", "llm"))
+    if exec_row.get("status") is not None:
+        metadata.setdefault("status", exec_row.get("status"))
     if exec_row.get("estimated_cost_usd") is not None:
         metadata["estimated_cost_usd"] = exec_row.get("estimated_cost_usd")
     if exec_row.get("request_count") is not None:
@@ -607,6 +609,7 @@ def _hydrate_execution_row(row: dict[str, Any]) -> dict[str, Any]:
         metadata = {}
     hydrated = dict(row)
     hydrated["service"] = row.get("service") or metadata.get("service") or "llm"
+    hydrated["status"] = row.get("status") or metadata.get("status") or "done"
     hydrated["request_count"] = row.get("request_count")
     if hydrated["request_count"] is None:
         hydrated["request_count"] = metadata.get("request_count")
@@ -1804,7 +1807,7 @@ def load_run_costs(job_id_legacy: str) -> dict[str, Any] | None:
             resp = (
                 client.table("model_executions")
                 .select(
-                    "provider, model, prompt_tokens, completion_tokens, "
+                    "provider, model, status, prompt_tokens, completion_tokens, "
                     "total_tokens, metadata"
                 )
                 .eq("job_id_legacy", job_id_legacy)

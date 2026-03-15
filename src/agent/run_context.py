@@ -267,6 +267,9 @@ def build_run_costs_from_model_executions(
     for row in model_executions:
         service = row.get("service")
         if service == "llm":
+            status = str(row.get("status") or "done").strip().lower()
+            if status != "done":
+                continue
             llm_events_seen = True
             provider = row.get("provider") or ""
             model = row.get("model") or ""

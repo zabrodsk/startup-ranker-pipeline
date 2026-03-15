@@ -352,6 +352,40 @@ def test_run_telemetry_collector_keeps_known_spend_when_some_usage_missing() -> 
     assert costs["by_model"][0]["partial"] is True
 
 
+def test_run_costs_ignore_non_done_llm_events_for_partial_status() -> None:
+    collector = RunTelemetryCollector()
+    collector.record_llm_usage(
+        provider="openai",
+        model="gpt-5-nano",
+        prompt_tokens=1_000,
+        completion_tokens=500,
+        total_tokens=1_500,
+    )
+    collector.record_execution_event(
+        service="llm",
+        status="retrying",
+        provider="openai",
+        model="gpt-5-nano",
+        metadata={"attempt": 1},
+    )
+    collector.record_execution_event(
+        service="llm",
+        status="error",
+        provider="openai",
+        model="gpt-5-nano",
+        error_message="rate limit",
+    )
+
+    costs = collector.build_run_costs()
+
+    assert costs["status"] == "complete"
+    assert costs["llm_usd"] == 0.00025
+    assert costs["total_usd"] == 0.00025
+    assert costs["by_model"][0]["label"] == "GPT-5 nano"
+    assert costs["by_model"][0]["partial"] is False
+    assert costs["by_model"][0]["pricing_available"] is True
+
+
 def test_throttled_runnable_records_retry_events_with_stage_context() -> None:
     class RetryableError(Exception):
         status_code = 429

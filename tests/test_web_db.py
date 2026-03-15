@@ -1386,6 +1386,70 @@ def test_load_run_costs_rehydrates_service_and_cost_fields_from_metadata(monkeyp
     assert costs["total_usd"] == 0.006
 
 
+def test_load_run_costs_ignores_retrying_llm_rows(monkeypatch) -> None:
+    import web.db as web_db
+
+    class FakeResponse:
+        def __init__(self, data):
+            self.data = data
+
+    class FakeQuery:
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, *_args, **_kwargs):
+            return self
+
+        def range(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            return FakeResponse(
+                [
+                    {
+                        "provider": "openai",
+                        "model": "gpt-5-nano",
+                        "status": "done",
+                        "prompt_tokens": 1000,
+                        "completion_tokens": 500,
+                        "total_tokens": 1500,
+                        "metadata": {
+                            "service": "llm",
+                            "estimated_cost_usd": 0.00025,
+                            "request_count": 1,
+                        },
+                    },
+                    {
+                        "provider": "openai",
+                        "model": "gpt-5-nano",
+                        "status": "retrying",
+                        "prompt_tokens": None,
+                        "completion_tokens": None,
+                        "total_tokens": None,
+                        "metadata": {
+                            "service": "llm",
+                            "request_count": 1,
+                        },
+                    },
+                ]
+            )
+
+    class FakeClient:
+        def table(self, table_name: str):
+            assert table_name == "model_executions"
+            return FakeQuery()
+
+    monkeypatch.setattr(web_db, "_get_client", lambda: FakeClient())
+
+    costs = web_db.load_run_costs("job-123")
+
+    assert costs is not None
+    assert costs["status"] == "complete"
+    assert costs["llm_usd"] == 0.00025
+    assert costs["total_usd"] == 0.00025
+    assert costs["by_model"][0]["partial"] is False
+
+
 def test_upsert_job_logs_supabase_failures(monkeypatch, caplog) -> None:
     import web.db as web_db
 
