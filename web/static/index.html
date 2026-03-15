@@ -4200,26 +4200,7 @@ async function loadAnalysisConfig() {
 }
 
 async function backfillRecentRunsWithLlm() {
-  const runs = loadRecentRuns();
-  const needBackfill = runs.some((r) => !r.llm);
-  if (!needBackfill || runs.length === 0) return;
-  try {
-    const config = await api('/api/config', { timeoutMs: 5000, retries: 0 });
-    if (!config.llm) return;
-    let changed = false;
-    for (const run of runs) {
-      if (!run.llm) {
-        run.llm = config.llm;
-        changed = true;
-      }
-    }
-    if (changed) {
-      saveRecentRuns(runs);
-      renderRecentRuns();
-    }
-  } catch (_) {
-    // Not authenticated or network error; skip backfill
-  }
+  // Per-run model routing is dynamic; a global fallback label creates incorrect history.
 }
 
 function upsertRecentRun(update) {
@@ -4312,7 +4293,7 @@ function mergeSavedAndRecentRuns() {
       updatedAt: run.updatedAt || existing.updatedAt || null,
       results: run.results || existing.results || null,
       hasResults: savedHasResults || recentHasResults,
-      llm: run.llm || existing.llm || null,
+      llm: existing.llm || run.llm || null,
       runName: run.runName || existing.runName || null,
     };
 
@@ -6055,19 +6036,20 @@ $('#analyze-btn').addEventListener('click', async () => {
     const requestedRunName = effectiveInputMode === 'specter'
       ? (($('#run-name-input')?.value || '').trim() || null)
       : null;
+    const analysisSelection = getAnalysisSelectionPayload();
     upsertRecentRun({
       jobId: uploadRes.job_id,
       status: 'running',
       progress: 'Queued for worker',
       input_mode: effectiveInputMode,
       runName: requestedRunName,
+      llm: analysisSelection.llmLabel || null,
       title: effectiveInputMode === 'specter' ? undefined : uploadedFiles.map((f) => f.name).join(', '),
     });
     openAnalysisPage({ focusJobId: uploadRes.job_id });
 
     const useWebSearch = !!$('#web-search-checkbox')?.checked;
     const instructions = ($('#instructions-input')?.value || '').trim();
-    const analysisSelection = getAnalysisSelectionPayload();
     if (autoDetectedSpecter) setInputMode('specter');
     try {
       await api(`/api/analyze/${currentJobId}`, {
@@ -6097,6 +6079,7 @@ $('#analyze-btn').addEventListener('click', async () => {
         progress: 'Connection unstable while starting analysis. Tracking from Analysis overview...',
         input_mode: effectiveInputMode,
         runName: requestedRunName,
+        llm: analysisSelection.llmLabel || null,
       });
     }
     fetchSavedJobs({ silent: false });
