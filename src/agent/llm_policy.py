@@ -466,4 +466,7 @@ def premium_phase_options_payload() -> dict[str, dict[str, Any]]:
 
 
 def phase_model_defaults_payload() -> dict[UserSelectablePhase, dict[str, str]]:
-    return default_phase_model_selections()
+    try:
+        return default_phase_model_selections()
+    except ValueError:
+        return {}

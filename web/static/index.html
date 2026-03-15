@@ -444,7 +444,8 @@
     }
 
     .upload-zone {
-      width: 640px;
+      width: 100%;
+      max-width: 640px;
       padding: 48px;
       border: 1px dashed var(--text-dark);
       border-radius: var(--radius-lg);
@@ -471,7 +472,8 @@
     .upload-hint { color: var(--text-dim); font-size: 13px; margin-top: 8px; }
 
     .input-mode-section {
-      width: 640px;
+      width: 100%;
+      max-width: 640px;
       display: flex;
       flex-direction: column;
       gap: 8px;
@@ -568,7 +570,8 @@
     .instructions-input:focus { border-color: var(--green); }
     .instructions-input::placeholder { color: var(--text-dim); font-size: 13px; }
     .llm-model-section {
-      width: 640px;
+      width: 100%;
+      max-width: 640px;
       margin-top: 16px;
     }
     .visually-hidden {
@@ -834,7 +837,7 @@
       padding: 0 16px 16px;
     }
 
-    .files-section { width: 640px; }
+    .files-section { width: 100%; max-width: 640px; }
     .files-header {
       display: flex; justify-content: space-between; align-items: center;
       margin-bottom: 16px;
@@ -1003,7 +1006,8 @@
       font-size: 12px;
       cursor: pointer;
     }
-    .recent-run-open:hover, .recent-run-view-log:hover { border-color: var(--text-gray); }
+    .recent-run-open:hover, .recent-run-view-log:hover,
+    .recent-run-open:focus-visible, .recent-run-view-log:focus-visible { border-color: var(--text-gray); outline: none; }
     .recent-run-open:disabled, .recent-run-view-log:disabled {
       opacity: 0.45;
       cursor: not-allowed;
@@ -1938,9 +1942,11 @@
       transition: border-color 0.2s, color 0.2s;
       min-height: 26px;
     }
-    .btn-audit-log:hover {
+    .btn-audit-log:hover,
+    .btn-audit-log:focus-visible {
       border-color: var(--text-gray);
       color: var(--text-light);
+      outline: none;
     }
     .btn-audit-log svg { width: 12px; height: 12px; flex-shrink: 0; }
 
@@ -2160,6 +2166,447 @@
     .companies-page-detail .saved-run-subtitle {
       margin-top: 6px;
     }
+    .company-detail-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+    }
+    /* ── iMessage-style chat ───────────────────────── */
+    .company-chat-card {
+      margin-top: 24px;
+      border-top: 1px solid rgba(255,255,255,0.06);
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      padding-top: 22px;
+    }
+    .company-chat-head {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 16px;
+    }
+    .company-chat-title {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    .company-chat-title h3 {
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--text-white);
+    }
+    .company-chat-title p {
+      color: var(--text-dim);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    /* Chat log — the scrollable conversation area */
+    .company-chat-log {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-height: 200px;
+      max-height: 540px;
+      overflow-y: auto;
+      padding: 12px 4px 12px 4px;
+      scroll-behavior: smooth;
+      overscroll-behavior: contain;
+    }
+    .company-chat-log::-webkit-scrollbar { width: 4px; }
+    .company-chat-log::-webkit-scrollbar-track { background: transparent; }
+    .company-chat-log::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 4px; }
+    .company-chat-log::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.14); }
+
+    .company-chat-empty {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--text-dim);
+      line-height: 1.6;
+      font-size: 13px;
+      max-width: 44ch;
+      margin: auto;
+    }
+
+    /* ── Message bubbles (iMessage) ─────────────── */
+    .company-chat-message {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 10px 14px;
+      border-radius: 18px;
+      border: none;
+      min-width: 0;
+      max-width: min(78%, 520px);
+      position: relative;
+      /* entrance animation */
+      animation: chat-bubble-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+    @keyframes chat-bubble-in {
+      from {
+        opacity: 0;
+        transform: translateY(12px) scale(0.97);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .company-chat-message {
+        animation: none;
+      }
+    }
+
+    /* User bubble — green, right-aligned like iMessage */
+    .company-chat-message.user {
+      align-self: flex-end;
+      background: linear-gradient(180deg, #1a8d4e 0%, #147a40 100%);
+      color: #fff;
+      border-bottom-right-radius: 6px;
+    }
+    .company-chat-message.user + .company-chat-message.user {
+      margin-top: -2px;
+      border-top-right-radius: 6px;
+    }
+
+    /* Assistant bubble — subtle dark, left-aligned */
+    .company-chat-message.assistant {
+      align-self: flex-start;
+      background: rgba(255,255,255,0.06);
+      border-bottom-left-radius: 6px;
+    }
+    .company-chat-message.assistant + .company-chat-message.assistant {
+      margin-top: -2px;
+      border-top-left-radius: 6px;
+    }
+
+    /* Space between messages from different senders */
+    .company-chat-message.user + .company-chat-message.assistant,
+    .company-chat-message.assistant + .company-chat-message.user {
+      margin-top: 10px;
+    }
+
+    /* Typing indicator bubble */
+    .company-chat-message.typing {
+      align-self: flex-start;
+      max-width: fit-content;
+      min-width: 72px;
+      background: rgba(255,255,255,0.06);
+      border-bottom-left-radius: 6px;
+      padding: 12px 16px;
+    }
+
+    /* Hide role labels — position communicates who is who */
+    .company-chat-role {
+      display: none;
+    }
+
+    /* Shimmer for loading states */
+    .company-chat-shimmer {
+      --base-color: rgba(183, 198, 214, 0.72);
+      --base-gradient-color: rgba(214, 255, 244, 0.98);
+      color: transparent;
+      background-image: linear-gradient(
+        90deg,
+        var(--base-color) 0%,
+        var(--base-color) 34%,
+        var(--base-gradient-color) 50%,
+        var(--base-color) 66%,
+        var(--base-color) 100%
+      );
+      background-size: 220% 100%;
+      background-position: 100% 50%;
+      -webkit-background-clip: text;
+      background-clip: text;
+      animation: company-chat-text-shimmer 1.4s linear infinite;
+    }
+    .company-chat-shimmer.mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+    }
+    @keyframes company-chat-text-shimmer {
+      from { background-position: 100% 50%; }
+      to { background-position: -100% 50%; }
+    }
+
+    /* Message text content */
+    .company-chat-content {
+      font-size: 14px;
+      line-height: 1.6;
+      color: var(--text-light);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .company-chat-message.user .company-chat-content {
+      color: #fff;
+    }
+
+    /* Typing dots */
+    .company-chat-typing {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      min-height: 20px;
+      padding: 2px 0;
+    }
+    .company-chat-loading-text {
+      display: none;
+    }
+    .company-chat-typing-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.5);
+      animation: chat-dot-bounce 1.4s ease-in-out infinite;
+      transform-origin: center;
+    }
+    .company-chat-typing-dot:nth-child(2) {
+      animation-delay: 0.16s;
+    }
+    .company-chat-typing-dot:nth-child(3) {
+      animation-delay: 0.32s;
+    }
+    @keyframes chat-dot-bounce {
+      0%, 60%, 100% {
+        transform: translateY(0);
+        opacity: 0.35;
+      }
+      30% {
+        transform: translateY(-4px);
+        opacity: 1;
+      }
+    }
+
+    /* Citations under assistant messages */
+    .company-chat-citations {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 2px;
+    }
+    .company-chat-citation {
+      appearance: none;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.04);
+      color: var(--text-mid);
+      border-radius: var(--radius-full);
+      padding: 4px 10px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: border-color 0.18s var(--ease-out-quart),
+                  background 0.18s var(--ease-out-quart),
+                  transform 0.18s var(--ease-out-quart),
+                  color 0.18s var(--ease-out-quart);
+    }
+    .company-chat-citation:hover,
+    .company-chat-citation:focus-visible {
+      border-color: rgba(91, 231, 196, 0.28);
+      background: rgba(91, 231, 196, 0.08);
+      color: var(--text-light);
+      transform: translateY(-1px);
+      outline: none;
+    }
+    .company-chat-citation:active {
+      transform: translateY(0) scale(0.97);
+    }
+
+    /* ── Composer bar (iMessage-style) ──────────── */
+    .company-chat-composer {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      padding: 10px 0 0;
+      border-top: 1px solid rgba(255,255,255,0.06);
+      margin-top: 8px;
+    }
+    .company-chat-textarea {
+      flex: 1;
+      min-height: 40px;
+      max-height: 140px;
+      resize: none;
+      border-radius: 20px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(255,255,255,0.04);
+      color: var(--text-white);
+      padding: 9px 16px;
+      font: 14px/1.45 var(--font-body);
+      outline: none;
+      transition: border-color 0.2s var(--ease-out-quart),
+                  background 0.2s var(--ease-out-quart),
+                  box-shadow 0.2s var(--ease-out-quart);
+    }
+    .company-chat-textarea::placeholder {
+      color: var(--text-dim);
+    }
+    .company-chat-textarea:focus {
+      border-color: rgba(91, 231, 196, 0.3);
+      background: rgba(4, 10, 18, 0.7);
+      box-shadow: 0 0 0 3px rgba(91, 231, 196, 0.06);
+    }
+    .company-chat-actions {
+      display: none;
+    }
+    .company-chat-meta {
+      display: none;
+    }
+    .company-chat-error {
+      color: #ffb4b4;
+      font-size: 12px;
+      padding: 4px 0 0 4px;
+    }
+    .company-chat-actions-right {
+      display: flex;
+      gap: 6px;
+      align-items: flex-end;
+      flex-shrink: 0;
+    }
+
+    /* Chat buttons */
+    .company-chat-btn {
+      appearance: none;
+      border: none;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--text-dim);
+      padding: 0;
+      width: 36px;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: color 0.18s var(--ease-out-quart),
+                  background 0.18s var(--ease-out-quart),
+                  transform 0.12s var(--ease-out-quart);
+      white-space: nowrap;
+      font-size: 0;
+      flex-shrink: 0;
+    }
+    .company-chat-btn:hover,
+    .company-chat-btn:focus-visible {
+      color: var(--text-light);
+      background: rgba(255,255,255,0.06);
+      outline: none;
+    }
+    .company-chat-btn:active {
+      transform: scale(0.92);
+    }
+    .company-chat-btn.primary {
+      background: #1a8d4e;
+      color: #fff;
+      border-radius: 50%;
+      width: 36px;
+      height: 36px;
+      font-size: 0;
+    }
+    .company-chat-btn.primary:hover {
+      background: #1fa058;
+    }
+    .company-chat-btn.primary:active {
+      transform: scale(0.9);
+    }
+    .company-chat-btn:disabled {
+      opacity: 0.4;
+      cursor: default;
+      pointer-events: none;
+    }
+    .company-chat-btn svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    /* Web fallback badge on assistant messages */
+    .company-chat-web-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      color: var(--text-dim);
+      padding: 2px 8px;
+      border-radius: var(--radius-full);
+      background: rgba(255,255,255,0.04);
+      margin-bottom: 2px;
+      width: fit-content;
+    }
+
+    /* Follow-up suggestion chips */
+    .company-chat-followups {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-self: flex-start;
+      padding: 4px 0 2px;
+      animation: chat-bubble-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+      animation-delay: 0.12s;
+    }
+    .company-chat-followup {
+      appearance: none;
+      border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(255,255,255,0.03);
+      color: var(--text-light);
+      border-radius: var(--radius-full);
+      padding: 7px 14px;
+      font-size: 13px;
+      line-height: 1.3;
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 0.18s var(--ease-out-quart),
+                  background 0.18s var(--ease-out-quart),
+                  color 0.18s var(--ease-out-quart),
+                  transform 0.12s var(--ease-out-quart);
+    }
+    .company-chat-followup:hover,
+    .company-chat-followup:focus-visible {
+      border-color: rgba(0, 210, 106, 0.3);
+      background: rgba(0, 210, 106, 0.08);
+      color: var(--text-white);
+      outline: none;
+    }
+    .company-chat-followup:active {
+      transform: scale(0.97);
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .company-chat-followups {
+        animation: none;
+      }
+    }
+
+    /* Touch device enhancements */
+    @media (pointer: coarse) {
+      .company-chat-followup {
+        min-height: 44px;
+        display: flex;
+        align-items: center;
+      }
+      .company-chat-citation {
+        min-height: 36px;
+        display: inline-flex;
+        align-items: center;
+      }
+      .company-chat-btn {
+        min-width: 44px;
+        min-height: 44px;
+      }
+      .company-chat-btn.primary {
+        min-width: 44px;
+        min-height: 44px;
+      }
+    }
+
+    /* Safe area for notched devices */
+    @supports (padding-bottom: env(safe-area-inset-bottom)) {
+      .company-chat-composer {
+        padding-bottom: env(safe-area-inset-bottom);
+      }
+    }
     .companies-screen-content {
       flex: 1;
       min-height: 0;
@@ -2299,30 +2746,104 @@
       background: var(--color-warn-bg);
     }
     @media (max-width: 768px) {
-      .header { padding: 0 20px; }
-      .main-content { padding: 40px 20px; }
-      .hero-text h1 { font-size: 32px; }
-      .upload-zone { width: 100%; padding: 32px 20px; }
-      .instructions-section { width: 100% !important; }
-      .llm-model-section { width: 100%; }
+      /* ── Global layout ───────────────────── */
+      .header { padding: 0 16px; height: 56px; }
+      .logo-name { font-size: 20px; }
+      .logo-subtitle { font-size: 11px; }
+      .logo-icon { width: 38px; height: 38px; }
+      .logo-icon svg { width: 22px; height: 22px; }
+      .header-right { gap: 8px; }
+      .btn-ghost { padding: 8px 12px; font-size: 12px; }
+      .main-content { padding: 28px 16px; gap: 32px; }
+      .hero-text h1 { font-size: clamp(26px, 7vw, 36px); }
+      .hero-text p { font-size: 15px; }
+
+      /* ── Upload / input sections ─────────── */
+      .upload-zone { padding: 28px 16px; }
+      .instructions-section { max-width: 100% !important; }
       .llm-model-grid { grid-template-columns: 1fr; }
+      .llm-model-card { min-height: 110px; }
+      .llm-model-name { font-size: 16px; }
       .premium-phase-grid { grid-template-columns: 1fr; }
-      .files-section { width: 100%; }
-      .results-body { padding: 24px 20px; }
+      .onboarding-welcome { padding: 16px; }
+      .onboarding-welcome-steps { grid-template-columns: 1fr; gap: 10px; }
+      .getting-started-cards { grid-template-columns: 1fr; }
+
+      /* ── Analysis / results ──────────────── */
+      .analysis-screen-content { padding: 20px 16px 28px; }
+      .info-screen-content { padding: 20px 16px 28px; }
+      .results-body { padding: 20px 16px; }
+      .results-title h1 { font-size: clamp(22px, 5.5vw, 30px); }
       .stats-row { flex-direction: column; }
-      .run-cost-strip {
-        grid-template-columns: 1fr;
-      }
+      .run-cost-strip { grid-template-columns: 1fr; }
       .args-row { flex-direction: column; }
       .score-row { flex-wrap: wrap; }
       .rankings-row { flex-direction: column; align-items: flex-start; }
+      .rank-card { padding: 16px; }
+      .rank-top { flex-wrap: wrap; gap: 8px; }
+      .rank-name { font-size: 18px; }
+      .stat-card { padding: 14px; }
+
+      /* ── Recent runs ─────────────────────── */
       .recent-run-card { align-items: flex-start; flex-direction: column; }
       .recent-run-actions { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
-      .companies-sidebar-head { padding-left: 18px; padding-right: 18px; }
-      .saved-company-card { padding: 16px; }
+
+      /* ── Companies page ──────────────────── */
+      .companies-sidebar-head { padding-left: 16px; padding-right: 16px; }
+      .saved-company-card { padding: 14px; }
       .companies-page { grid-template-columns: 1fr; }
-      .companies-page-sidebar { border-right: none; border-bottom: 1px solid var(--border); max-height: 42vh; }
-      .companies-page-detail { padding: 20px 0 0; }
+      .companies-page-sidebar { border-right: none; border-bottom: 1px solid var(--border); max-height: 38vh; }
+      .companies-page-detail { padding: 16px 0 0; }
+
+      /* ── Empty states ────────────────────── */
+      .empty-state-enhanced { padding: 32px 20px; }
+
+      /* ── Chat mobile adaptation ──────────── */
+      .company-chat-card {
+        margin-top: 16px;
+        padding-top: 16px;
+      }
+      .company-chat-log {
+        max-height: 420px;
+        min-height: 160px;
+        padding: 8px 2px;
+      }
+      .company-chat-message {
+        max-width: 88%;
+        padding: 9px 12px;
+        border-radius: 16px;
+      }
+      .company-chat-message.user {
+        border-bottom-right-radius: 5px;
+      }
+      .company-chat-message.assistant {
+        border-bottom-left-radius: 5px;
+      }
+      .company-chat-message.user + .company-chat-message.user {
+        border-top-right-radius: 5px;
+      }
+      .company-chat-message.assistant + .company-chat-message.assistant {
+        border-top-left-radius: 5px;
+      }
+      .company-chat-content {
+        font-size: 15px;
+      }
+      .company-chat-composer {
+        gap: 6px;
+        padding-top: 8px;
+      }
+      .company-chat-textarea {
+        padding: 10px 14px;
+        font-size: 16px; /* prevents iOS zoom on focus */
+        border-radius: 18px;
+      }
+      .company-chat-followup {
+        font-size: 13px;
+        padding: 8px 14px;
+      }
+      .company-chat-citation {
+        padding: 5px 10px;
+      }
     }
 
     .dim-bars-container { margin: 12px 0 16px; }
@@ -2444,10 +2965,12 @@
       transition: all 0.2s;
       white-space: nowrap;
     }
-    .team-member-pill:hover {
+    .team-member-pill:hover,
+    .team-member-pill:focus-visible {
       border-color: var(--green-border);
       color: var(--green);
       background: var(--green-surface-subtle);
+      outline: none;
     }
     .person-intel-list {
       display: flex;
@@ -2696,7 +3219,8 @@
 
     /* ── Onboarding: Welcome Banner ── */
     .onboarding-welcome {
-      width: 640px;
+      width: 100%;
+      max-width: 640px;
       border: 1px solid var(--green-border-strong);
       border-radius: var(--radius-lg);
       background: linear-gradient(135deg, var(--green-surface-subtle), rgba(0, 210, 106, 0.03));
@@ -2764,7 +3288,8 @@
 
     /* ── Onboarding: Getting Started (empty recent runs) ── */
     .getting-started-section {
-      width: 640px;
+      width: 100%;
+      max-width: 640px;
       display: none;
       flex-direction: column;
       gap: 16px;
@@ -2791,9 +3316,11 @@
       gap: 8px;
       transition: border-color 0.2s, background 0.2s;
     }
-    .getting-started-card:hover {
+    .getting-started-card:hover,
+    .getting-started-card:focus-visible {
       border-color: var(--text-dark);
       background: var(--bg-surface);
+      outline: none;
     }
     .getting-started-card-icon {
       width: 28px;
@@ -3011,6 +3538,12 @@
         transition-duration: 0.01ms !important;
         scroll-behavior: auto !important;
       }
+      .company-chat-shimmer {
+        color: var(--text-light);
+        background: none;
+        -webkit-background-clip: border-box;
+        background-clip: border-box;
+      }
       .screen,
       .screen.active,
       .screen.leaving {
@@ -3036,12 +3569,24 @@
       .password-card { max-width: none; }
     }
     @media (max-width: 640px) {
-      .login-stage h1 { font-size: 42px; }
+      /* ── Login ───────────────────────────── */
+      .login-stage h1 { font-size: clamp(32px, 9vw, 48px); }
       .login-signal-grid { grid-template-columns: 1fr; }
-      .password-card { padding: 24px; }
-      .password-card h2 { font-size: 32px; }
-      .password-input { letter-spacing: 2px; }
-      .info-screen-content { padding: 20px; }
+      .password-card { padding: 20px; }
+      .password-card h2 { font-size: clamp(24px, 7vw, 34px); }
+      .password-input { letter-spacing: 2px; font-size: 16px; }
+
+      /* ── Global small-screen ─────────────── */
+      .main-content { padding: 20px 12px; gap: 24px; }
+      .header { padding: 0 12px; }
+      .hero-text h1 { font-size: clamp(24px, 7vw, 32px); margin-bottom: 10px; }
+      .hero-text p { font-size: 14px; }
+      .upload-zone { padding: 24px 14px; }
+      .upload-icon { width: 44px; height: 44px; margin-bottom: 14px; }
+      .input-mode-option { padding: 10px 8px; font-size: 12px; }
+
+      /* ── Info / help pages ────────────────── */
+      .info-screen-content { padding: 16px 12px; }
       .info-layout,
       .info-grid {
         grid-template-columns: 1fr;
@@ -3050,7 +3595,75 @@
         position: static;
       }
       .info-panel {
-        padding: 22px;
+        padding: 18px;
+      }
+      .info-hero h1 { font-size: clamp(22px, 6vw, 30px); }
+
+      /* ── Results ─────────────────────────── */
+      .results-title h1 { font-size: clamp(20px, 5vw, 26px); }
+      .rank-name { font-size: 16px; }
+      .rank-badge { font-size: 14px; padding: 4px 10px; }
+      .dim-label { width: 80px; font-size: 11px; }
+      .dim-value { font-size: 11px; }
+      .stat-card { padding: 12px; }
+
+      /* ── Companies detail ────────────────── */
+      .companies-page-sidebar { max-height: 35vh; }
+      .companies-page-detail { padding: 12px 0 0; }
+      .saved-company-card { padding: 12px; }
+
+      /* ── Person intel ────────────────────── */
+      .person-report-avatar { width: 48px; height: 48px; font-size: 16px; }
+      .person-report-name { font-size: 18px; }
+
+      /* ── Chat small-screen tweaks ──────── */
+      .company-chat-message {
+        max-width: 92%;
+      }
+      .company-chat-followups {
+        flex-direction: column;
+      }
+      .company-chat-followup {
+        width: 100%;
+      }
+      .company-chat-title h3 {
+        font-size: 15px;
+      }
+      .company-chat-head {
+        margin-bottom: 10px;
+      }
+    }
+
+    /* ── Touch device enhancements (global) ──── */
+    @media (pointer: coarse) {
+      /* Ensure 44px minimum touch targets */
+      .btn-ghost { min-height: 44px; }
+      .input-mode-option { min-height: 44px; }
+      .btn-audit-log { min-height: 44px; min-width: 44px; }
+      .recent-run-open, .recent-run-view-log { min-height: 44px; }
+      .team-member-pill { min-height: 40px; }
+      .getting-started-card { min-height: 44px; }
+      .saved-company-card { min-height: 48px; }
+      .onboarding-welcome-dismiss { min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center; }
+      /* Disable hover transforms on touch — they cause sticky states */
+      .rank-card:hover,
+      .stat-card:hover,
+      .recent-run-card:hover,
+      .team-member-pill:hover,
+      .companies-page-sidebar .saved-company-card:hover {
+        transform: none !important;
+      }
+    }
+
+    /* ── Safe area for notched devices (global) ── */
+    @supports (padding: env(safe-area-inset-bottom)) {
+      .main-content {
+        padding-left: max(env(safe-area-inset-left), 16px);
+        padding-right: max(env(safe-area-inset-right), 16px);
+      }
+      .header {
+        padding-left: max(env(safe-area-inset-left), 16px);
+        padding-right: max(env(safe-area-inset-right), 16px);
       }
     }
   </style>
@@ -3564,6 +4177,8 @@ let selectedCompanyKey = null;
 let selectedCompanyJobId = null;
 /** Set of company_key that have runs collapsed (hidden). Empty = all expanded. */
 let companyRunsCollapsed = new Set();
+let companyChatStateByKey = {};
+let companyChatCitationRegistry = {};
 let companiesPageJustOpened = false;
 let previousScreenBeforeCompanies = 'upload-screen';
 let previousScreenBeforeAnalysis = 'upload-screen';
@@ -4301,6 +4916,134 @@ function mergeSavedAndRecentRuns() {
   });
 }
 
+function normalizeCompanyGroupKey(companyName, startupSlug) {
+  const normalize = (value) => String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  const nameToken = normalize(companyName);
+  if (nameToken) return `name:${nameToken}`;
+  const slugToken = normalize(startupSlug);
+  if (slugToken) return `slug:${slugToken}`;
+  return 'name:unknown';
+}
+
+function buildCompaniesFromJobs(runs) {
+  const grouped = new Map();
+
+  for (const run of runs || []) {
+    const results = run?.results;
+    if (!results || typeof results !== 'object') continue;
+    const createdAt = run.createdAt || run.updatedAt || null;
+    const payloadMode = results.mode;
+    const sourceMode = run.input_mode || payloadMode || null;
+    const extracted = [];
+
+    if (payloadMode === 'single') {
+      const companyName = results.company_name || results.startup_slug || run.jobId;
+      const startupSlug = results.startup_slug || null;
+      const ranking = results.ranking_result || {};
+      extracted.push({
+        companyName,
+        startupSlug,
+        run: {
+          job_id: run.jobId,
+          startup_slug: startupSlug,
+          decision: results.decision,
+          total_score: results.total_score,
+          composite_score: ranking.composite_score,
+          bucket: ranking.bucket,
+          mode: sourceMode,
+          input_order: null,
+          created_at: createdAt,
+          results,
+        },
+      });
+    } else {
+      for (const summaryRow of (results.summary_rows || [])) {
+        const companyName = summaryRow.company_name || summaryRow.startup_slug || run.jobId;
+        const startupSlug = summaryRow.startup_slug || null;
+        extracted.push({
+          companyName,
+          startupSlug,
+          run: {
+            job_id: run.jobId,
+            startup_slug: startupSlug,
+            decision: summaryRow.decision,
+            total_score: summaryRow.total_score,
+            composite_score: summaryRow.composite_score,
+            bucket: summaryRow.bucket,
+            mode: sourceMode,
+            input_order: summaryRow.specter_input_order ?? null,
+            created_at: createdAt,
+            results: {
+              mode: 'single',
+              source_mode: payloadMode || 'batch',
+              startup_slug: startupSlug,
+              company_name: companyName,
+              decision: summaryRow.decision,
+              total_score: summaryRow.total_score,
+              avg_pro: summaryRow.avg_pro,
+              avg_contra: summaryRow.avg_contra,
+              summary_rows: [summaryRow],
+              argument_rows: (results.argument_rows || []).filter((row) => (row.startup_slug || '') === (startupSlug || '')),
+              qa_provenance_rows: (results.qa_provenance_rows || []).filter((row) => (row.startup_slug || '') === (startupSlug || '')),
+              founders: summaryRow.founders || [],
+              team_members: summaryRow.team_members || [],
+              ranking_result: {
+                rank: summaryRow.rank,
+                percentile: summaryRow.percentile,
+                composite_score: summaryRow.composite_score,
+                strategy_fit_score: summaryRow.strategy_fit_score,
+                team_score: summaryRow.team_score,
+                upside_score: summaryRow.upside_score,
+                bucket: summaryRow.bucket,
+                strategy_fit_summary: summaryRow.strategy_fit_summary,
+                team_summary: summaryRow.team_summary,
+                potential_summary: summaryRow.potential_summary,
+                key_points: summaryRow.key_points,
+                red_flags: summaryRow.red_flags,
+              },
+            },
+          },
+        });
+      }
+    }
+
+    for (const item of extracted) {
+      const lookupKey = normalizeCompanyGroupKey(item.companyName, item.startupSlug);
+      const entry = grouped.get(lookupKey) || {
+        company_key: item.startupSlug || item.companyName,
+        company_lookup_key: lookupKey,
+        company_name: item.companyName,
+        latest_score: item.run.composite_score,
+        latest_total_score: item.run.total_score,
+        latest_input_order: item.run.input_order,
+        latest_run_at: item.run.created_at,
+        runs: [],
+      };
+      entry.runs.push(item.run);
+      grouped.set(lookupKey, entry);
+    }
+  }
+
+  const companies = Array.from(grouped.values());
+  for (const company of companies) {
+    company.runs.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+    if (company.runs.length) {
+      const latest = company.runs[0];
+      const latestResult = latest.results || {};
+      const latestSummary = ((latestResult.summary_rows || [])[0]) || {};
+      company.company_key = latest.startup_slug || latestResult.startup_slug || latestSummary.startup_slug || company.company_key;
+      company.company_name = latestResult.company_name || latestSummary.company_name || company.company_name;
+      company.latest_score = latest.composite_score;
+      company.latest_total_score = latest.total_score;
+      company.latest_input_order = latest.input_order;
+      company.latest_run_at = latest.created_at;
+    }
+  }
+
+  companies.sort((a, b) => new Date(b.latest_run_at || 0).getTime() - new Date(a.latest_run_at || 0).getTime());
+  return companies;
+}
+
 function renderSavedJobCards(runs, { limit = null, emptyText = 'No saved jobs found yet.' } = {}) {
   const rows = limit ? runs.slice(0, limit) : runs;
   if (!rows.length) {
@@ -4639,12 +5382,16 @@ function sortSavedCompanies(companies) {
   return list;
 }
 
+function getCompanyLookupKey(company) {
+  return company?.company_lookup_key || company?.company_key || '';
+}
+
 function getSelectedCompanyState(companies) {
   const ordered = companies || [];
-  let company = ordered.find((item) => item.company_key === selectedCompanyKey) || null;
+  let company = ordered.find((item) => getCompanyLookupKey(item) === selectedCompanyKey) || null;
   if (!company && ordered.length) {
     company = ordered[0];
-    selectedCompanyKey = company.company_key;
+    selectedCompanyKey = getCompanyLookupKey(company);
   }
   let run = company?.runs?.find((item) => item.job_id === selectedCompanyJobId) || null;
   if (!run && company?.runs?.length) {
@@ -4652,6 +5399,299 @@ function getSelectedCompanyState(companies) {
     selectedCompanyJobId = run.job_id || null;
   }
   return { company, run };
+}
+
+function getCompanyChatState(companyLookupKey) {
+  if (!companyLookupKey) return null;
+  if (!companyChatStateByKey[companyLookupKey]) {
+    companyChatStateByKey[companyLookupKey] = {
+      loaded: false,
+      loading: false,
+      sending: false,
+      error: '',
+      transcript: [],
+      source_counts: {},
+      run_count: 0,
+      web_search_enabled: true,
+      model_label: 'Gemini 3.1 Flash Lite',
+      draft: '',
+      lastQuestion: '',
+    };
+  }
+  return companyChatStateByKey[companyLookupKey];
+}
+
+async function fetchCompanyChat(companyLookupKey, { silent = true, force = false } = {}) {
+  const state = getCompanyChatState(companyLookupKey);
+  if (!state) return null;
+  if (state.loading) return state;
+  if (state.loaded && !force) return state;
+  state.loading = true;
+  state.error = '';
+  renderSavedCompaniesWindow();
+  try {
+    const data = await api(`/api/companies/${encodeURIComponent(companyLookupKey)}/chat`, { timeoutMs: 15000, retries: 1 });
+    state.loaded = true;
+    state.loading = false;
+    state.transcript = data.transcript || [];
+    state.source_counts = data.source_counts || {};
+    state.run_count = data.run_count || 0;
+    state.web_search_enabled = data.web_search_enabled !== false;
+    state.model_label = data.model_label || 'Gemini 3.1 Flash Lite';
+    state.error = '';
+    renderSavedCompaniesWindow();
+    return state;
+  } catch (err) {
+    state.loading = false;
+    if (!silent) {
+      state.error = err.message || 'Failed to load chat.';
+      renderSavedCompaniesWindow();
+    }
+    return state;
+  }
+}
+
+async function sendCompanyChatMessage(companyLookupKey, activeJobId, message) {
+  const state = getCompanyChatState(companyLookupKey);
+  if (!state || !message.trim()) return;
+  state.sending = true;
+  state.error = '';
+  state.lastQuestion = message;
+  /* Optimistic: show user bubble immediately before server responds */
+  state.transcript = [...(state.transcript || []), { role: 'user', content: message, citations: [] }];
+  renderSavedCompaniesWindow();
+  try {
+    const data = await api(`/api/companies/${encodeURIComponent(companyLookupKey)}/chat`, {
+      method: 'POST',
+      body: JSON.stringify({ message, active_job_id: activeJobId || null }),
+      timeoutMs: 45000,
+      retries: 0,
+    });
+    state.loaded = true;
+    state.sending = false;
+    state.transcript = data.transcript || [];
+    state.source_counts = data.source_counts || state.source_counts || {};
+    state.run_count = data.run_count || state.run_count || 0;
+    state.web_search_enabled = data.web_search_enabled !== false;
+    state.model_label = data.model_label || state.model_label || 'Gemini 3.1 Flash Lite';
+    state.error = '';
+    renderSavedCompaniesWindow();
+  } catch (err) {
+    state.sending = false;
+    state.error = err.message || 'Chat request failed.';
+    renderSavedCompaniesWindow();
+  }
+}
+
+async function clearCompanyChat(companyLookupKey) {
+  const state = getCompanyChatState(companyLookupKey);
+  if (!state) return;
+  state.sending = true;
+  state.error = '';
+  renderSavedCompaniesWindow();
+  try {
+    await api(`/api/companies/${encodeURIComponent(companyLookupKey)}/chat`, {
+      method: 'DELETE',
+      timeoutMs: 15000,
+      retries: 0,
+    });
+    state.loaded = true;
+    state.sending = false;
+    state.transcript = [];
+    state.error = '';
+    renderSavedCompaniesWindow();
+  } catch (err) {
+    state.sending = false;
+    state.error = err.message || 'Could not clear chat.';
+    renderSavedCompaniesWindow();
+  }
+}
+
+function openChatCitationModal(registryKey) {
+  const citation = companyChatCitationRegistry[registryKey];
+  if (!citation) return;
+  const meta = [
+    citation.job_id ? `Run ${citation.job_id}` : '',
+    citation.created_at ? formatRunTimestamp(citation.created_at) : '',
+    citation.source_file || '',
+    citation.page_or_slide ? `Location ${citation.page_or_slide}` : '',
+  ].filter(Boolean);
+  let html = `<div class="audit-section"><div class="audit-section-title">${escapeHtml(citation.kind || 'Source')}</div><div class="audit-section-body">`;
+  if (meta.length) {
+    html += `<div class="audit-decision-reason" style="margin-bottom:12px">${escapeHtml(meta.join(' • '))}</div>`;
+  }
+  if (citation.question) {
+    html += `<div class="audit-qa-q">Q: ${escapeHtml(citation.question)}</div>`;
+  }
+  if (citation.answer) {
+    html += `<div class="audit-qa-a" style="margin-bottom:10px">${escapeHtml(citation.answer)}</div>`;
+  }
+  if (citation.argument_type || citation.score != null) {
+    html += `<div class="audit-arg-header"><span class="audit-arg-type ${escapeHtml((citation.argument_type || '').toLowerCase())}">${escapeHtml((citation.argument_type || 'argument').toUpperCase())}</span><span style="font-size:12px;color:var(--text-dim)">Score ${escapeHtml(String(citation.score ?? 'n/a'))}</span></div>`;
+  }
+  if (citation.web_search_query) {
+    html += `<div class="audit-qa-q">Query: ${escapeHtml(citation.web_search_query)}</div>`;
+  }
+  html += `<div class="audit-expand-content" style="display:block;max-height:none">${escapeHtml(citation.web_search_results || citation.excerpt || '')}</div>`;
+  html += `</div></div>`;
+  $('#audit-modal-title').textContent = citation.label || 'Source';
+  $('#audit-modal-content').innerHTML = html;
+  $('#audit-modal-overlay').classList.add('audit-modal-open');
+}
+
+function _generateChatFollowups(companyName, transcript, run) {
+  /* Show follow-ups only after the last message is from the assistant */
+  if (!transcript.length) return [];
+  const last = transcript[transcript.length - 1];
+  if (last.role !== 'assistant') return [];
+
+  const answer = (last.content || '').toLowerCase();
+  const question = transcript.length >= 2
+    ? (transcript[transcript.length - 2].content || '').toLowerCase()
+    : '';
+  const result = run?.results || {};
+  const summary = (result.summary_rows || [])[0] || {};
+  const ranking = result.ranking_result || {};
+  const asked = new Set(
+    transcript.filter((m) => m.role === 'user').map((m) => m.content.toLowerCase().trim())
+  );
+
+  /* Pool of contextual follow-ups — pick ones relevant to the conversation */
+  const pool = [];
+
+  /* If the answer mentioned risks or concerns */
+  if (/risk|concern|weak|threat|challeng/i.test(answer)) {
+    pool.push(`What mitigates these risks?`);
+    pool.push(`How does the team address these challenges?`);
+  }
+  /* If strengths or positive signals were discussed */
+  if (/strong|advantage|strength|opportunity|promising/i.test(answer)) {
+    pool.push(`What could go wrong despite these strengths?`);
+    pool.push(`How defensible is this advantage?`);
+  }
+  /* If revenue / financials were discussed */
+  if (/revenue|margin|burn|funding|valuation|arr|mrr/i.test(answer)) {
+    pool.push(`What's the path to profitability?`);
+    pool.push(`How does the unit economics look?`);
+  }
+  /* If team was discussed */
+  if (/team|founder|ceo|cto|executive|leadership/i.test(answer)) {
+    pool.push(`What's the team's relevant prior experience?`);
+    pool.push(`Any red flags in the founding team?`);
+  }
+  /* If market was discussed */
+  if (/market|tam|sam|competitor|industry/i.test(answer)) {
+    pool.push(`Who are the main competitors?`);
+    pool.push(`What's the market sizing?`);
+  }
+
+  /* Generic follow-ups based on available data */
+  if (ranking.composite_score != null || summary.composite_score != null) {
+    pool.push(`Why did ${companyName} get this score?`);
+  }
+  if (result.pro_arguments?.length) {
+    pool.push(`Summarize the top pro arguments`);
+  }
+  if (result.contra_arguments?.length) {
+    pool.push(`What are the biggest contra arguments?`);
+  }
+
+  /* Fallback generic questions */
+  pool.push(`What's the investment thesis?`);
+  pool.push(`Summarize the key findings`);
+  pool.push(`What would you investigate further?`);
+
+  /* Filter out already-asked questions and dedupe */
+  const seen = new Set();
+  return pool.filter((q) => {
+    const low = q.toLowerCase().trim();
+    if (asked.has(low)) return false;
+    if (seen.has(low)) return false;
+    seen.add(low);
+    return true;
+  }).slice(0, 3);
+}
+
+function renderCompanyChatSection(company, run) {
+  const companyLookupKey = getCompanyLookupKey(company);
+  const state = getCompanyChatState(companyLookupKey);
+  if (!state) return '';
+
+  const companyName = company?.company_name || run?.results?.company_name || 'this company';
+  const transcript = state.transcript || [];
+
+  companyChatCitationRegistry = {};
+  const messagesHtml = transcript.length
+    ? transcript.map((message, msgIndex) => {
+        const citations = (message.citations || []).map((citation, citationIndex) => {
+          const key = `${companyLookupKey}::${msgIndex}::${citationIndex}`;
+          companyChatCitationRegistry[key] = citation;
+          const tag = citation.kind === 'web' ? 'WEB' : citation.kind.toUpperCase();
+          return `<button type="button" class="company-chat-citation" data-chat-citation="${escapeHtml(key)}">${escapeHtml(tag)} · ${escapeHtml(citation.label || 'Source')}</button>`;
+        }).join('');
+        const usedWeb = (message.citations || []).some((citation) => citation.kind === 'web');
+        const webBadge = usedWeb ? `<span class="company-chat-web-badge"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> Web</span>` : '';
+        return `<div class="company-chat-message ${message.role}">
+          ${webBadge}
+          <div class="company-chat-content">${escapeHtml(message.content || '')}</div>
+          ${citations ? `<div class="company-chat-citations">${citations}</div>` : ''}
+        </div>`;
+      }).join('')
+    : (state.sending ? '' : `<div class="company-chat-empty">Ask anything about ${escapeHtml(companyName)}. Answers draw from your saved analysis runs.</div>`);
+
+  const typingIndicatorHtml = state.sending
+    ? `<div class="company-chat-message assistant typing" aria-live="polite" aria-label="Generating response">
+        <div class="company-chat-content">
+          <div class="company-chat-typing" aria-hidden="true">
+            <span class="company-chat-typing-dot"></span>
+            <span class="company-chat-typing-dot"></span>
+            <span class="company-chat-typing-dot"></span>
+          </div>
+        </div>
+      </div>`
+    : '';
+
+  /* Follow-up suggestions — only when not sending and last message is assistant */
+  const followups = !state.sending ? _generateChatFollowups(companyName, transcript, run) : [];
+  const followupsHtml = followups.length
+    ? `<div class="company-chat-followups">${followups.map((q) =>
+        `<button type="button" class="company-chat-followup" data-chat-followup="${escapeHtml(q)}">${escapeHtml(q)}</button>`
+      ).join('')}</div>`
+    : '';
+
+  const loadingHtml = state.loading && !transcript.length
+    ? `<div class="company-chat-empty">Loading conversation…</div>`
+    : `${messagesHtml}${typingIndicatorHtml}${followupsHtml}`;
+
+  const errorHtml = state.error ? `<div class="company-chat-error">${escapeHtml(state.error)}</div>` : '';
+  const disabled = state.sending ? 'disabled' : '';
+  const modelLabel = state.model_label || 'Gemini 3.1 Flash Lite';
+  const runCount = state.run_count || 0;
+  const contextNote = `${runCount} run${runCount === 1 ? '' : 's'} · ${escapeHtml(modelLabel)}`;
+
+  /* Arrow-up send icon (like iMessage) */
+  const sendIconSvg = `<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M3.4 20.4l17.45-7.48a1 1 0 0 0 0-1.84L3.4 3.6a.993.993 0 0 0-1.39.91L2 9.12c0 .5.37.93.87.99L17 12 2.87 13.88c-.5.07-.87.5-.87 1l.01 4.61c0 .71.73 1.2 1.39.91z"/></svg>`;
+
+  /* Trash icon for clear */
+  const clearIconSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`;
+
+  return `
+    <section class="company-chat-card">
+      <div class="company-chat-head">
+        <div class="company-chat-title">
+          <h3>Chat · ${escapeHtml(companyName)}</h3>
+          <p>${contextNote}</p>
+        </div>
+      </div>
+      <div class="company-chat-log" data-company-chat-log="${escapeHtml(companyLookupKey)}">${loadingHtml}</div>
+      ${errorHtml}
+      <form class="company-chat-composer" data-company-chat-form="${escapeHtml(companyLookupKey)}">
+        <button type="button" class="company-chat-btn" data-company-chat-clear="${escapeHtml(companyLookupKey)}" ${disabled} title="Clear conversation">${clearIconSvg}</button>
+        <textarea class="company-chat-textarea" data-company-chat-input="${escapeHtml(companyLookupKey)}" placeholder="Ask about ${escapeHtml(companyName)}…" rows="1" ${disabled}>${escapeHtml(state.draft || '')}</textarea>
+        <button type="submit" class="company-chat-btn primary" ${disabled} title="Send message">${state.sending ? '<span class="company-chat-shimmer mono" style="font-size:0;width:18px;height:18px;display:block;background:rgba(255,255,255,0.3);border-radius:50%;animation:chat-dot-bounce 1.4s ease-in-out infinite"></span>' : sendIconSvg}</button>
+      </form>
+    </section>
+  `;
 }
 
 function getCompanyDetailArgumentHtml(result, type) {
@@ -4681,6 +5721,7 @@ function renderCompanyDetail(company, run) {
   const ranking = result.ranking_result || {};
   const companyName = result.company_name || company?.company_name || 'Unknown company';
   const companySlug = result.startup_slug || summary.startup_slug || company?.company_key || companyName;
+  const companyLookupKey = getCompanyLookupKey(company);
   const subtitleBits = [
     formatRunTimestamp(run?.created_at),
     run?.mode ? getRunModeLabel({ input_mode: run.mode }) : '',
@@ -4716,33 +5757,36 @@ function renderCompanyDetail(company, run) {
   currentResults = result;
 
   return `
-    <div class="results-title-row">
-      <div class="results-title">
-        <h1>${escapeHtml(companyName)}</h1>
-        <p>${escapeHtml(subtitleBits.join(' • '))}</p>
-      </div>
-      <button class="recent-run-open" data-job-open="${escapeHtml(run?.job_id || '')}">Open full run</button>
-    </div>
-    <div class="rank-card">
-      <div class="rank-top">
-        ${rank ? `<span class="rank-badge first">#${escapeHtml(String(rank))}</span>` : ''}
-        <span class="rank-name">${escapeHtml(companyName)}</span>
-        ${bucketLabel ? `<span class="bucket-badge bucket-${bucket.replace(/_/g, '-')}">${bucketLabel}</span>` : ''}
-        <div class="rank-top-actions">${auditButtonHtml}</div>
-      </div>
-      ${dimBars ? `<div class="dim-bars-container">${dimBars}</div>` : ''}
-      ${executiveSummaryBlock ? `<div class="executive-summary-container">${executiveSummaryBlock}</div>` : ''}
-      ${SHOW_PRO_CONTRA_ARGUMENTS && (proHtml || contraHtml) ? `<div class="args-row">
-        <div class="args-col">
-          <div class="title pro">TOP PRO ARGUMENTS</div>
-          ${proHtml || '<div class="arg-item">No pro arguments</div>'}
+    <div class="company-detail-stack" data-company-detail="${escapeHtml(companyLookupKey)}">
+      <div class="results-title-row">
+        <div class="results-title">
+          <h1>${escapeHtml(companyName)}</h1>
+          <p>${escapeHtml(subtitleBits.join(' • '))}</p>
         </div>
-        <div class="args-col">
-          <div class="title contra">TOP CONTRA ARGUMENTS</div>
-          ${contraHtml || '<div class="arg-item">No contra arguments</div>'}
+        <button class="recent-run-open" data-job-open="${escapeHtml(run?.job_id || '')}">Open full run</button>
+      </div>
+      <div class="rank-card">
+        <div class="rank-top">
+          ${rank ? `<span class="rank-badge first">#${escapeHtml(String(rank))}</span>` : ''}
+          <span class="rank-name">${escapeHtml(companyName)}</span>
+          ${bucketLabel ? `<span class="bucket-badge bucket-${bucket.replace(/_/g, '-')}">${bucketLabel}</span>` : ''}
+          <div class="rank-top-actions">${auditButtonHtml}</div>
         </div>
-      </div>` : ''}
-      ${personIntelHtml}
+        ${dimBars ? `<div class="dim-bars-container">${dimBars}</div>` : ''}
+        ${executiveSummaryBlock ? `<div class="executive-summary-container">${executiveSummaryBlock}</div>` : ''}
+        ${SHOW_PRO_CONTRA_ARGUMENTS && (proHtml || contraHtml) ? `<div class="args-row">
+          <div class="args-col">
+            <div class="title pro">TOP PRO ARGUMENTS</div>
+            ${proHtml || '<div class="arg-item">No pro arguments</div>'}
+          </div>
+          <div class="args-col">
+            <div class="title contra">TOP CONTRA ARGUMENTS</div>
+            ${contraHtml || '<div class="arg-item">No contra arguments</div>'}
+          </div>
+        </div>` : ''}
+        ${personIntelHtml}
+      </div>
+      ${renderCompanyChatSection(company, run)}
     </div>
   `;
 }
@@ -4787,13 +5831,16 @@ function renderSavedCompaniesWindow() {
 
   const companies = filterSavedCompanies(sortSavedCompanies(savedCompaniesCache));
   if (companiesPageJustOpened && companies.length > 0) {
-    companies.forEach((c) => companyRunsCollapsed.add(c.company_key));
+    companies.forEach((c) => companyRunsCollapsed.add(getCompanyLookupKey(c)));
     companiesPageJustOpened = false;
   }
 
   // Save sidebar scroll position before re-render
   const sidebar = content.querySelector('.companies-page-sidebar');
   const savedScrollTop = sidebar ? sidebar.scrollTop : 0;
+  const detail = content.querySelector('.companies-page-detail');
+  const savedDetailScrollTop = detail ? detail.scrollTop : 0;
+  const savedPageScrollTop = window.scrollY;
 
   const totalCount = savedCompaniesCache.length;
   if (!savedCompaniesCache.length) {
@@ -4822,11 +5869,12 @@ function renderSavedCompaniesWindow() {
 
   const { company: activeCompany, run: activeRun } = getSelectedCompanyState(companies);
   const sidebarHtml = companies.map((company) => {
+    const companyLookupKey = getCompanyLookupKey(company);
     const latestRun = (company.runs || [])[0] || {};
     const latestScore = latestRun.composite_score ?? latestRun.total_score;
     const runs = company.runs || [];
     const runCount = (company.runs || []).length;
-    const isSelected = company.company_key === activeCompany?.company_key;
+    const isSelected = companyLookupKey === getCompanyLookupKey(activeCompany);
     const latestMode = latestRun.mode ? getRunModeLabel({ input_mode: latestRun.mode }) : '';
     const summaryBits = [
       `${runCount} run${runCount === 1 ? '' : 's'}`,
@@ -4835,7 +5883,7 @@ function renderSavedCompaniesWindow() {
     const scoreDisplay = latestScore === null || latestScore === undefined || latestScore === ''
       ? '—'
       : Number(latestScore).toFixed(1);
-    const isExpanded = !companyRunsCollapsed.has(company.company_key);
+    const isExpanded = !companyRunsCollapsed.has(companyLookupKey);
     const runsHtml = isExpanded && runs.length
       ? `<div class="saved-company-runs">${runs.map((run, index) => {
           const runScore = run.composite_score ?? run.total_score;
@@ -4849,7 +5897,7 @@ function renderSavedCompaniesWindow() {
             getLlmLabel(run?.results, run?.llm),
           ].filter(Boolean);
           const isActiveRun = run.job_id === activeRun?.job_id;
-          return `<button type="button" class="saved-company-run${isActiveRun ? ' selected' : ''}" data-company-run-open="${escapeHtml(company.company_key)}" data-job-id="${escapeHtml(run.job_id || '')}">
+          return `<button type="button" class="saved-company-run${isActiveRun ? ' selected' : ''}" data-company-run-open="${escapeHtml(companyLookupKey)}" data-job-id="${escapeHtml(run.job_id || '')}">
             <div class="saved-company-run-main">
               <div class="saved-company-run-title">Run ${runs.length - index}</div>
               <div class="saved-company-run-summary">${escapeHtml(runBits.join('  •  '))}</div>
@@ -4859,7 +5907,7 @@ function renderSavedCompaniesWindow() {
         }).join('')}</div>`
       : '';
 
-    return `<div class="saved-company-card${isSelected ? ' selected' : ''}" data-company-select="${escapeHtml(company.company_key)}">
+    return `<div class="saved-company-card${isSelected ? ' selected' : ''}" data-company-select="${escapeHtml(companyLookupKey)}">
       <div class="saved-company-header">
         <div class="saved-company-main">
           <div class="saved-company-name">${escapeHtml(company.company_name || 'Unknown company')}</div>
@@ -4913,6 +5961,11 @@ function renderSavedCompaniesWindow() {
   // Restore sidebar scroll position after re-render
   const newSidebar = content.querySelector('.companies-page-sidebar');
   if (newSidebar) newSidebar.scrollTop = savedScrollTop;
+  const newDetail = content.querySelector('.companies-page-detail');
+  if (newDetail) newDetail.scrollTop = savedDetailScrollTop;
+  if (window.scrollY !== savedPageScrollTop) {
+    window.scrollTo(0, savedPageScrollTop);
+  }
 
   bindSavedJobActions(content);
   const sortSelect = content.querySelector('#companies-sort-select');
@@ -4969,6 +6022,86 @@ function renderSavedCompaniesWindow() {
       selectCompanyRun(el.dataset.companyRunOpen || '', el.dataset.jobId || null);
     });
   });
+  bindCompanyChatActions(content, activeCompany, activeRun);
+  if (activeCompany) {
+    const chatState = getCompanyChatState(getCompanyLookupKey(activeCompany));
+    if (chatState && !chatState.loaded && !chatState.loading && !chatState.sending && !chatState.error) {
+      fetchCompanyChat(getCompanyLookupKey(activeCompany), { silent: true });
+    }
+  }
+}
+
+function _autosizeChatTextarea(textarea) {
+  if (!textarea) return;
+  textarea.style.height = 'auto';
+  textarea.style.height = Math.min(textarea.scrollHeight, 140) + 'px';
+}
+
+function _scrollChatLogToBottom(root, companyLookupKey) {
+  const log = root.querySelector(`[data-company-chat-log="${CSS.escape(companyLookupKey)}"]`);
+  if (log) {
+    requestAnimationFrame(() => {
+      log.scrollTop = log.scrollHeight;
+    });
+  }
+}
+
+function bindCompanyChatActions(root, activeCompany, activeRun) {
+  if (!root || !activeCompany) return;
+  const companyLookupKey = getCompanyLookupKey(activeCompany);
+  const state = getCompanyChatState(companyLookupKey);
+  const textarea = root.querySelector(`[data-company-chat-input="${CSS.escape(companyLookupKey)}"]`);
+  if (textarea) {
+    /* Auto-resize textarea as user types */
+    textarea.addEventListener('input', (event) => {
+      state.draft = event.target.value;
+      _autosizeChatTextarea(textarea);
+    });
+    /* Cmd/Ctrl+Enter OR plain Enter to send (Shift+Enter for newline) */
+    textarea.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey && !state.sending) {
+        event.preventDefault();
+        root.querySelector(`[data-company-chat-form="${CSS.escape(companyLookupKey)}"]`)?.requestSubmit();
+      }
+    });
+    /* Initial sizing */
+    _autosizeChatTextarea(textarea);
+  }
+
+  const form = root.querySelector(`[data-company-chat-form="${CSS.escape(companyLookupKey)}"]`);
+  if (form) {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const message = (state.draft || '').trim();
+      if (!message || state.sending) return;
+      state.draft = '';
+      await sendCompanyChatMessage(companyLookupKey, activeRun?.job_id || null, message);
+    });
+  }
+
+  root.querySelectorAll('[data-company-chat-clear]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (state.sending) return;
+      await clearCompanyChat(companyLookupKey);
+    });
+  });
+
+  root.querySelectorAll('[data-chat-citation]').forEach((button) => {
+    button.addEventListener('click', () => openChatCitationModal(button.dataset.chatCitation || ''));
+  });
+
+  /* Follow-up suggestion chips — tap to send */
+  root.querySelectorAll('[data-chat-followup]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const question = button.dataset.chatFollowup || '';
+      if (!question || state.sending) return;
+      state.draft = '';
+      await sendCompanyChatMessage(companyLookupKey, activeRun?.job_id || null, question);
+    });
+  });
+
+  /* Auto-scroll to latest message */
+  _scrollChatLogToBottom(root, companyLookupKey);
 }
 
 async function fetchSavedJobs({ silent = true } = {}) {
@@ -5024,6 +6157,20 @@ async function fetchSavedCompanies({ silent = true } = {}) {
   try {
     const data = await api('/api/company-runs', { timeoutMs: 30000, retries: 1 });
     savedCompaniesCache = data.companies || [];
+    if (!savedCompaniesCache.length) {
+      const jobsData = await api('/api/jobs', { timeoutMs: 30000, retries: 1 });
+      const jobs = (jobsData.jobs || []).map((job) => ({
+        jobId: job.job_id,
+        status: job.status || 'pending',
+        progress: job.progress || '',
+        createdAt: job.created_at || null,
+        input_mode: job.input_mode || null,
+        useWebSearch: job.use_web_search === true,
+        results: job.results || null,
+        llm: job.llm || null,
+      }));
+      savedCompaniesCache = buildCompaniesFromJobs(jobs);
+    }
     companiesFetched = true;
     renderSavedCompaniesWindow();
     return savedCompaniesCache;
@@ -5119,6 +6266,9 @@ async function api(path, opts = {}) {
       if (attempt === retries) {
         if (err?.name === 'AbortError') {
           throw new Error('Request timed out. Please try again.');
+        }
+        if (err instanceof Error && err.message && err.name !== 'TypeError') {
+          throw err;
         }
         throw new Error('Network error. Please retry.');
       }
@@ -5881,6 +7031,8 @@ async function loadConfirmedTerminalResults(jobId, fallbackResults = null) {
         const resumed = await resumeActiveJob();
         if (!resumed) {
           openCompaniesPage();
+        } else {
+          fetchSavedCompanies();
         }
         return;
       }

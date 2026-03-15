@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from supabase import Client, create_client
 from agent.run_context import build_run_costs_from_model_executions
 
-load_dotenv()
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
 _client: Client | None = None
 _client_config: tuple[str, str] | None = None
@@ -202,6 +202,26 @@ def _ranking_sort_key_from_payload(payload: dict[str, Any]) -> tuple[float, floa
         -avg_confidence,
         critical_gaps,
     )
+
+
+def _job_result_summary(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    data = _serialize(payload or {})
+    if not data:
+        return None
+
+    summary_rows = data.get("summary_rows") or []
+    first_summary = summary_rows[0] if summary_rows else {}
+    ranking = _serialize(data.get("ranking_result") or {})
+    return {
+        "mode": data.get("mode"),
+        "company_name": data.get("company_name") or first_summary.get("company_name"),
+        "startup_slug": data.get("startup_slug") or first_summary.get("startup_slug"),
+        "summary_count": len(summary_rows),
+        "decision": data.get("decision") or first_summary.get("decision"),
+        "total_score": data.get("total_score") if data.get("total_score") is not None else first_summary.get("total_score"),
+        "composite_score": ranking.get("composite_score") if ranking.get("composite_score") is not None else first_summary.get("composite_score"),
+        "bucket": ranking.get("bucket") or first_summary.get("bucket"),
+    }
 
 
 def _sorted_completed_company_payloads(
@@ -2045,6 +2065,7 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
                     progress = snapshot_payload.get("job_message") or progress
             created_at = latest_analysis.get("created_at") or row.get("created_at")
 
+
             out.append(
                 {
                     "job_id": jid,
@@ -2068,17 +2089,90 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
 
 
 def _fetch_company_run_rows(client: Client, limit_runs: int) -> list[dict[str, Any]]:
-    rows = (
-        client.table("company_runs")
-        .select(
-            "company_key, company_name, startup_slug, job_id_legacy, decision, total_score, "
-            "composite_score, bucket, mode, input_order, run_created_at, created_at, result_payload"
-        )
-        .order("run_created_at", desc=True)
-        .limit(limit_runs)
-        .execute()
+    select_clause = (
+        "company_key, company_name, startup_slug, job_id_legacy, decision, total_score, "
+        "composite_score, bucket, mode, input_order, run_created_at, created_at, result_payload"
     )
-    return rows.data or []
+    limits_to_try: list[int] = []
+    for candidate in (limit_runs, min(limit_runs, 250), min(limit_runs, 100), 50):
+        if candidate > 0 and candidate not in limits_to_try:
+            limits_to_try.append(candidate)
+
+    last_error: Exception | None = None
+    for current_limit in limits_to_try:
+        try:
+            rows = (
+                client.table("company_runs")
+                .select(select_clause)
+                .order("run_created_at", desc=True)
+                .limit(current_limit)
+                .execute()
+            )
+            return rows.data or []
+        except Exception as exc:
+            last_error = exc
+            continue
+
+    if last_error:
+        raise last_error
+    return []
+
+
+def _fetch_chat_company_run_rows(client: Client, limit_runs: int = 2000) -> list[dict[str, Any]]:
+    try:
+        rows = (
+            client.table("company_runs")
+            .select(
+                "company_id, company_key, company_name, startup_slug, job_id_legacy, decision, "
+                "total_score, composite_score, bucket, mode, input_order, run_created_at, created_at, result_payload"
+            )
+            .order("run_created_at", desc=True)
+            .limit(limit_runs)
+            .execute()
+        )
+        return rows.data or []
+    except Exception:
+        return []
+
+
+def _fetch_analyses_for_company_ids(
+    client: Client,
+    company_ids: list[str],
+) -> list[dict[str, Any]]:
+    if not company_ids:
+        return []
+    try:
+        rows = (
+            client.table("analyses")
+            .select("company_id, pitch_deck_id, job_id_legacy, created_at")
+            .in_("company_id", company_ids)
+            .order("created_at", desc=True)
+            .limit(2000)
+            .execute()
+        )
+        return rows.data or []
+    except Exception:
+        return []
+
+
+def _fetch_chunks_for_pitch_deck_ids(
+    client: Client,
+    pitch_deck_ids: list[str],
+) -> list[dict[str, Any]]:
+    if not pitch_deck_ids:
+        return []
+    try:
+        rows = (
+            client.table("chunks")
+            .select("pitch_deck_id, chunk_id, text, source_file, page_or_slide, sort_order, created_at")
+            .in_("pitch_deck_id", pitch_deck_ids)
+            .order("sort_order")
+            .limit(10000)
+            .execute()
+        )
+        return rows.data or []
+    except Exception:
+        return []
 
 
 def _reconcile_missing_company_runs(
@@ -2200,6 +2294,7 @@ def list_company_histories(
                 group_key,
                 {
                     "company_key": company_key,
+                    "company_lookup_key": group_key,
                     "company_name": row.get("company_name") or row.get("startup_slug") or company_key,
                     "latest_score": row.get("composite_score"),
                     "latest_total_score": row.get("total_score"),
@@ -2284,6 +2379,96 @@ def _compact_company_run_payload(payload: dict[str, Any] | None) -> dict[str, An
             "key_points": ranking.get("key_points") or summary_row.get("key_points"),
             "red_flags": ranking.get("red_flags") or summary_row.get("red_flags"),
         },
+    }
+
+
+def load_company_chat_context(company_lookup_key: str) -> dict[str, Any] | None:
+    """Load all persisted runs and evidence for one grouped company identity."""
+    client = _get_client()
+    if not client:
+        return None
+
+    normalized_lookup_key = (company_lookup_key or "").strip().lower()
+    if not normalized_lookup_key:
+        return None
+
+    rows = _fetch_chat_company_run_rows(client, limit_runs=2000)
+    matching_rows = [
+        row for row in rows
+        if _company_history_group_key(row) == normalized_lookup_key
+    ]
+    if not matching_rows:
+        return None
+
+    company_ids = list({
+        row.get("company_id")
+        for row in matching_rows
+        if row.get("company_id")
+    })
+    analyses = _fetch_analyses_for_company_ids(client, company_ids)
+    pitch_deck_ids = list({
+        row.get("pitch_deck_id")
+        for row in analyses
+        if row.get("pitch_deck_id")
+    })
+    chunks = _fetch_chunks_for_pitch_deck_ids(client, pitch_deck_ids)
+
+    analyses_by_pitch_deck: dict[str, dict[str, Any]] = {}
+    for row in analyses:
+        pitch_deck_id = row.get("pitch_deck_id")
+        if not pitch_deck_id:
+            continue
+        existing = analyses_by_pitch_deck.get(pitch_deck_id)
+        current_ts = str(row.get("created_at") or "")
+        if existing and str(existing.get("created_at") or "") >= current_ts:
+            continue
+        analyses_by_pitch_deck[pitch_deck_id] = row
+
+    chunks_by_job: dict[str, list[dict[str, Any]]] = {}
+    for chunk in chunks:
+        analysis_row = analyses_by_pitch_deck.get(chunk.get("pitch_deck_id"))
+        if not analysis_row:
+            continue
+        job_id = analysis_row.get("job_id_legacy")
+        if not job_id:
+            continue
+        row_payload = {
+            "chunk_id": chunk.get("chunk_id"),
+            "text": chunk.get("text"),
+            "source_file": chunk.get("source_file"),
+            "page_or_slide": chunk.get("page_or_slide"),
+            "pitch_deck_id": chunk.get("pitch_deck_id"),
+        }
+        chunks_by_job.setdefault(job_id, []).append(row_payload)
+
+    runs: list[dict[str, Any]] = []
+    latest_name = None
+    for row in sorted(
+        matching_rows,
+        key=lambda item: str(item.get("run_created_at") or item.get("created_at") or ""),
+        reverse=True,
+    ):
+        result_payload = _serialize(row.get("result_payload") or {})
+        latest_name = latest_name or row.get("company_name") or result_payload.get("company_name")
+        runs.append(
+            {
+                "job_id": row.get("job_id_legacy"),
+                "company_id": row.get("company_id"),
+                "company_name": row.get("company_name") or result_payload.get("company_name"),
+                "startup_slug": row.get("startup_slug") or result_payload.get("startup_slug"),
+                "decision": row.get("decision"),
+                "created_at": row.get("run_created_at") or row.get("created_at"),
+                "results": result_payload,
+                "chunks": chunks_by_job.get(row.get("job_id_legacy"), []),
+            }
+        )
+
+    latest_result = (runs[0].get("results") if runs else {}) or {}
+    return {
+        "company_lookup_key": normalized_lookup_key,
+        "company_name": latest_name or "Unknown company",
+        "domain": latest_result.get("domain"),
+        "runs": runs,
     }
 
 

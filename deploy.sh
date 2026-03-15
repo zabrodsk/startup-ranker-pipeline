@@ -2,11 +2,13 @@
 set -e
 
 echo "╔══════════════════════════════════════════════╗"
-echo "║ Rockaway Deal Intelligence — Cloudflare Deploy ║"
+echo "║    Rockaway Deal Intelligence — Slim Share     ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 
 cd "$(dirname "$0")"
+
+export PATH="$HOME/.local/bin:$PATH"
 
 if [ ! -f .env ]; then
     echo "ERROR: .env file not found. Copy .env.example to .env and fill in your keys."
@@ -56,23 +58,32 @@ if ! kill -0 $SERVER_PID 2>/dev/null; then
     exit 1
 fi
 
-echo "[3/3] Creating Cloudflare Tunnel..."
+if ! command -v slim >/dev/null 2>&1; then
+    echo "ERROR: slim is not installed."
+    echo "Install it with: curl -sL https://slim.sh/install.sh | sh"
+    exit 1
+fi
+
+echo "[3/3] Creating Slim share URL..."
 echo ""
 echo "  Your app will be available at the URL printed below."
-echo "  Password: ${APP_PASSWORD:-9876}"
+echo "  App password: ${APP_PASSWORD:-9876}"
 echo "  Press Ctrl+C to stop."
 echo ""
 
 cleanup() {
+    status=$?
     echo ""
     echo "Shutting down..."
-    kill $SERVER_PID 2>/dev/null
-    exit 0
+    if [ -n "${SLIM_PID:-}" ]; then
+        kill $SLIM_PID 2>/dev/null || true
+    fi
+    kill $SERVER_PID 2>/dev/null || true
+    exit $status
 }
-trap cleanup INT TERM
+trap cleanup EXIT INT TERM
 
-cloudflared tunnel --url http://localhost:8000 2>&1 &
-CF_PID=$!
+slim share --port 8000 2>&1 &
+SLIM_PID=$!
 
-wait $CF_PID
-cleanup
+wait $SLIM_PID

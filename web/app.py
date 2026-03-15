@@ -32,15 +32,16 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-load_dotenv()
-
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(PROJECT_ROOT / ".env")
+sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from agent.llm_catalog import (
     available_models_payload,
-    current_default_selection,
     model_label,
+    current_default_selection,
     pricing_catalog_payload,
     serialize_selection,
     validate_requested_selection,
@@ -159,6 +160,7 @@ _jobs_overview_cache: dict[str, Any] = {"expires_at": 0.0, "payload": None}
 _company_runs_cache: dict[str, Any] = {"expires_at": 0.0, "payload": None}
 SPECTER_CHUNK_EVENT_PREFIX = "__SPECTER_CHUNK_EVENT__"
 SPECTER_COMPANY_EVENT_PREFIX = "__SPECTER_COMPANY_EVENT__"
+_company_chat_sessions: dict[tuple[str, str], dict[str, Any]] = {}
 
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -835,6 +837,73 @@ PersonProfileJobStatus.model_rebuild()
 
 _person_jobs: dict[str, PersonProfileJobStatus] = {}
 _person_service = PersonIntelService()
+
+
+class CompanyChatRequest(BaseModel):
+    message: str
+    active_job_id: str | None = None
+
+    @field_validator("message")
+    @classmethod
+    def _validate_message(cls, v: str) -> str:
+        text = (v or "").strip()
+        if not text:
+            raise ValueError("message is required")
+        return text[:4000]
+
+
+class CompanyChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+    citations: list[dict[str, Any]] = []
+    created_at: str
+
+
+class CompanyChatResponse(BaseModel):
+    company_lookup_key: str
+    transcript: list[CompanyChatMessage]
+    run_count: int = 0
+    source_counts: dict[str, int] = {}
+    web_search_enabled: bool = True
+    model_label: str = "Gemini 3.1 Flash Lite"
+    used_run_ids: list[str] = []
+    used_web_search: bool = False
+    web_search_query: str | None = None
+
+
+def _chat_session_key(session_id: str, company_lookup_key: str) -> tuple[str, str]:
+    return (session_id, company_lookup_key.strip().lower())
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _truncate_summary(text: str, limit: int = 4000) -> str:
+    normalized = " ".join((text or "").split())
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3].rstrip() + "..."
+
+
+def _compress_company_chat_session(session: dict[str, Any], max_messages: int = 24) -> None:
+    transcript = session.setdefault("transcript", [])
+    while len(transcript) > max_messages:
+        oldest = transcript.pop(0)
+        summary = session.get("summary") or ""
+        summary_line = f"{oldest.get('role', 'unknown')}: {oldest.get('content', '')}"
+        session["summary"] = _truncate_summary(f"{summary}\n{summary_line}".strip())
+
+
+def _get_or_create_company_chat_session(session_id: str, company_lookup_key: str) -> dict[str, Any]:
+    return _company_chat_sessions.setdefault(
+        _chat_session_key(session_id, company_lookup_key),
+        {"summary": "", "transcript": []},
+    )
+
+
+def _company_chat_model_label() -> str:
+    return model_label("gemini", "gemini-3.1-flash-lite-preview")
 
 
 def _runtime_versions() -> dict[str, str]:

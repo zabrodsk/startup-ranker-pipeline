@@ -100,7 +100,7 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
     ),
     ModelCatalogEntry(
         provider="openrouter",
-        model="openrouter/hunter-alpha",
+    model="openrouter/hunter-alpha",
         label="Hunter Alpha",
         summary="Experimental reasoning",
         tier="premium",
@@ -110,6 +110,33 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         ),
         required_env=("OPENROUTER_API_KEY",),
         supports_structured_output=False,
+    ),
+    ModelCatalogEntry(
+        provider="openrouter",
+        model="openai/gpt-5-mini",
+        label="OpenRouter · GPT-5 mini",
+        summary="Balanced via OpenRouter",
+        tier="balanced",
+        pricing=None,
+        required_env=("OPENROUTER_API_KEY",),
+    ),
+    ModelCatalogEntry(
+        provider="openrouter",
+        model="openai/gpt-5",
+        label="OpenRouter · GPT-5",
+        summary="Deep reasoning via OpenRouter",
+        tier="premium",
+        pricing=None,
+        required_env=("OPENROUTER_API_KEY",),
+    ),
+    ModelCatalogEntry(
+        provider="openrouter",
+        model="openai/gpt-4.1-mini",
+        label="OpenRouter · GPT-4.1 mini",
+        summary="Stable fallback via OpenRouter",
+        tier="balanced",
+        pricing=None,
+        required_env=("OPENROUTER_API_KEY",),
     ),
 )
 
@@ -131,6 +158,8 @@ def normalize_provider(provider: str | None) -> str:
 
 
 def _has_required_env(entry: ModelCatalogEntry) -> bool:
+    if entry.provider == "openrouter":
+        return bool(os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY"))
     return all(bool(os.getenv(name)) for name in entry.required_env)
 
 

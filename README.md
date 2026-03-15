@@ -170,7 +170,7 @@ were complete.
 ./deploy.sh
 ```
 
-Runs the FastAPI server and exposes it via `cloudflared` tunnel. Use the printed URL and `APP_PASSWORD` from your `.env`.
+Runs the FastAPI server and exposes it via `slim share`. Use the printed URL and the app's `APP_PASSWORD` from your `.env`.
 
 ---
 

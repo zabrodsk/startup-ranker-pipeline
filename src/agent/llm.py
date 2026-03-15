@@ -33,8 +33,11 @@ _DEFAULT_PROVIDER = "gemini"
 _DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 _DEFAULT_TIMEOUT_SECONDS = 90.0
 _DEFAULT_MAX_RETRIES = 2
+_CHAT_PROVIDER = "gemini"
+_CHAT_MODEL = "gemini-3.1-flash-lite-preview"
 _FALLBACK_ENCODING_NAME = "o200k_base"
 _DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+_OPENROUTER_DEFAULT_APP_NAME = "Rockaway Deal Intelligence"
 
 
 def _extract_usage_metadata(payload: Any) -> dict[str, int] | None:
@@ -164,9 +167,10 @@ def _estimate_text_tokens(
 def _encoding_for_selection(provider: str | None, model: str | None):
     provider_norm = normalize_provider(provider or _DEFAULT_PROVIDER)
     model_norm = (model or _DEFAULT_MODEL).strip()
-    if provider_norm == "openai":
+    if provider_norm in {"openai", "openrouter"}:
+        lookup_model = model_norm.rsplit("/", 1)[-1]
         try:
-            return tiktoken.encoding_for_model(model_norm)
+            return tiktoken.encoding_for_model(lookup_model)
         except KeyError:
             return tiktoken.get_encoding(_FALLBACK_ENCODING_NAME)
     return tiktoken.get_encoding(_FALLBACK_ENCODING_NAME)
@@ -352,6 +356,22 @@ def create_llm(temperature: float = 0.0) -> BaseChatModel:
         )
 
 
+def chat_llm_selection() -> dict[str, str]:
+    """Return the fixed model selection for company chat."""
+    return {
+        "provider": normalize_provider(_CHAT_PROVIDER),
+        "model": _CHAT_MODEL,
+    }
+
+
+def create_chat_llm(temperature: float = 0.2) -> BaseChatModel:
+    """Create the fixed Gemini model used by company chat."""
+    runtime = get_llm_runtime_settings()
+    timeout_s = runtime["request_timeout_seconds"]
+    max_retries = runtime["max_retries"]
+    return wrap_llm(_create_gemini(_CHAT_MODEL, temperature, timeout_s, max_retries))
+
+
 def get_llm_runtime_settings() -> dict[str, float | int]:
     """Return the active runtime request controls for the current process."""
     return {
@@ -431,6 +451,14 @@ def _create_openrouter(
         raise ValueError(
             "OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter"
         )
+    referer = os.getenv("OPENROUTER_SITE_URL") or os.getenv("APP_BASE_URL")
+    app_name = os.getenv("OPENROUTER_APP_NAME") or _OPENROUTER_DEFAULT_APP_NAME
+    default_headers = {"X-Title": app_name}
+    if referer:
+        default_headers["HTTP-Referer"] = referer
+
+    if model.startswith("openai/gpt-5") or model.startswith("gpt-5"):
+        temperature = 1
 
     return ChatOpenAI(
         model=model,
@@ -439,6 +467,7 @@ def _create_openrouter(
         temperature=temperature,
         request_timeout=timeout_s,
         max_retries=max_retries,
+        default_headers=default_headers,
         callbacks=[_TELEMETRY_CALLBACK],
     )
 

@@ -1,7 +1,9 @@
-const DEFAULT_BACKEND_ORIGIN = 'https://italia-word-isolation-parallel.trycloudflare.com';
-
 function backendOrigin(env) {
-  return (env.BACKEND_ORIGIN || DEFAULT_BACKEND_ORIGIN).replace(/\/$/, '');
+  const origin = env.BACKEND_ORIGIN;
+  if (!origin) {
+    throw new Error('BACKEND_ORIGIN is not configured');
+  }
+  return origin.replace(/\/$/, '');
 }
 
 export async function proxyRequest(context) {

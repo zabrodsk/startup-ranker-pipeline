@@ -89,6 +89,7 @@ def test_list_company_histories_reconciles_missing_company_runs(monkeypatch) -> 
 
     assert len(histories) == 1
     assert histories[0]["company_name"] == "Apify"
+    assert histories[0]["company_lookup_key"] == "name:apify"
     assert histories[0]["runs"][0]["job_id"] == "job-123"
     assert fetch_calls["count"] == 2
 
@@ -146,7 +147,70 @@ def test_list_company_histories_requeries_after_recent_reconcile(monkeypatch) ->
 
     assert len(histories) == 2
     assert {item["company_name"] for item in histories} == {"Apify", "Apaleo"}
+    assert {item["company_lookup_key"] for item in histories} == {"name:apify", "name:apaleo"}
     assert fetch_calls["count"] == 2
+
+
+def test_load_company_chat_context_collects_runs_and_chunks(monkeypatch) -> None:
+    import web.db as web_db
+
+    monkeypatch.setattr(web_db, "_get_client", lambda: object())
+    monkeypatch.setattr(
+        web_db,
+        "_fetch_chat_company_run_rows",
+        lambda client, limit_runs=2000: [
+            {
+                "company_id": "comp-1",
+                "company_key": "slug:apify",
+                "company_name": "Apify",
+                "startup_slug": "apify",
+                "job_id_legacy": "job-new",
+                "decision": "invest",
+                "run_created_at": "2026-03-10T10:00:00Z",
+                "created_at": "2026-03-10T10:00:00Z",
+                "result_payload": {
+                    "company_name": "Apify",
+                    "qa_provenance_rows": [{"question": "Why now?", "answer": "Growth inflected"}],
+                    "argument_rows": [{"type": "pro", "argument_text": "Strong wedge"}],
+                },
+            },
+            {
+                "company_id": "comp-legacy",
+                "company_key": "name:apify--legacy-2",
+                "company_name": "Apify",
+                "startup_slug": None,
+                "job_id_legacy": "job-old",
+                "decision": "watch",
+                "run_created_at": "2026-03-01T10:00:00Z",
+                "created_at": "2026-03-01T10:00:00Z",
+                "result_payload": {"company_name": "Apify"},
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        web_db,
+        "_fetch_analyses_for_company_ids",
+        lambda client, company_ids: [
+            {"company_id": "comp-1", "pitch_deck_id": "deck-1", "job_id_legacy": "job-new", "created_at": "2026-03-10T10:00:00Z"},
+            {"company_id": "comp-legacy", "pitch_deck_id": "deck-2", "job_id_legacy": "job-old", "created_at": "2026-03-01T10:00:00Z"},
+        ],
+    )
+    monkeypatch.setattr(
+        web_db,
+        "_fetch_chunks_for_pitch_deck_ids",
+        lambda client, pitch_deck_ids: [
+            {"pitch_deck_id": "deck-1", "chunk_id": "chunk_1", "text": "New deck evidence", "source_file": "deck.pdf", "page_or_slide": "3"},
+            {"pitch_deck_id": "deck-2", "chunk_id": "chunk_1", "text": "Old deck evidence", "source_file": "deck-old.pdf", "page_or_slide": "4"},
+        ],
+    )
+
+    context = web_db.load_company_chat_context("name:apify")
+
+    assert context is not None
+    assert context["company_lookup_key"] == "name:apify"
+    assert [run["job_id"] for run in context["runs"]] == ["job-new", "job-old"]
+    assert context["runs"][0]["chunks"][0]["text"] == "New deck evidence"
+    assert context["runs"][1]["chunks"][0]["source_file"] == "deck-old.pdf"
 
 
 def test_compose_results_payload_from_company_runs_rebuilds_batch_ranking() -> None:
