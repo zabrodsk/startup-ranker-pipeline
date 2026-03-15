@@ -365,7 +365,7 @@ def test_create_llm_can_force_temperature_one_for_gpt5(monkeypatch) -> None:
     assert called == {"model": "gpt-5", "temperature": 1.0}
 
 
-def test_create_llm_leaves_non_gpt5_openai_temperature_unchanged(monkeypatch) -> None:
+def test_create_llm_forces_temperature_one_for_non_gpt5_openai(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
     monkeypatch.setenv("OPENAI_GPT5_TEMPERATURE_MODE", "force_one")
 
@@ -382,7 +382,26 @@ def test_create_llm_leaves_non_gpt5_openai_temperature_unchanged(monkeypatch) ->
     with use_run_context(llm_selection={"provider": "openai", "model": "gpt-4.1-mini"}):
         llm_module.create_llm(temperature=0.3)
 
-    assert called == {"model": "gpt-4.1-mini", "temperature": 0.3}
+    assert called == {"model": "gpt-4.1-mini", "temperature": 1.0}
+
+
+def test_create_llm_forces_temperature_one_for_o4_mini(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    called = {}
+
+    def fake_openai(model, temperature, timeout_s, max_retries):
+        called["model"] = model
+        called["temperature"] = temperature
+        return object()
+
+    monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable: runnable)
+
+    with use_run_context(llm_selection={"provider": "openai", "model": "o4-mini"}):
+        llm_module.create_llm(temperature=0.0)
+
+    assert called == {"model": "o4-mini", "temperature": 1.0}
 
 
 def test_use_phase_llm_temporarily_overrides_selection() -> None:

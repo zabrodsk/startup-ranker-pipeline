@@ -346,8 +346,8 @@ def _resolve_openai_temperature(
     if not model.startswith("gpt-5"):
         return {
             "requested_temperature": requested_temperature,
-            "effective_temperature": requested_temperature,
-            "sampling_mode": "requested",
+            "effective_temperature": 1.0,
+            "sampling_mode": "default_one",
         }
 
     sampling_mode = _normalize_gpt5_temperature_mode(os.getenv(_GPT5_TEMPERATURE_MODE_ENV))
