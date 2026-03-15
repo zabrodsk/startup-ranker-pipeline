@@ -1920,6 +1920,7 @@ def load_job_status(job_id_legacy: str) -> dict[str, Any] | None:
     return {
         "status": status or "pending",
         "progress": progress,
+        "worker_active": worker_active,
     }
 
 

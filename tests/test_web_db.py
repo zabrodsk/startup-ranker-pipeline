@@ -447,7 +447,7 @@ def test_load_job_status_prefers_terminal_analysis_over_stale_running_status(mon
 
     status = web_db.load_job_status("job-123")
 
-    assert status == {"status": "done", "progress": "Analysis complete"}
+    assert status == {"status": "done", "progress": "Analysis complete", "worker_active": False}
 
 
 def test_load_job_status_prefers_active_worker_state_over_stale_status_history(monkeypatch) -> None:
@@ -508,7 +508,11 @@ def test_load_job_status_prefers_active_worker_state_over_stale_status_history(m
 
     status = web_db.load_job_status("job-123")
 
-    assert status == {"status": "running", "progress": "Worker running — alpha (2/10)"}
+    assert status == {
+        "status": "running",
+        "progress": "Worker running — alpha (2/10)",
+        "worker_active": True,
+    }
 
 
 def test_load_job_status_marks_stale_worker_execution_interrupted(monkeypatch) -> None:
@@ -575,7 +579,11 @@ def test_load_job_status_marks_stale_worker_execution_interrupted(monkeypatch) -
 
     status = web_db.load_job_status("job-123")
 
-    assert status == {"status": "interrupted", "progress": "Worker interrupted before completion."}
+    assert status == {
+        "status": "interrupted",
+        "progress": "Worker interrupted before completion.",
+        "worker_active": False,
+    }
 
 
 def test_list_saved_jobs_prefers_terminal_analysis_status_over_stale_running_status(monkeypatch) -> None:

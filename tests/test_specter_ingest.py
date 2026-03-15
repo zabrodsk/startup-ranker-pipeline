@@ -861,7 +861,7 @@ def test_set_job_status_tolerates_db_history_write_failure(monkeypatch) -> None:
         web_app._jobs.pop(job_id, None)
 
 
-def test_status_endpoint_returns_partial_results_for_running_job(monkeypatch) -> None:
+def test_status_endpoint_does_not_return_partial_results_for_running_job(monkeypatch) -> None:
     job_id = "job-running-status"
     web_app._jobs[job_id] = web_app.AnalysisStatus(
         job_id=job_id,
@@ -883,8 +883,7 @@ def test_status_endpoint_returns_partial_results_for_running_job(monkeypatch) ->
     try:
         payload = asyncio.run(web_app.get_status(job_id, response=Response(), session_id="session"))
         assert payload["status"] == "running"
-        assert payload["results"]["summary_rows"] == [{"startup_slug": "alpha", "company_name": "Alpha"}]
-        assert payload["results"]["job_status"] == "running"
+        assert payload["results"] is None
     finally:
         web_app._jobs.pop(job_id, None)
         web_app._results_cache.pop(job_id, None)
@@ -1028,6 +1027,7 @@ def test_status_endpoint_marks_persisted_running_job_as_interrupted_when_not_liv
             load_job_status=lambda current_job_id: {
                 "status": "running",
                 "progress": "Chunk 1/2 — Evaluating TopK",
+                "worker_active": False,
             }
             if current_job_id == job_id
             else None,
@@ -1039,6 +1039,35 @@ def test_status_endpoint_marks_persisted_running_job_as_interrupted_when_not_liv
 
     assert payload["status"] == "stopped"
     assert payload["progress"] == "Run interrupted before completion."
+    assert payload["results"] is None
+    assert payload["progress_log"] == []
+
+
+def test_status_endpoint_keeps_worker_job_running_without_progress_log_when_heartbeat_is_live(monkeypatch) -> None:
+    job_id = "job-live-heartbeat-no-log"
+
+    monkeypatch.setattr(web_app, "_check_session", lambda session_id: True)
+    monkeypatch.setattr(
+        web_app,
+        "db",
+        SimpleNamespace(
+            is_configured=lambda: True,
+            load_job_status=lambda current_job_id: {
+                "status": "running",
+                "progress": "Worker evaluating beta (2/5)",
+                "worker_active": True,
+            }
+            if current_job_id == job_id
+            else None,
+        ),
+    )
+    monkeypatch.setattr(web_app, "_load_worker_progress_log", lambda current_job_id: [])
+    monkeypatch.setattr(web_app, "_load_persisted_job_results", lambda current_job_id, preferred_mode=None: None)
+
+    payload = asyncio.run(web_app.get_status(job_id, response=Response(), session_id="session"))
+
+    assert payload["status"] == "running"
+    assert payload["progress"] == "Worker evaluating beta (2/5)"
     assert payload["results"] is None
     assert payload["progress_log"] == []
 
@@ -1061,6 +1090,7 @@ def test_status_endpoint_does_not_return_partial_persisted_results_for_active_wo
             load_job_status=lambda current_job_id: {
                 "status": "running",
                 "progress": "Worker evaluating beta (2/6)",
+                "worker_active": True,
             }
             if current_job_id == job_id
             else None,

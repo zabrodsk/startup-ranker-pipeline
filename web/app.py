@@ -3445,7 +3445,7 @@ async def get_status(
             loaded_status = _normalize_worker_status(persisted_status.get("status"))
             loaded_progress = persisted_status.get("progress") or "Analysis in progress"
             progress_log = _load_worker_progress_log(job_id)
-            worker_active = bool(progress_log)
+            worker_active = bool(persisted_status.get("worker_active"))
             if loaded_status in {"pending", "running", "paused"} and worker_active:
                 return {
                     "job_id": job_id,
