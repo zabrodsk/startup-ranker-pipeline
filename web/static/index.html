@@ -4356,6 +4356,25 @@ function mergeSavedAndRecentRuns() {
     if (!run?.jobId) continue;
     const existing = merged.get(run.jobId) || {};
     const hasSavedRun = Boolean(existing.jobId);
+    if (hasSavedRun) {
+      merged.set(run.jobId, {
+        ...run,
+        ...existing,
+        createdAt: existing.createdAt || run.createdAt || null,
+        updatedAt: run.updatedAt || existing.updatedAt || null,
+        input_mode: existing.input_mode || run.input_mode || null,
+        runName: existing.runName || run.runName || null,
+        llm: existing.llm || run.llm || null,
+        results: existing.results || null,
+        hasResults: existing.hasResults === true,
+        canOpenResults: existing.canOpenResults === true,
+        canViewLog: existing.canViewLog === true,
+        status: existing.status || run.status || 'pending',
+        progress: existing.progress || run.progress || '',
+      });
+      continue;
+    }
+
     const savedHasResults = existing.hasResults === true;
     const savedCanOpenResults = existing.canOpenResults === true;
     const savedCanViewLog = existing.canViewLog === true;
