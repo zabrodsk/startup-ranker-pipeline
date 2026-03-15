@@ -948,6 +948,13 @@
       justify-content: space-between;
       gap: 16px;
       align-items: center;
+      scroll-margin-top: 24px;
+      transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+    }
+    .recent-run-card.is-active-focus {
+      border-color: rgba(29, 240, 134, 0.52);
+      box-shadow: 0 0 0 1px rgba(29, 240, 134, 0.22), 0 18px 38px rgba(4, 16, 12, 0.34);
+      transform: translateY(-1px);
     }
     .recent-run-meta {
       display: flex;
@@ -994,7 +1001,7 @@
     .recent-run-status.running { color: var(--green); border-color: var(--green-border); background: var(--green-surface-subtle); }
     .recent-run-status.done { color: var(--text-light); }
     .recent-run-status.error { color: var(--red); border-color: var(--red-border); background: rgba(255,107,107,0.08); }
-    .recent-run-open, .recent-run-view-log {
+    .recent-run-open, .recent-run-view-log, .recent-run-stop {
       background: none;
       border: 1px solid var(--text-dark);
       color: var(--text-light);
@@ -1003,8 +1010,17 @@
       font-size: 12px;
       cursor: pointer;
     }
-    .recent-run-open:hover, .recent-run-view-log:hover { border-color: var(--text-gray); }
-    .recent-run-open:disabled, .recent-run-view-log:disabled {
+    .recent-run-open:hover, .recent-run-view-log:hover, .recent-run-stop:hover { border-color: var(--text-gray); }
+    .recent-run-stop {
+      color: var(--red);
+      border-color: var(--red-border);
+      background: rgba(255, 107, 107, 0.06);
+    }
+    .recent-run-stop:hover {
+      border-color: rgba(255, 107, 107, 0.72);
+      background: rgba(255, 107, 107, 0.1);
+    }
+    .recent-run-open:disabled, .recent-run-view-log:disabled, .recent-run-stop:disabled {
       opacity: 0.45;
       cursor: not-allowed;
     }
@@ -3583,6 +3599,8 @@ const USER_PHASE_LABELS = {
 };
 let selectedPhaseModelKeys = {};
 let analysisConfigLoadState = 'idle';
+let analysisFocusJobId = null;
+let analysisFocusClearTimer = null;
 
 function _finalizeVisibleScreens(activeId) {
   $$('.screen').forEach((screen) => {
@@ -3654,11 +3672,37 @@ function stopSavedJobsRefresh() {
 }
 
 function hasActiveSavedJobs() {
-  return savedJobsCache.some((job) => {
+  return mergeSavedAndRecentRuns().some((job) => {
     if (job?.canViewLog === true) return true;
     const status = String(job?.status || '').toLowerCase();
     return status === 'pending' || status === 'running' || status === 'paused';
   });
+}
+
+function queueAnalysisJobFocus(jobId) {
+  analysisFocusJobId = jobId || null;
+  if (analysisFocusClearTimer) {
+    clearTimeout(analysisFocusClearTimer);
+    analysisFocusClearTimer = null;
+  }
+}
+
+function applyAnalysisJobFocus(root = document) {
+  if (!analysisFocusJobId) return false;
+  const cards = [...root.querySelectorAll('[data-job-card]')];
+  if (!cards.length) return false;
+  const card = cards.find((node) => String(node.dataset.jobCard || '') === String(analysisFocusJobId || ''));
+  if (!card) return false;
+  cards.forEach((node) => node.classList.toggle('is-active-focus', node === card));
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  analysisFocusClearTimer = setTimeout(() => {
+    card.classList.remove('is-active-focus');
+    if (analysisFocusJobId === card.dataset.jobCard) {
+      analysisFocusJobId = null;
+    }
+    analysisFocusClearTimer = null;
+  }, 3600);
+  return true;
 }
 
 function startSavedJobsRefresh() {
@@ -3699,16 +3743,10 @@ function startStatusWatchdog() {
           llm: data.llm ?? undefined,
         });
         setProgressDone();
-        try {
-          renderResults(confirmed.results);
-          showScreen('results-screen');
-          persistActiveJob(currentJobId);
-          setProcessingControls('done');
-          pollStatus.lastProgress = '';
-          pollStatus.stallTicks = 0;
-        } catch (renderErr) {
-          console.error('Watchdog: failed to render results:', renderErr);
-        }
+        setProcessingControls('done');
+        queueAnalysisJobFocus(currentJobId);
+        persistActiveJob(null);
+        fetchSavedJobs({ silent: true });
       }
     } catch (_) {
       // Intentionally ignore in watchdog; primary poll loop handles messaging.
@@ -4301,7 +4339,10 @@ function mergeSavedAndRecentRuns() {
   });
 }
 
-function renderSavedJobCards(runs, { limit = null, emptyText = 'No saved jobs found yet.' } = {}) {
+function renderSavedJobCards(
+  runs,
+  { limit = null, emptyText = 'No saved jobs found yet.', showStopAction = false } = {}
+) {
   const rows = limit ? runs.slice(0, limit) : runs;
   if (!rows.length) {
     return `<div class="saved-jobs-empty">${escapeHtml(emptyText)}</div>`;
@@ -4311,10 +4352,8 @@ function renderSavedJobCards(runs, { limit = null, emptyText = 'No saved jobs fo
     const status = run.status || 'pending';
     const canOpenResults = run.canOpenResults === true;
     const canViewLog = run.canViewLog === true;
-    const isUnavailable = !canOpenResults && !canViewLog;
-    const actionLabel = canOpenResults
-      ? 'Open results'
-      : (isUnavailable ? 'Unavailable' : 'In progress');
+    const isLive = canViewLog && isLiveRunStatus(String(status).toLowerCase());
+    const actionLabel = canOpenResults ? 'Open results' : 'Unavailable';
     const createdLine = formatRunTimestamp(run.createdAt || run.updatedAt);
     const modeLabel = getRunModeLabel(run);
     const metaBits = [
@@ -4330,7 +4369,13 @@ function renderSavedJobCards(runs, { limit = null, emptyText = 'No saved jobs fo
       : '';
     const openDisabled = canOpenResults ? '' : ' disabled';
     const logDisabled = canViewLog ? '' : ' disabled';
-    return `<div class="recent-run-card">
+    const stopButton = showStopAction && isLive
+      ? `<button class="recent-run-stop" data-job-stop="${escapeHtml(run.jobId)}">Stop analysis</button>`
+      : '';
+    const openButton = isLive
+      ? ''
+      : `<button class="recent-run-open" data-job-open="${escapeHtml(run.jobId)}"${openDisabled}>${escapeHtml(actionLabel)}</button>`;
+    return `<div class="recent-run-card" data-job-card="${escapeHtml(run.jobId)}">
       <div class="recent-run-meta">
         <div class="recent-run-title">${escapeHtml(getRunTitle(run))}</div>
         <div class="recent-run-subtitle">${escapeHtml(subtitle)}</div>
@@ -4340,7 +4385,8 @@ function renderSavedJobCards(runs, { limit = null, emptyText = 'No saved jobs fo
       <div class="recent-run-actions">
         <span class="recent-run-status ${status}">${escapeHtml(status)}</span>
         <button class="recent-run-view-log" data-job-log="${escapeHtml(run.jobId)}"${logDisabled}>View log</button>
-        <button class="recent-run-open" data-job-open="${escapeHtml(run.jobId)}"${openDisabled}>${escapeHtml(actionLabel)}</button>
+        ${stopButton}
+        ${openButton}
       </div>
     </div>`;
   }).join('');
@@ -4358,6 +4404,23 @@ function bindSavedJobActions(root = document) {
       e.stopPropagation();
       if (btn.disabled) return;
       showProgressLogModal(btn.dataset.jobLog);
+    });
+  });
+  root.querySelectorAll('[data-job-stop]').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (btn.disabled) return;
+      const jobId = String(btn.dataset.jobStop || '');
+      if (!jobId) return;
+      btn.disabled = true;
+      try {
+        await controlJob(jobId, 'stop');
+        queueAnalysisJobFocus(jobId);
+        await fetchSavedJobs({ silent: true });
+      } catch (err) {
+        btn.disabled = false;
+        window.alert(err?.message || 'Failed to stop analysis.');
+      }
     });
   });
 }
@@ -4513,8 +4576,13 @@ function getAnalysisContentEl() {
 function renderAnalysisHistoryScreen() {
   const content = getAnalysisContentEl();
   if (!content) return;
+  const runs = mergeSavedAndRecentRuns().sort((a, b) => {
+    const aTs = new Date(a.createdAt || a.updatedAt || 0).getTime();
+    const bTs = new Date(b.createdAt || b.updatedAt || 0).getTime();
+    return bTs - aTs;
+  });
 
-  if (!savedJobsLoaded) {
+  if (!savedJobsLoaded && !runs.length) {
     content.innerHTML = `
       <div class="analysis-history-section">
         <div class="analysis-history-head">
@@ -4525,12 +4593,6 @@ function renderAnalysisHistoryScreen() {
     `;
     return;
   }
-
-  const runs = [...savedJobsCache].sort((a, b) => {
-    const aTs = new Date(a.createdAt || 0).getTime();
-    const bTs = new Date(b.createdAt || 0).getTime();
-    return bTs - aTs;
-  });
 
   if (!runs.length) {
     content.innerHTML = `
@@ -4556,6 +4618,7 @@ function renderAnalysisHistoryScreen() {
 
   const cardsHtml = renderSavedJobCards(runs, {
     emptyText: 'No saved analyses found yet.',
+    showStopAction: true,
   });
 
   content.innerHTML = `
@@ -4571,6 +4634,7 @@ function renderAnalysisHistoryScreen() {
   `;
 
   bindSavedJobActions(content);
+  applyAnalysisJobFocus(content);
 }
 
 function getSavedCompanySortLabel(mode) {
@@ -5047,9 +5111,10 @@ function openCompaniesPage() {
   fetchSavedCompanies({ silent: false });
 }
 
-function openAnalysisPage() {
+function openAnalysisPage({ focusJobId = null } = {}) {
   const activeScreenId = getActiveScreenId();
   if (activeScreenId && activeScreenId !== 'analysis-screen') previousScreenBeforeAnalysis = activeScreenId;
+  if (focusJobId) queueAnalysisJobFocus(focusJobId);
   savedJobsLoaded = false;
   showScreen('analysis-screen');
   renderAnalysisHistoryScreen();
@@ -5623,8 +5688,12 @@ function setProcessingControls(status) {
 }
 
 async function controlCurrentJob(action) {
-  if (!currentJobId) return;
-  await api(`/api/jobs/${currentJobId}/control`, {
+  return controlJob(currentJobId, action);
+}
+
+async function controlJob(jobId, action) {
+  if (!jobId) return;
+  await api(`/api/jobs/${jobId}/control`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action }),
@@ -5680,80 +5749,17 @@ async function resumeActiveJob() {
   if (clearPersistedJobIfStale(savedJobId)) return false;
 
   persistActiveJob(savedJobId);
-  showScreen('processing-screen');
-  resetProgressBar();
-  setSpinnerActive();
-  setProcessingControls('running');
-  $('#processing-status').textContent = 'Reconnecting to your running analysis...';
-  renderProgressFeed([], 'Reconnecting to your running analysis...', 'running');
+  openAnalysisPage({ focusJobId: savedJobId });
 
   try {
-    const data = await api(`/api/status/${savedJobId}`, { timeoutMs: 10000, retries: 0 });
-    const freshestProgress = getFreshestProgressText(data);
-    if ((data.status === 'done' || data.status === 'stopped') && data.results) {
-      try {
-        const confirmed = await loadConfirmedTerminalResults(savedJobId, data.results || null);
-        if (confirmed.state === 'running') {
-          upsertRecentRun({
-            jobId: savedJobId,
-            status: 'running',
-            progress: freshestProgress,
-            results: null,
-            llm: data.llm ?? undefined,
-          });
-          $('#processing-status').textContent = freshestProgress || 'Resuming analysis...';
-          setProcessingControls('running');
-          renderProgressFeed(data.progress_log || [], freshestProgress || 'Resuming analysis...', 'running');
-          pollStatus.failures = 0;
-          pollStatus();
-          return true;
-        }
-        upsertRecentRun({
-          jobId: savedJobId,
-          status: data.status,
-          progress: freshestProgress,
-          results: confirmed.results || null,
-          llm: data.llm ?? undefined,
-        });
-        renderResults(confirmed.results);
-        showScreen('results-screen');
-        if (data.status === 'done') persistActiveJob(savedJobId);
-        else persistActiveJob(null);
-        return true;
-      } catch (renderErr) {
-        console.error('resumeActiveJob: failed to render results:', renderErr);
-      }
-    }
-
     upsertRecentRun({
       jobId: savedJobId,
-      status: data.status,
-      progress: freshestProgress,
-      results: data.results || null,
-      llm: data.llm ?? undefined,
+      status: 'running',
+      progress: 'Reconnected to your active analysis',
+      results: null,
     });
-
-    if (data.status === 'error') {
-      $('#processing-status').textContent = freshestProgress || 'Analysis failed.';
-      setSpinnerError();
-      setProcessingControls('error');
-      renderProgressFeed(data.progress_log || [], freshestProgress || 'Analysis failed.', 'error');
-      return true;
-    }
-    if (data.status === 'stopped') {
-      $('#processing-status').textContent = freshestProgress || 'Analysis stopped.';
-      setSpinnerError();
-      setProcessingControls('stopped');
-      renderProgressFeed(data.progress_log || [], freshestProgress || 'Analysis stopped.', 'stopped');
-      persistActiveJob(null);
-      return true;
-    }
-
-    $('#processing-status').textContent = freshestProgress || 'Resuming analysis...';
-    setProcessingControls(data.status || 'running');
-    renderProgressFeed(data.progress_log || [], freshestProgress || 'Resuming analysis...', data.status || 'running');
-    pollStatus.failures = 0;
-    pollStatus();
+    renderAnalysisHistoryScreen();
+    await fetchSavedJobs({ silent: false });
     return true;
   } catch (err) {
     persistActiveJob(null);
@@ -6025,13 +6031,6 @@ $('#analyze-btn').addEventListener('click', async () => {
   const _welcomeBanner = $('#onboarding-welcome');
   if (_welcomeBanner) _welcomeBanner.classList.remove('is-visible');
 
-  showScreen('processing-screen');
-  resetProgressBar();
-  setSpinnerActive();
-  setProcessingControls('running');
-  $('#processing-status').textContent = 'Uploading files...';
-  renderProgressFeed([], 'Uploading files...', 'running');
-
   const formData = new FormData();
   for (const f of uploadedFiles) formData.append('files', f);
 
@@ -6059,11 +6058,12 @@ $('#analyze-btn').addEventListener('click', async () => {
     upsertRecentRun({
       jobId: uploadRes.job_id,
       status: 'running',
-      progress: 'Uploading files...',
+      progress: 'Queued for worker',
       input_mode: effectiveInputMode,
       runName: requestedRunName,
       title: effectiveInputMode === 'specter' ? undefined : uploadedFiles.map((f) => f.name).join(', '),
     });
+    openAnalysisPage({ focusJobId: uploadRes.job_id });
 
     const useWebSearch = !!$('#web-search-checkbox')?.checked;
     const instructions = ($('#instructions-input')?.value || '').trim();
@@ -6090,15 +6090,18 @@ $('#analyze-btn').addEventListener('click', async () => {
       });
     } catch (err) {
       // The backend may still have accepted the job even if this request timed out.
-      // Continue by polling status instead of failing hard.
-      $('#processing-status').textContent =
-        'Connection unstable while starting analysis. Reconnecting...';
+      // Continue from the Analysis overview instead of failing hard.
+      upsertRecentRun({
+        jobId: uploadRes.job_id,
+        status: 'running',
+        progress: 'Connection unstable while starting analysis. Tracking from Analysis overview...',
+        input_mode: effectiveInputMode,
+        runName: requestedRunName,
+      });
     }
-    pollStatus();
+    fetchSavedJobs({ silent: false });
   } catch (err) {
-    setSpinnerError();
-    $('#processing-status').textContent = 'Error: ' + err.message;
-    renderProgressFeed([], 'Error: ' + err.message, 'error');
+    window.alert(`Failed to start analysis: ${err.message || 'Unknown error'}`);
   }
 });
 
@@ -6157,9 +6160,10 @@ async function pollStatus() {
           results: confirmed.results || null,
           llm: data.llm ?? undefined,
         });
-        renderResults(confirmed.results);
-        showScreen('results-screen');
-        persistActiveJob(currentJobId);
+        queueAnalysisJobFocus(currentJobId);
+        persistActiveJob(null);
+        openAnalysisPage({ focusJobId: currentJobId });
+        fetchSavedJobs({ silent: true });
         setProcessingControls('done');
         pollStatus.lastProgress = '';
         pollStatus.stallTicks = 0;
@@ -6212,8 +6216,9 @@ async function pollStatus() {
             results: confirmed.results || null,
             llm: data.llm ?? undefined,
           });
-          renderResults(confirmed.results);
-          showScreen('results-screen');
+          queueAnalysisJobFocus(currentJobId);
+          openAnalysisPage({ focusJobId: currentJobId });
+          fetchSavedJobs({ silent: true });
           setProcessingControls('stopped');
           persistActiveJob(null);
           pollStatus.lastProgress = '';
