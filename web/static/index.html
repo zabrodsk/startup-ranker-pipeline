@@ -3695,7 +3695,7 @@ function hasActiveSavedJobs() {
   return mergeSavedAndRecentRuns().some((job) => {
     if (job?.canViewLog === true) return true;
     const status = String(job?.status || '').toLowerCase();
-    return status === 'pending' || status === 'running' || status === 'paused';
+    return status === 'pending' || status === 'running' || status === 'paused' || isRecentlyUnsettledTerminalRun(job);
   });
 }
 
@@ -3823,6 +3823,14 @@ function clearPersistedJobIfStale(jobId = getPersistedActiveJob()) {
   return true;
 }
 
+function isRecentlyUnsettledTerminalRun(run) {
+  if (!run || String(run.status || '').toLowerCase() !== 'done') return false;
+  if (run.canOpenResults === true) return false;
+  const ts = new Date(run.updatedAt || run.createdAt || 0).getTime();
+  if (!Number.isFinite(ts) || ts <= 0) return true;
+  return (Date.now() - ts) < (5 * 60 * 1000);
+}
+
 function loadRecentRuns() {
   try {
     const runs = JSON.parse(localStorage.getItem(RECENT_RUNS_KEY) || '[]');
@@ -3884,6 +3892,54 @@ function saveRecentRuns(runs) {
     });
     localStorage.setItem(RECENT_RUNS_KEY, JSON.stringify(emergencyRuns));
   }
+}
+
+function syncRecentRunsWithSavedJobs() {
+  const runs = loadRecentRuns();
+  if (!runs.length || !savedJobsCache.length) return false;
+
+  let changed = false;
+  const savedById = new Map(savedJobsCache.map((job) => [job.jobId, job]));
+  const nextRuns = runs.map((run) => {
+    const saved = savedById.get(run.jobId);
+    if (!saved) return run;
+
+    const next = { ...run };
+    const nextStatus = String(saved.status || next.status || '').toLowerCase();
+    const nextTerminal = isTerminalRunStatus(nextStatus);
+
+    const assign = (key, value) => {
+      if (next[key] !== value) {
+        next[key] = value;
+        changed = true;
+      }
+    };
+
+    assign('status', saved.status || next.status || 'pending');
+    assign('progress', saved.progress || next.progress || '');
+    assign('createdAt', saved.createdAt || next.createdAt || null);
+    assign('input_mode', saved.input_mode || next.input_mode || null);
+    assign('runName', saved.runName || next.runName || null);
+    assign('useWebSearch', saved.useWebSearch === true);
+    assign('llm', saved.llm || next.llm || null);
+    assign('hasResults', saved.hasResults === true);
+    assign('canOpenResults', saved.canOpenResults === true);
+    assign('canViewLog', saved.canViewLog === true);
+
+    if (!nextTerminal || saved.canOpenResults !== true) {
+      if (next.results != null) {
+        next.results = null;
+        changed = true;
+      }
+    }
+
+    return next;
+  });
+
+  if (changed) {
+    saveRecentRuns(nextRuns);
+  }
+  return changed;
 }
 
 function getSelectedLlmFromConfig() {
@@ -5060,6 +5116,7 @@ async function fetchSavedJobs({ silent = true } = {}) {
       canViewLog: job.can_view_log === true,
       llm: job.llm || null,
     }));
+    syncRecentRunsWithSavedJobs();
     const clearedStaleActiveJob = clearPersistedJobIfStale();
     if (clearedStaleActiveJob) {
       pollStatus.failures = 0;
