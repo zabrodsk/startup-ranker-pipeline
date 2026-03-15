@@ -83,6 +83,16 @@ screen.
   terminal analyses and reclaim idle RSS.
 - **Lower idle polling cost** — Railway worker production now uses
   `SPECTER_WORKER_POLL_SECONDS=10` to reduce idle polling overhead.
+- **Analysis overview as source of truth** — New analyses now navigate
+  straight to the Analysis overview. That page is the primary live monitoring
+  surface for active and completed runs instead of the dedicated progress page.
+- **Server-authoritative saved report opening** — Finished run cards now always
+  offer **Open results**, and the browser asks the server directly when the
+  user clicks. The client no longer decides report availability from stale
+  local browser state.
+- **Run naming and navigation polish** — Optional run names are supported for
+  all analysis types, and the main header now highlights the active section
+  consistently across New Analysis, Analysis, Companies, and results flows.
 
 ## Model Catalog
 

@@ -164,6 +164,12 @@ been persisted. While a run is still active, `/api/analyses/<job_id>` returns
 `409 Conflict` instead of serving partial per-company results as if the batch
 were complete.
 
+The primary live monitoring surface is now the **Analysis overview** page.
+New analyses navigate directly there instead of relying on a separate progress
+screen. Finished runs always expose an **Open results** action and the server
+decides whether the saved report can be opened, which avoids stale browser-side
+availability state.
+
 ### Deploy via Cloudflare Tunnel
 
 ```bash
