@@ -41,6 +41,23 @@ def _normalize_company_key(name: str | None, slug: str | None) -> str:
     return f"{(slug or name or 'unknown').strip().lower()}"
 
 
+def _final_job_outcome(
+    *,
+    completed_companies: int,
+    failed_companies: int,
+    total_companies: int,
+) -> tuple[str, str]:
+    if completed_companies <= 0 and failed_companies > 0:
+        return (
+            "error",
+            f"No companies were successfully evaluated. {failed_companies}/{total_companies} failed.",
+        )
+    return (
+        "done",
+        f"Analysis complete — {completed_companies}/{total_companies} companies ranked",
+    )
+
+
 def _write_worker_config(
     work_dir: Path,
     *,
@@ -434,8 +451,13 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
         if not loaded or not isinstance(loaded.get("results"), dict):
             raise RuntimeError("Could not reconstruct final Specter results from persisted state.")
         results = loaded["results"]
-        results["job_status"] = "done"
-        results["job_message"] = f"Analysis complete — {completed_companies}/{total_companies} companies ranked"
+        final_status, final_message = _final_job_outcome(
+            completed_companies=completed_companies,
+            failed_companies=failed_companies,
+            total_companies=total_companies,
+        )
+        results["job_status"] = final_status
+        results["job_message"] = final_message
         if "run_costs" not in results:
             run_costs = db.load_run_costs(job_id)
             if isinstance(run_costs, dict):
@@ -447,8 +469,8 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
             run_config=run_config,
             versions=versions,
             worker_state={
-                "status": "done",
-                "progress": results["job_message"],
+                "status": final_status,
+                "progress": final_message,
                 "completed_companies": completed_companies,
                 "failed_companies": failed_companies,
                 "total_companies": total_companies,
@@ -459,13 +481,18 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
 
         db.finish_specter_worker_job(
             job_id,
-            status="done",
-            progress=results["job_message"],
+            status=final_status,
+            progress=final_message,
             completed_companies=completed_companies,
             failed_companies=failed_companies,
             total_companies=total_companies,
         )
-        db.insert_analysis_event(job_id, message="Finalizing complete.", event_type="worker_done", stage="finalize")
+        db.insert_analysis_event(
+            job_id,
+            message="Finalizing complete.",
+            event_type="worker_done" if final_status == "done" else "worker_error",
+            stage="finalize",
+        )
         _log(f"{job_id}: finalization complete")
     except Exception as exc:
         _log(f"{job_id}: worker error {type(exc).__name__}: {exc}")

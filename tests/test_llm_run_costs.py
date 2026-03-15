@@ -91,6 +91,7 @@ def test_available_models_payload_marks_availability(monkeypatch) -> None:
     }
 
     assert gemini["available"] is True
+    assert gemini["selectable"] is True
     assert gemini["pricing_available"] is True
     assert gemini["summary"] == "Budget speed"
     assert all(
@@ -212,11 +213,12 @@ def test_model_catalog_validation_accepts_openai_entries_when_key_present(monkey
 def test_model_catalog_validation_accepts_openrouter_entries_when_key_present(monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
-    entry = validate_requested_selection("openrouter", "openrouter/hunter-alpha")
-
-    assert entry is not None
-    assert entry.provider == "openrouter"
-    assert entry.model == "openrouter/hunter-alpha"
+    try:
+        validate_requested_selection("openrouter", "openrouter/hunter-alpha")
+    except ValueError as exc:
+        assert "structured-output analysis runs" in str(exc)
+    else:
+        raise AssertionError("Expected incompatible structured-output model to raise ValueError")
 
 
 def test_create_llm_prefers_run_context_selection_over_env(monkeypatch) -> None:
@@ -505,7 +507,13 @@ def test_api_config_exposes_default_and_available_models(monkeypatch) -> None:
     assert providers == {"gemini", "anthropic", "openai", "openrouter"}
     assert any(item["model"] == "gemini-3.1-flash-lite-preview" and item["available"] for item in payload["available_models"])
     assert any(item["model"] == "gpt-5-mini" and item["available"] for item in payload["available_models"])
-    assert any(item["model"] == "openrouter/hunter-alpha" and item["available"] for item in payload["available_models"])
+    assert any(
+        item["model"] == "openrouter/hunter-alpha"
+        and item["available"]
+        and not item["selectable"]
+        and item["supports_structured_output"] is False
+        for item in payload["available_models"]
+    )
     assert payload["phase_model_defaults"] == phase_model_defaults_payload()
     assert payload["quality_tiers"] == quality_tiers_payload()
     assert payload["premium_phase_options"] == premium_phase_options_payload()

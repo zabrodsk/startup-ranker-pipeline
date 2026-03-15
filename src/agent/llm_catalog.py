@@ -22,6 +22,7 @@ class ModelCatalogEntry:
     tier: Literal["budget", "balanced", "premium"]
     pricing: ModelPricing | None
     required_env: tuple[str, ...]
+    supports_structured_output: bool = True
 
 
 MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
@@ -108,6 +109,7 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
             output_per_million_tokens_usd=0.0,
         ),
         required_env=("OPENROUTER_API_KEY",),
+        supports_structured_output=False,
     ),
 )
 
@@ -130,6 +132,10 @@ def normalize_provider(provider: str | None) -> str:
 
 def _has_required_env(entry: ModelCatalogEntry) -> bool:
     return all(bool(os.getenv(name)) for name in entry.required_env)
+
+
+def is_selectable_for_analysis(entry: ModelCatalogEntry) -> bool:
+    return _has_required_env(entry) and entry.supports_structured_output
 
 
 def find_model_entry(provider: str | None, model: str | None) -> ModelCatalogEntry | None:
@@ -178,6 +184,14 @@ def current_default_selection() -> dict[str, str]:
 def available_models_payload() -> list[dict[str, Any]]:
     models: list[dict[str, Any]] = []
     for entry in MODEL_CATALOG:
+        env_available = _has_required_env(entry)
+        selectable = is_selectable_for_analysis(entry)
+        if not env_available:
+            unavailable_reason = "Missing provider credentials."
+        elif not entry.supports_structured_output:
+            unavailable_reason = "Not supported for structured-output analysis runs yet."
+        else:
+            unavailable_reason = ""
         models.append(
             {
                 "provider": entry.provider,
@@ -185,8 +199,11 @@ def available_models_payload() -> list[dict[str, Any]]:
                 "label": entry.label,
                 "summary": entry.summary,
                 "tier": entry.tier,
-                "available": _has_required_env(entry),
+                "available": env_available,
+                "selectable": selectable,
                 "pricing_available": entry.pricing is not None,
+                "supports_structured_output": entry.supports_structured_output,
+                "unavailable_reason": unavailable_reason,
             }
         )
     return models
@@ -203,6 +220,10 @@ def validate_requested_selection(
         raise ValueError("Unknown LLM model selection.")
     if not _has_required_env(entry):
         raise ValueError(f"{entry.label} is not available in this environment.")
+    if not entry.supports_structured_output:
+        raise ValueError(
+            f"{entry.label} is not supported for structured-output analysis runs yet."
+        )
     return entry
 
 

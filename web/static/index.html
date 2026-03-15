@@ -3824,18 +3824,18 @@ function getSelectedLlmFromConfig() {
   const models = analysisConfig?.available_models || [];
   if (!models.length) return defaultSelection;
   if (selectedLlmKey) {
-    const chosen = models.find((item) => `${item.provider}:${item.model}` === selectedLlmKey && item.available);
+    const chosen = models.find((item) => `${item.provider}:${item.model}` === selectedLlmKey && item.selectable);
     if (chosen) return chosen;
   }
   const fallbackKey = defaultSelection ? `${defaultSelection.provider}:${defaultSelection.model}` : null;
-  const fallback = models.find((item) => `${item.provider}:${item.model}` === fallbackKey && item.available);
-  return fallback || models.find((item) => item.available) || defaultSelection;
+  const fallback = models.find((item) => `${item.provider}:${item.model}` === fallbackKey && item.selectable);
+  return fallback || models.find((item) => item.selectable) || defaultSelection;
 }
 
 function getAdvancedLlmSelection() {
   if (!selectedLlmKey) return null;
   const models = analysisConfig?.available_models || [];
-  return models.find((item) => `${item.provider}:${item.model}` === selectedLlmKey && item.available) || null;
+  return models.find((item) => `${item.provider}:${item.model}` === selectedLlmKey && item.selectable) || null;
 }
 
 function getProviderLabel(provider) {
@@ -3886,7 +3886,7 @@ function getPhaseModelDefaults() {
     );
   }
 
-  const available = (analysisConfig?.available_models || []).filter((item) => item.available);
+  const available = (analysisConfig?.available_models || []).filter((item) => item.selectable);
   const findKey = (provider, model) => {
     const found = available.find((item) => item.provider === provider && item.model === model);
     return found ? `${found.provider}:${found.model}` : null;
@@ -3911,12 +3911,12 @@ function getPhaseModelDefaults() {
 
 function ensurePhaseModelSelections() {
   const defaults = getPhaseModelDefaults();
-  const available = (analysisConfig?.available_models || []).filter((item) => item.available);
+  const available = (analysisConfig?.available_models || []).filter((item) => item.selectable);
   const firstKey = available[0] ? `${available[0].provider}:${available[0].model}` : null;
 
   USER_PHASES.forEach((phase) => {
     const current = selectedPhaseModelKeys[phase];
-    if (current && getModelByKey(current)?.available) return;
+    if (current && getModelByKey(current)?.selectable) return;
     selectedPhaseModelKeys[phase] = defaults[phase] || firstKey || '';
   });
 }
@@ -3979,7 +3979,7 @@ function renderPhaseModelSelector() {
     return;
   }
 
-  const models = (analysisConfig?.available_models || []).filter((item) => item.available);
+  const models = (analysisConfig?.available_models || []).filter((item) => item.selectable);
   if (!models.length) {
     config.innerHTML = '<button type="button" class="llm-model-card is-unavailable" disabled><span class="llm-model-name">No models configured</span><span class="llm-model-meta">Add provider credentials to enable per-phase routing.</span></button>';
     hint.textContent = 'No configured analysis models are available in this environment.';
@@ -4062,21 +4062,21 @@ function renderLlmSelector() {
   const placeholderOption = '<option value="" selected>Preview only — Advanced mode inactive</option>';
   select.innerHTML = placeholderOption + models.map((item) => {
     const key = `${item.provider}:${item.model}`;
-    const statusSuffix = item.available
+    const statusSuffix = item.selectable
       ? (item.pricing_available ? '' : ' · cost unavailable')
-      : ' · unavailable';
-    return `<option value="${escapeHtml(key)}" ${item.available ? '' : 'disabled'} ${key === selectedKeyForUi ? 'selected' : ''}>${escapeHtml(item.label + statusSuffix)}</option>`;
+      : ` · ${item.unavailable_reason || 'unavailable'}`;
+    return `<option value="${escapeHtml(key)}" ${item.selectable ? '' : 'disabled'} ${key === selectedKeyForUi ? 'selected' : ''}>${escapeHtml(item.label + statusSuffix)}</option>`;
   }).join('');
-  select.disabled = !models.some((item) => item.available);
+  select.disabled = !models.some((item) => item.selectable);
   syncLlmSelectValue(selectedKeyForUi);
 
   grid.innerHTML = models.map((item, index) => {
     const key = `${item.provider}:${item.model}`;
     const providerLabel = getProviderLabel(item.provider);
     const selectedClass = key === selectedKeyForUi ? ' is-selected' : '';
-    const unavailableClass = item.available ? '' : ' is-unavailable';
-    const stateClass = item.available ? 'ready' : '';
-    const stateLabel = item.available ? 'Ready' : 'Missing key';
+    const unavailableClass = item.selectable ? '' : ' is-unavailable';
+    const stateClass = item.selectable ? 'ready' : '';
+    const stateLabel = item.selectable ? 'Ready' : (item.unavailable_reason || 'Unavailable');
     const description = item.summary || 'General use';
     const pricingLine = item.pricing_available ? formatModelPricing(item) : 'Usage tracked, pricing unavailable';
     return `
@@ -4088,7 +4088,7 @@ function renderLlmSelector() {
         style="--card-index:${index}"
         role="radio"
         aria-checked="${key === selectedKeyForUi ? 'true' : 'false'}"
-        ${item.available ? '' : 'disabled'}
+        ${item.selectable ? '' : 'disabled'}
       >
         <div class="llm-model-card-top">
           <div class="llm-model-pill-row">
@@ -4122,7 +4122,7 @@ function renderLlmSelector() {
 
   const chosen = previewSelection;
   if (!chosen) {
-    hint.textContent = 'No configured model credentials are available in this environment.';
+  hint.textContent = 'No compatible analysis models are available in this environment.';
     return;
   }
   const chosenSummary = chosen.summary ? `${chosen.summary}. ` : '';
