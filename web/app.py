@@ -3621,34 +3621,40 @@ async def get_analysis(
         raise HTTPException(status_code=401, detail="Not authenticated")
     _set_no_store_headers(response)
 
-    saved_job = None
-    persisted_status = None
-
-    if db and db.is_configured():
-        load_saved_job = getattr(db, "load_saved_job", None)
-        if callable(load_saved_job):
-            saved_job = load_saved_job(job_id)
-        if saved_job:
-            saved_status = _normalize_worker_status(saved_job.get("status"))
-            if _is_terminal_job_status(saved_status):
-                if job_id in _jobs:
-                    _jobs[job_id].status = saved_status
-                    _jobs[job_id].progress = saved_job.get("progress") or _jobs[job_id].progress
-            else:
-                raise HTTPException(status_code=409, detail="Analysis is still in progress.")
-        load_job_status = getattr(db, "load_job_status", None)
-        persisted_status = load_job_status(job_id) if callable(load_job_status) and not saved_job else None
-        if persisted_status and not _is_terminal_job_status(persisted_status.get("status")):
-            raise HTTPException(status_code=409, detail="Analysis is still in progress.")
-
-    if job_id in _jobs and not _is_terminal_job_status(_jobs[job_id].status):
-        raise HTTPException(status_code=409, detail="Analysis is still in progress.")
-
     cache = _results_cache.get(job_id, {})
     results = cache.get("results")
     if results and not _is_compact_results_payload(results):
         _mark_terminal_results_served(job_id)
         return {"job_id": job_id, "results": results}
+
+    saved_job = None
+    if db and db.is_configured():
+        load_saved_job = getattr(db, "load_saved_job", None)
+        load_job_status = getattr(db, "load_job_status", None)
+        if callable(load_saved_job):
+            saved_job = load_saved_job(job_id)
+        if saved_job:
+            saved_status = _normalize_worker_status(saved_job.get("status"))
+            if not _is_terminal_job_status(saved_status):
+                raise HTTPException(status_code=409, detail="Analysis is still in progress.")
+            if job_id in _jobs:
+                _jobs[job_id].status = saved_status
+                _jobs[job_id].progress = saved_job.get("progress") or _jobs[job_id].progress
+            else:
+                _jobs[job_id] = AnalysisStatus(
+                    job_id=job_id,
+                    status=saved_status,
+                    progress=saved_job.get("progress") or "Analysis complete",
+                    progress_log=[],
+                )
+        else:
+            persisted_status = load_job_status(job_id) if callable(load_job_status) else None
+            if persisted_status and not _is_terminal_job_status(persisted_status.get("status")):
+                raise HTTPException(status_code=409, detail="Analysis is still in progress.")
+            if job_id in _jobs and not _is_terminal_job_status(_jobs[job_id].status):
+                raise HTTPException(status_code=409, detail="Analysis is still in progress.")
+    elif job_id in _jobs and not _is_terminal_job_status(_jobs[job_id].status):
+        raise HTTPException(status_code=409, detail="Analysis is still in progress.")
 
     loaded = _load_persisted_job_results(job_id, preferred_mode=cache.get("input_mode"))
     if loaded:

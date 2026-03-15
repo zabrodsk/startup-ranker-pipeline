@@ -1264,12 +1264,6 @@ def test_get_analysis_prefers_terminal_saved_job_over_stale_in_memory_status(mon
             }
             if current_job_id == job_id
             else None,
-            load_job_status=lambda current_job_id: {
-                "status": "running",
-                "progress": "Worker evaluating alpha (1/1)",
-            }
-            if current_job_id == job_id
-            else None,
         ),
     )
     monkeypatch.setattr(
@@ -1282,6 +1276,45 @@ def test_get_analysis_prefers_terminal_saved_job_over_stale_in_memory_status(mon
 
     assert payload == {"job_id": job_id, "results": final_results}
     assert web_app._jobs[job_id].status == "done"
+
+
+def test_get_analysis_uses_saved_job_as_only_db_gate(monkeypatch) -> None:
+    job_id = "job-saved-terminal-no-secondary-gate"
+    final_results = {
+        "mode": "batch",
+        "summary_rows": [{"startup_slug": "alpha", "company_name": "Alpha"}],
+        "job_status": "done",
+        "job_message": "Analysis complete — 1/1 companies ranked",
+    }
+
+    monkeypatch.setattr(web_app, "_check_session", lambda session_id: True)
+    monkeypatch.setattr(
+        web_app,
+        "db",
+        SimpleNamespace(
+            is_configured=lambda: True,
+            load_saved_job=lambda current_job_id: {
+                "job_id": job_id,
+                "status": "done",
+                "progress": "Analysis complete — 1/1 companies ranked",
+                "has_results": True,
+            }
+            if current_job_id == job_id
+            else None,
+            load_job_status=lambda _current_job_id: (_ for _ in ()).throw(
+                AssertionError("load_job_status should not be consulted when load_saved_job is available")
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        web_app,
+        "_load_persisted_job_results",
+        lambda current_job_id, preferred_mode=None: {"results": final_results} if current_job_id == job_id else None,
+    )
+
+    payload = asyncio.run(web_app.get_analysis(job_id, response=Response(), session_id="session"))
+
+    assert payload == {"job_id": job_id, "results": final_results}
 
 
 def test_start_analysis_queues_worker_backed_specter_job_without_starting_thread(tmp_path: Path, monkeypatch) -> None:
