@@ -4470,7 +4470,6 @@ function renderSavedJobCards(
   return rows.map((run) => {
     const status = String(run.status || 'pending');
     const normalizedStatus = status.toLowerCase();
-    const canOpenResults = normalizedStatus === 'done';
     const canViewLog = run.canViewLog === true;
     const isLive = canViewLog && isLiveRunStatus(normalizedStatus);
     const createdLine = formatRunTimestamp(run.createdAt || run.updatedAt);
@@ -4492,9 +4491,7 @@ function renderSavedJobCards(
       : '';
     const openButton = isLive
       ? ''
-      : (normalizedStatus === 'done'
-        ? `<button class="recent-run-open" data-job-open="${escapeHtml(run.jobId)}">Open results</button>`
-        : '');
+      : `<button class="recent-run-open" data-job-open="${escapeHtml(run.jobId)}">Open results</button>`;
     return `<div class="recent-run-card" data-job-card="${escapeHtml(run.jobId)}">
       <div class="recent-run-meta">
         <div class="recent-run-title">${escapeHtml(getRunTitle(run))}</div>
@@ -5898,14 +5895,7 @@ async function resumeActiveJob() {
 async function openSavedRun(jobId) {
   if (!jobId || jobId === 'null' || jobId === 'undefined') return;
   const run = savedJobsCache.find((r) => r.jobId === jobId)
-    || mergeSavedAndRecentRuns().find((r) => r.jobId === jobId);
-  const normalizedStatus = String(run?.status || '').toLowerCase();
-  const canAttemptOpen = normalizedStatus === 'done'
-    || run?.canOpenResults === true
-    || run?.hasResults === true;
-  if (!canAttemptOpen) {
-    return;
-  }
+    || getServerAuthoritativeRuns().find((r) => r.jobId === jobId);
 
   const subtitleEl = $('#results-subtitle');
   const rankingsEl = $('#rankings-container');
