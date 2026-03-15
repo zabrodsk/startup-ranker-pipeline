@@ -5932,7 +5932,7 @@ function isSpecterMode() {
 function updateRunNameVisibility() {
   const section = $('#run-name-section');
   if (!section) return;
-  section.style.display = inputMode === 'specter' ? 'block' : 'none';
+  section.style.display = 'block';
 }
 
 function addFiles(fileList) {
@@ -6034,9 +6034,7 @@ $('#analyze-btn').addEventListener('click', async () => {
     persistActiveJob(uploadRes.job_id);
     const autoDetectedSpecter = uploadRes.mode === 'specter' && !inputModeTouched;
     const effectiveInputMode = autoDetectedSpecter ? 'specter' : inputMode;
-    const requestedRunName = effectiveInputMode === 'specter'
-      ? (($('#run-name-input')?.value || '').trim() || null)
-      : null;
+    const requestedRunName = (($('#run-name-input')?.value || '').trim() || null);
     const analysisSelection = getAnalysisSelectionPayload();
     upsertRecentRun({
       jobId: uploadRes.job_id,
@@ -7036,6 +7034,7 @@ function openNewAnalysis() {
   uploadedFiles = [];
   renderFiles();
   persistActiveJob(null);
+  if ($('#run-name-input')) $('#run-name-input').value = '';
   renderRecentRuns();
   initOnboardingWelcome();
   initInputModeCallout();
