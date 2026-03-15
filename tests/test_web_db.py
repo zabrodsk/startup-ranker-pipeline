@@ -1137,6 +1137,106 @@ def test_list_saved_jobs_exposes_optional_run_name(monkeypatch) -> None:
     assert rows[0]["run_name"] == "Germany shortlist"
 
 
+def test_list_saved_jobs_allows_reconstructable_specter_results_without_snapshot(monkeypatch) -> None:
+    import web.db as web_db
+
+    class FakeResponse:
+        def __init__(self, data):
+            self.data = data
+
+    class FakeQuery:
+        def __init__(self, table_name: str):
+            self.table_name = table_name
+            self.filters: list[tuple[str, str, object]] = []
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def order(self, *_args, **_kwargs):
+            return self
+
+        def limit(self, *_args, **_kwargs):
+            return self
+
+        def in_(self, key, values):
+            self.filters.append(("in", key, tuple(values)))
+            return self
+
+        def is_(self, key, value):
+            self.filters.append(("is", key, value))
+            return self
+
+        def execute(self):
+            if self.table_name == "jobs":
+                return FakeResponse(
+                    [
+                        {
+                            "job_id_legacy": "job-terminal-no-snapshot",
+                            "input_mode": "specter",
+                            "use_web_search": True,
+                            "created_at": "2026-03-15T09:49:19Z",
+                            "run_config": {},
+                        }
+                    ]
+                )
+            if self.table_name == "job_status_history":
+                return FakeResponse(
+                    [
+                        {
+                            "job_id_legacy": "job-terminal-no-snapshot",
+                            "status": "done",
+                            "progress": "Analysis complete",
+                            "created_at": "2026-03-15T09:55:00Z",
+                        }
+                    ]
+                )
+            if self.table_name == "analyses":
+                return FakeResponse(
+                    [
+                        {
+                            "job_id_legacy": "job-terminal-no-snapshot",
+                            "status": "done",
+                            "results_payload": {},
+                            "created_at": "2026-03-15T09:55:00Z",
+                        }
+                    ]
+                )
+            if self.table_name == "company_runs":
+                assert ("in", "job_id_legacy", ("job-terminal-no-snapshot",)) in self.filters
+                return FakeResponse(
+                    [
+                        {
+                            "job_id_legacy": "job-terminal-no-snapshot",
+                        }
+                    ]
+                )
+            raise AssertionError(f"Unexpected table lookup: {self.table_name}")
+
+    class FakeClient:
+        def table(self, table_name: str):
+            return FakeQuery(table_name)
+
+    monkeypatch.setattr(web_db, "_get_client", lambda: FakeClient())
+
+    rows = web_db.list_saved_jobs(limit=10)
+
+    assert rows == [
+        {
+            "job_id": "job-terminal-no-snapshot",
+            "status": "done",
+            "progress": "Analysis complete",
+            "created_at": "2026-03-15T09:55:00Z",
+            "input_mode": "specter",
+            "use_web_search": True,
+            "run_name": None,
+            "run_config": {},
+            "results": None,
+            "has_results": True,
+            "worker_active": False,
+        }
+    ]
+
+
 def test_ensure_source_files_bucket_accepts_dict_bucket_rows(monkeypatch) -> None:
     import web.db as web_db
 

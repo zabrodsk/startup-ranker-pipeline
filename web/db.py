@@ -2018,6 +2018,42 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
             if jid and jid not in latest_analysis_by_job:
                 latest_analysis_by_job[jid] = row
 
+        reconstructable_job_ids: set[str] = set()
+        terminal_without_snapshot_candidates: list[str] = []
+        for row in jobs:
+            jid = row.get("job_id_legacy")
+            if not jid or row.get("input_mode") != "specter":
+                continue
+            latest_status = latest_status_by_job.get(jid, {})
+            latest_analysis = latest_analysis_by_job.get(jid, {})
+            analysis_status = str(latest_analysis.get("status") or "").strip().lower()
+            status = str(latest_status.get("status") or analysis_status or "").strip().lower()
+            snapshot_payload = latest_analysis.get("results_payload")
+            if status in {"done", "error", "stopped"} and not (isinstance(snapshot_payload, dict) and snapshot_payload):
+                terminal_without_snapshot_candidates.append(jid)
+
+        if terminal_without_snapshot_candidates:
+            try:
+                company_rows = (
+                    client.table("company_runs")
+                    .select("job_id_legacy")
+                    .in_("job_id_legacy", terminal_without_snapshot_candidates)
+                    .limit(max(len(terminal_without_snapshot_candidates) * 8, 100))
+                    .execute()
+                )
+                reconstructable_job_ids = {
+                    row.get("job_id_legacy")
+                    for row in (company_rows.data or [])
+                    if row.get("job_id_legacy")
+                }
+            except Exception as exc:
+                _log_supabase_error(
+                    "list_saved_jobs.company_runs",
+                    "company_runs",
+                    exc,
+                )
+                reconstructable_job_ids = set()
+
         out: list[dict[str, Any]] = []
         for row in jobs:
             jid = row.get("job_id_legacy")
@@ -2056,7 +2092,7 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
                     "run_name": run_config.get("run_name") if isinstance(run_config, dict) else None,
                     "run_config": run_config,
                     "results": None,
-                    "has_results": bool(isinstance(snapshot_payload, dict) and snapshot_payload),
+                    "has_results": bool(isinstance(snapshot_payload, dict) and snapshot_payload) or jid in reconstructable_job_ids,
                     "worker_active": worker_active,
                 }
             )
