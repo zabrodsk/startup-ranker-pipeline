@@ -97,6 +97,18 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         ),
         required_env=("OPENAI_API_KEY",),
     ),
+    ModelCatalogEntry(
+        provider="openrouter",
+        model="openrouter/hunter-alpha",
+        label="Hunter Alpha",
+        summary="Experimental reasoning",
+        tier="premium",
+        pricing=ModelPricing(
+            input_per_million_tokens_usd=0.0,
+            output_per_million_tokens_usd=0.0,
+        ),
+        required_env=("OPENROUTER_API_KEY",),
+    ),
 )
 
 _DEFAULT_PROVIDER = "gemini"

@@ -84,6 +84,12 @@ screen.
 - **Lower idle polling cost** — Railway worker production now uses
   `SPECTER_WORKER_POLL_SECONDS=10` to reduce idle polling overhead.
 
+## Model Catalog
+
+- Added OpenRouter model selection for `openrouter/hunter-alpha`
+- OpenRouter now uses dedicated `OPENROUTER_API_KEY` / `OPENROUTER_BASE_URL`
+  configuration instead of sharing the OpenAI key path
+
 ---
 
 ## Files Changed (v0.0.6)

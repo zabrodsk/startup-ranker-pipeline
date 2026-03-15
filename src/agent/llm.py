@@ -6,9 +6,11 @@ Environment variables:
     LLM_PROVIDER: One of "gemini", "openai", "anthropic", "openrouter" (default: "gemini")
     MODEL_NAME: Model identifier (default: "gemini-3.1-flash-lite-preview")
     GOOGLE_API_KEY: Required when LLM_PROVIDER=gemini
-    OPENAI_API_KEY: Required when LLM_PROVIDER=openai or openrouter
+    OPENAI_API_KEY: Required when LLM_PROVIDER=openai
+    OPENROUTER_API_KEY: Required when LLM_PROVIDER=openrouter (falls back to OPENAI_API_KEY)
     ANTHROPIC_API_KEY: Required when LLM_PROVIDER=anthropic
-    OPENAI_BASE_URL: Required when LLM_PROVIDER=openrouter
+    OPENROUTER_BASE_URL: Optional when LLM_PROVIDER=openrouter (defaults to https://openrouter.ai/api/v1)
+    OPENAI_BASE_URL: Legacy fallback for OpenRouter base URL
 """
 
 import os
@@ -32,6 +34,7 @@ _DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 _DEFAULT_TIMEOUT_SECONDS = 90.0
 _DEFAULT_MAX_RETRIES = 2
 _FALLBACK_ENCODING_NAME = "o200k_base"
+_DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 def _extract_usage_metadata(payload: Any) -> dict[str, int] | None:
@@ -418,11 +421,15 @@ def _create_openrouter(
 ) -> BaseChatModel:
     from langchain_openai import ChatOpenAI
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    base_url = os.getenv("OPENAI_BASE_URL")
-    if not api_key or not base_url:
+    api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
+    base_url = (
+        os.getenv("OPENROUTER_BASE_URL")
+        or os.getenv("OPENAI_BASE_URL")
+        or _DEFAULT_OPENROUTER_BASE_URL
+    )
+    if not api_key:
         raise ValueError(
-            "OPENAI_API_KEY and OPENAI_BASE_URL are required when LLM_PROVIDER=openrouter"
+            "OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter"
         )
 
     return ChatOpenAI(

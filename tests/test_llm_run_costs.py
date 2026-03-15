@@ -77,6 +77,7 @@ def test_model_catalog_validation_accepts_only_available_entries(monkeypatch) ->
 def test_available_models_payload_marks_availability(monkeypatch) -> None:
     monkeypatch.setenv("GOOGLE_API_KEY", "google")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     models = available_models_payload()
     gemini = next(item for item in models if item["model"] == "gemini-3.1-flash-lite-preview")
     assert {item["model"] for item in models} == {
@@ -86,6 +87,7 @@ def test_available_models_payload_marks_availability(monkeypatch) -> None:
         "gpt-5-mini",
         "gpt-5",
         "gpt-4.1-mini",
+        "openrouter/hunter-alpha",
     }
 
     assert gemini["available"] is True
@@ -94,7 +96,7 @@ def test_available_models_payload_marks_availability(monkeypatch) -> None:
     assert all(
         item["available"] is False
         for item in models
-        if item["provider"] == "openai"
+        if item["provider"] in {"openai", "openrouter"}
     )
     assert gemini["tier"] == "budget"
 
@@ -207,6 +209,16 @@ def test_model_catalog_validation_accepts_openai_entries_when_key_present(monkey
     assert entry.model == "gpt-5-mini"
 
 
+def test_model_catalog_validation_accepts_openrouter_entries_when_key_present(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    entry = validate_requested_selection("openrouter", "openrouter/hunter-alpha")
+
+    assert entry is not None
+    assert entry.provider == "openrouter"
+    assert entry.model == "openrouter/hunter-alpha"
+
+
 def test_create_llm_prefers_run_context_selection_over_env(monkeypatch) -> None:
     monkeypatch.setenv("LLM_PROVIDER", "gemini")
     monkeypatch.setenv("MODEL_NAME", "gemini-3.1-flash-lite-preview")
@@ -233,6 +245,30 @@ def test_create_llm_prefers_run_context_selection_over_env(monkeypatch) -> None:
     assert called == {
         "provider": "anthropic",
         "model": "claude-haiku-4-5-20251001",
+    }
+
+
+def test_create_llm_uses_openrouter_selection_and_key(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("MODEL_NAME", "gemini-3.1-flash-lite-preview")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
+
+    called = {}
+
+    def fake_openrouter(model, temperature, timeout_s, max_retries):
+        called["provider"] = "openrouter"
+        called["model"] = model
+        return object()
+
+    monkeypatch.setattr(llm_module, "_create_openrouter", fake_openrouter)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable: runnable)
+
+    with use_run_context(llm_selection={"provider": "openrouter", "model": "openrouter/hunter-alpha"}):
+        llm_module.create_llm()
+
+    assert called == {
+        "provider": "openrouter",
+        "model": "openrouter/hunter-alpha",
     }
 
 
@@ -454,6 +490,7 @@ def test_api_config_exposes_default_and_available_models(monkeypatch) -> None:
     monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "ant-key")
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
 
     with TestClient(app) as client:
         _login(client)
@@ -465,9 +502,10 @@ def test_api_config_exposes_default_and_available_models(monkeypatch) -> None:
     assert payload["default_llm"]["model"] == "gemini-3.1-flash-lite-preview"
     assert payload["default_llm"]["label"] == "Gemini 3.1 Flash Lite"
     providers = {item["provider"] for item in payload["available_models"]}
-    assert providers == {"gemini", "anthropic", "openai"}
+    assert providers == {"gemini", "anthropic", "openai", "openrouter"}
     assert any(item["model"] == "gemini-3.1-flash-lite-preview" and item["available"] for item in payload["available_models"])
     assert any(item["model"] == "gpt-5-mini" and item["available"] for item in payload["available_models"])
+    assert any(item["model"] == "openrouter/hunter-alpha" and item["available"] for item in payload["available_models"])
     assert payload["phase_model_defaults"] == phase_model_defaults_payload()
     assert payload["quality_tiers"] == quality_tiers_payload()
     assert payload["premium_phase_options"] == premium_phase_options_payload()
