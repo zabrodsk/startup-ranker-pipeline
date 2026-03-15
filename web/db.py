@@ -1714,6 +1714,30 @@ def _load_company_progress_rows_for_job(client: Client, job_id_legacy: str) -> l
         return []
 
 
+def _can_reconstruct_job_results(
+    client: Client,
+    *,
+    job_id_legacy: str,
+    preferred_mode: str | None = None,
+    snapshot_payload: dict[str, Any] | None = None,
+) -> bool:
+    try:
+        payload = _compose_results_payload_from_company_runs(
+            _load_company_run_rows_for_job(client, job_id_legacy),
+            preferred_mode=preferred_mode,
+            snapshot_payload=snapshot_payload,
+        )
+        return isinstance(payload, dict) and bool(payload)
+    except Exception as exc:
+        _log_supabase_error(
+            "can_reconstruct_job_results",
+            "company_runs,analyses",
+            exc,
+            job_id_legacy=job_id_legacy,
+        )
+        return False
+
+
 def load_analysis_events(job_id_legacy: str, limit: int = 200) -> list[str]:
     client = _get_client()
     if not client:
@@ -2022,10 +2046,11 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
                 latest_analysis_by_job[jid] = row
 
         reconstructable_job_ids: set[str] = set()
+        reconstructable_probe_by_job: dict[str, bool] = {}
         terminal_without_snapshot_candidates: list[str] = []
         for row in jobs:
             jid = row.get("job_id_legacy")
-            if not jid or row.get("input_mode") != "specter":
+            if not jid:
                 continue
             latest_status = latest_status_by_job.get(jid, {})
             latest_analysis = latest_analysis_by_job.get(jid, {})
@@ -2057,6 +2082,26 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
                 )
                 reconstructable_job_ids = set()
 
+        for row in jobs:
+            jid = row.get("job_id_legacy")
+            if not jid or jid in reconstructable_job_ids:
+                continue
+            latest_status = latest_status_by_job.get(jid, {})
+            latest_analysis = latest_analysis_by_job.get(jid, {})
+            analysis_status = str(latest_analysis.get("status") or "").strip().lower()
+            status = str(latest_status.get("status") or analysis_status or "").strip().lower()
+            snapshot_payload = latest_analysis.get("results_payload")
+            if status not in {"done", "error", "stopped"}:
+                continue
+            if isinstance(snapshot_payload, dict) and snapshot_payload:
+                continue
+            reconstructable_probe_by_job[jid] = _can_reconstruct_job_results(
+                client,
+                job_id_legacy=jid,
+                preferred_mode=row.get("input_mode"),
+                snapshot_payload=snapshot_payload if isinstance(snapshot_payload, dict) else None,
+            )
+
         out: list[dict[str, Any]] = []
         for row in jobs:
             jid = row.get("job_id_legacy")
@@ -2083,6 +2128,11 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
                 if isinstance(snapshot_payload, dict):
                     progress = snapshot_payload.get("job_message") or progress
             created_at = latest_analysis.get("created_at") or row.get("created_at")
+            has_results = (
+                bool(isinstance(snapshot_payload, dict) and snapshot_payload)
+                or jid in reconstructable_job_ids
+                or reconstructable_probe_by_job.get(jid) is True
+            )
 
             out.append(
                 {
@@ -2095,7 +2145,7 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
                     "run_name": run_config.get("run_name") if isinstance(run_config, dict) else None,
                     "run_config": run_config,
                     "results": None,
-                    "has_results": bool(isinstance(snapshot_payload, dict) and snapshot_payload) or jid in reconstructable_job_ids,
+                    "has_results": has_results,
                     "worker_active": worker_active,
                 }
             )

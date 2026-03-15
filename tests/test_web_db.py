@@ -1237,6 +1237,125 @@ def test_list_saved_jobs_allows_reconstructable_specter_results_without_snapshot
     ]
 
 
+def test_list_saved_jobs_probes_terminal_rows_when_batch_lookup_misses(monkeypatch) -> None:
+    import web.db as web_db
+
+    class FakeResponse:
+        def __init__(self, data):
+            self.data = data
+
+    class FakeQuery:
+        def __init__(self, table_name: str):
+            self.table_name = table_name
+            self.filters: list[tuple[str, str, object]] = []
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def order(self, *_args, **_kwargs):
+            return self
+
+        def limit(self, *_args, **_kwargs):
+            return self
+
+        def in_(self, key, values):
+            self.filters.append(("in", key, tuple(values)))
+            return self
+
+        def is_(self, key, value):
+            self.filters.append(("is", key, value))
+            return self
+
+        def eq(self, key, value):
+            self.filters.append(("eq", key, value))
+            return self
+
+        def execute(self):
+            if self.table_name == "jobs":
+                return FakeResponse(
+                    [
+                        {
+                            "job_id_legacy": "job-terminal-probe",
+                            "input_mode": "specter",
+                            "use_web_search": True,
+                            "created_at": "2026-03-15T10:24:01Z",
+                            "run_config": {},
+                        }
+                    ]
+                )
+            if self.table_name == "job_status_history":
+                return FakeResponse(
+                    [
+                        {
+                            "job_id_legacy": "job-terminal-probe",
+                            "status": "done",
+                            "progress": "Analysis complete",
+                            "created_at": "2026-03-15T10:29:00Z",
+                        }
+                    ]
+                )
+            if self.table_name == "analyses":
+                return FakeResponse(
+                    [
+                        {
+                            "job_id_legacy": "job-terminal-probe",
+                            "status": "done",
+                            "results_payload": {},
+                            "created_at": "2026-03-15T10:29:00Z",
+                        }
+                    ]
+                )
+            if self.table_name == "company_runs":
+                if ("in", "job_id_legacy", ("job-terminal-probe",)) in self.filters:
+                    return FakeResponse([])
+                if ("eq", "job_id_legacy", "job-terminal-probe") in self.filters:
+                    return FakeResponse(
+                        [
+                            {
+                                "company_key": "slug:apify",
+                                "company_name": "Apify",
+                                "startup_slug": "apify",
+                                "job_id_legacy": "job-terminal-probe",
+                                "decision": "invest",
+                                "total_score": 8.0,
+                                "composite_score": 82.0,
+                                "bucket": "priority_review",
+                                "mode": "specter",
+                                "input_order": 1,
+                                "run_created_at": "2026-03-15T10:28:00Z",
+                                "created_at": "2026-03-15T10:28:00Z",
+                                "result_payload": {
+                                    "mode": "single",
+                                    "startup_slug": "apify",
+                                    "company_name": "Apify",
+                                    "decision": "invest",
+                                    "total_score": 8.0,
+                                    "summary_rows": [
+                                        {
+                                            "startup_slug": "apify",
+                                            "company_name": "Apify",
+                                            "decision": "invest",
+                                            "total_score": 8.0,
+                                        }
+                                    ],
+                                },
+                            }
+                        ]
+                    )
+            raise AssertionError(f"Unexpected table lookup: {self.table_name} with filters {self.filters}")
+
+    class FakeClient:
+        def table(self, table_name: str):
+            return FakeQuery(table_name)
+
+    monkeypatch.setattr(web_db, "_get_client", lambda: FakeClient())
+
+    rows = web_db.list_saved_jobs(limit=10)
+
+    assert rows[0]["job_id"] == "job-terminal-probe"
+    assert rows[0]["has_results"] is True
+
+
 def test_ensure_source_files_bucket_accepts_dict_bucket_rows(monkeypatch) -> None:
     import web.db as web_db
 
