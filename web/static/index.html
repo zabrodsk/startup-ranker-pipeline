@@ -3164,8 +3164,9 @@
     <div class="header-right">
       <button type="button" class="btn-ghost" id="info-open-how-upload">How it works</button>
       <button type="button" class="btn-ghost" id="info-open-docs-upload">Documentation</button>
-      <button type="button" class="btn-ghost" id="analysis-open-upload">Analysis</button>
-      <button type="button" class="btn-ghost" id="saved-jobs-open-upload">Companies</button>
+      <button type="button" class="btn-ghost" id="analysis-open-upload" data-nav-section="analysis">Analysis</button>
+      <button type="button" class="btn-ghost" id="saved-jobs-open-upload" data-nav-section="companies">Companies</button>
+      <button type="button" class="btn-ghost is-active" id="new-analysis-btn-upload" data-nav-section="new-analysis" aria-current="page">New Analysis</button>
       <span id="settings-open" style="font-size:13px;color:var(--text-gray);cursor:pointer;display:inline-flex;align-items:center" title="Settings">
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px">
     <circle cx="12" cy="12" r="3"/>
@@ -3360,8 +3361,8 @@
       </div>
     </a>
     <div class="header-right">
-      <button type="button" class="btn-ghost is-active" aria-current="page">Analysis</button>
-      <button type="button" class="btn-ghost" id="saved-jobs-open-analysis">Companies</button>
+      <button type="button" class="btn-ghost is-active" id="analysis-current-tab" data-nav-section="analysis" aria-current="page">Analysis</button>
+      <button type="button" class="btn-ghost" id="saved-jobs-open-analysis" data-nav-section="companies">Companies</button>
       <button type="button" class="btn-ghost" id="analysis-refresh-btn">Refresh</button>
       <button class="btn-ghost" id="new-analysis-btn-history">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -3388,7 +3389,8 @@
       </div>
     </a>
     <div class="header-right">
-      <button type="button" class="btn-ghost" id="analysis-open-companies">Analysis</button>
+      <button type="button" class="btn-ghost" id="analysis-open-companies" data-nav-section="analysis">Analysis</button>
+      <button type="button" class="btn-ghost is-active" id="companies-current-tab" data-nav-section="companies" aria-current="page">Companies</button>
       <button type="button" class="btn-ghost" id="companies-refresh-btn">Refresh</button>
       <button class="btn-ghost" id="new-analysis-btn-companies">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -3416,8 +3418,8 @@
       </div>
     </a>
     <div class="header-right">
-      <button type="button" class="btn-ghost" id="analysis-open-processing">Analysis</button>
-      <button type="button" class="btn-ghost" id="saved-jobs-open-processing">Companies</button>
+      <button type="button" class="btn-ghost" id="analysis-open-processing" data-nav-section="analysis">Analysis</button>
+      <button type="button" class="btn-ghost" id="saved-jobs-open-processing" data-nav-section="companies">Companies</button>
     </div>
   </div>
   <div class="processing-screen-body">
@@ -3457,8 +3459,8 @@
       </div>
     </a>
     <div class="header-right">
-      <button class="btn-ghost" id="analysis-open-results">Analysis</button>
-      <button type="button" class="btn-ghost" id="saved-jobs-open-results">Companies</button>
+      <button class="btn-ghost" id="analysis-open-results" data-nav-section="analysis">Analysis</button>
+      <button type="button" class="btn-ghost" id="saved-jobs-open-results" data-nav-section="companies">Companies</button>
       <button class="btn-ghost" id="new-analysis-btn">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         New Analysis
@@ -3644,10 +3646,27 @@ function showScreen(id) {
 
   if (id === 'analysis-screen') startSavedJobsRefresh();
   else stopSavedJobsRefresh();
+
+  syncPrimaryHeaderNav(id);
 }
 
 function getActiveScreenId() {
   return [...document.querySelectorAll('.screen')].find((screen) => screen.classList.contains('active'))?.id || null;
+}
+
+function syncPrimaryHeaderNav(screenId = null) {
+  const activeScreenId = screenId || getActiveScreenId();
+  let activeSection = null;
+  if (activeScreenId === 'companies-screen') activeSection = 'companies';
+  else if (activeScreenId === 'upload-screen') activeSection = 'new-analysis';
+  else if (['analysis-screen', 'processing-screen', 'results-screen'].includes(activeScreenId || '')) activeSection = 'analysis';
+
+  $$('[data-nav-section]').forEach((button) => {
+    const isActive = button.dataset.navSection === activeSection;
+    button.classList.toggle('is-active', isActive);
+    if (isActive) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  });
 }
 
 function deepClone(value) {
@@ -7046,6 +7065,7 @@ function openNewAnalysis() {
 }
 
 $('#new-analysis-btn').addEventListener('click', openNewAnalysis);
+$('#new-analysis-btn-upload')?.addEventListener('click', openNewAnalysis);
 $('#new-analysis-btn-companies').addEventListener('click', openNewAnalysis);
 $('#new-analysis-btn-history').addEventListener('click', openNewAnalysis);
 
@@ -7058,6 +7078,8 @@ window.addEventListener('storage', (event) => {
     resumeActiveJob();
   }
 });
+
+syncPrimaryHeaderNav();
 
 $('#rankings-sort-select').addEventListener('change', (e) => {
   rankingsSortMode = e.target.value || DEFAULT_RANKINGS_SORT;
