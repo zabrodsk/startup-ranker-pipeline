@@ -23,6 +23,7 @@ from agent.llm_policy import (
 )
 from agent.run_context import (
     RunTelemetryCollector,
+    set_current_llm_request_settings,
     use_company_context,
     use_phase_llm,
     use_run_context,
@@ -274,6 +275,66 @@ def test_create_llm_uses_openrouter_selection_and_key(monkeypatch) -> None:
     }
 
 
+def test_create_llm_respects_requested_temperature_for_gpt5_by_default(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.delenv("OPENAI_GPT5_TEMPERATURE_MODE", raising=False)
+
+    called = {}
+
+    def fake_openai(model, temperature, timeout_s, max_retries):
+        called["model"] = model
+        called["temperature"] = temperature
+        return object()
+
+    monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable: runnable)
+
+    with use_run_context(llm_selection={"provider": "openai", "model": "gpt-5"}):
+        llm_module.create_llm(temperature=0.0)
+
+    assert called == {"model": "gpt-5", "temperature": 0.0}
+
+
+def test_create_llm_can_force_temperature_one_for_gpt5(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("OPENAI_GPT5_TEMPERATURE_MODE", "force_one")
+
+    called = {}
+
+    def fake_openai(model, temperature, timeout_s, max_retries):
+        called["model"] = model
+        called["temperature"] = temperature
+        return object()
+
+    monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable: runnable)
+
+    with use_run_context(llm_selection={"provider": "openai", "model": "gpt-5"}):
+        llm_module.create_llm(temperature=0.0)
+
+    assert called == {"model": "gpt-5", "temperature": 1.0}
+
+
+def test_create_llm_leaves_non_gpt5_openai_temperature_unchanged(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("OPENAI_GPT5_TEMPERATURE_MODE", "force_one")
+
+    called = {}
+
+    def fake_openai(model, temperature, timeout_s, max_retries):
+        called["model"] = model
+        called["temperature"] = temperature
+        return object()
+
+    monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable: runnable)
+
+    with use_run_context(llm_selection={"provider": "openai", "model": "gpt-4.1-mini"}):
+        llm_module.create_llm(temperature=0.3)
+
+    assert called == {"model": "gpt-4.1-mini", "temperature": 0.3}
+
+
 def test_use_phase_llm_temporarily_overrides_selection() -> None:
     from agent.run_context import get_current_llm_selection
 
@@ -503,6 +564,13 @@ def test_telemetry_callback_estimates_usage_when_response_omits_metadata() -> No
         llm_selection={"provider": "openai", "model": "gpt-5"},
         telemetry_collector=collector,
     ):
+        set_current_llm_request_settings(
+            {
+                "requested_temperature": 0.0,
+                "effective_temperature": 0.0,
+                "sampling_mode": "respect_requested",
+            }
+        )
         llm_module._TELEMETRY_CALLBACK.on_chat_model_start(
             {},
             [[HumanMessage(content="What is the moat?")]],
@@ -518,6 +586,9 @@ def test_telemetry_callback_estimates_usage_when_response_omits_metadata() -> No
     assert rows[0]["prompt_tokens"] > 0
     assert rows[0]["completion_tokens"] > 0
     assert rows[0]["metadata"]["estimated_usage"] is True
+    assert rows[0]["metadata"]["requested_temperature"] == 0.0
+    assert rows[0]["metadata"]["effective_temperature"] == 0.0
+    assert rows[0]["metadata"]["sampling_mode"] == "respect_requested"
 
 
 def test_api_config_exposes_default_and_available_models(monkeypatch) -> None:

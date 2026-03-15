@@ -23,6 +23,10 @@ _telemetry_collector_var: ContextVar["RunTelemetryCollector | None"] = ContextVa
 )
 _company_slug_var: ContextVar[str | None] = ContextVar("company_slug", default=None)
 _stage_name_var: ContextVar[str | None] = ContextVar("stage_name", default=None)
+_llm_request_settings_var: ContextVar[dict[str, Any] | None] = ContextVar(
+    "llm_request_settings",
+    default=None,
+)
 _pipeline_policy_var: ContextVar["PipelineModelPolicy | None"] = ContextVar(
     "pipeline_policy",
     default=None,
@@ -43,6 +47,10 @@ def get_current_collector() -> "RunTelemetryCollector | None":
 
 def get_current_stage_name() -> str | None:
     return _stage_name_var.get()
+
+
+def get_current_llm_request_settings() -> dict[str, Any] | None:
+    return _llm_request_settings_var.get()
 
 
 def get_current_pipeline_policy() -> "PipelineModelPolicy | None":
@@ -73,6 +81,7 @@ def use_run_context(
     llm_token: Token[dict[str, str] | None] | None = None
     telemetry_token: Token[RunTelemetryCollector | None] | None = None
     policy_token: Token["PipelineModelPolicy | None"] | None = None
+    request_settings_token = _llm_request_settings_var.set(None)
     if llm_selection is not None:
         llm_token = _llm_selection_var.set(serialize_selection(llm_selection.get("provider"), llm_selection.get("model")))
     if telemetry_collector is not None:
@@ -88,6 +97,7 @@ def use_run_context(
             _telemetry_collector_var.reset(telemetry_token)
         if llm_token is not None:
             _llm_selection_var.reset(llm_token)
+        _llm_request_settings_var.reset(request_settings_token)
 
 
 @contextmanager
@@ -106,6 +116,13 @@ def use_stage_context(stage_name: str | None) -> Iterator[None]:
         yield
     finally:
         _stage_name_var.reset(token)
+
+
+def set_current_llm_request_settings(settings: dict[str, Any] | None) -> None:
+    if settings is None:
+        _llm_request_settings_var.set(None)
+        return
+    _llm_request_settings_var.set(dict(settings))
 
 
 @dataclass

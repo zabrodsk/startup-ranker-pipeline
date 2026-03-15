@@ -25,7 +25,12 @@ import tiktoken
 
 from agent.llm_catalog import normalize_provider
 from agent.rate_limit import wrap_llm
-from agent.run_context import get_current_collector, get_current_llm_selection
+from agent.run_context import (
+    get_current_collector,
+    get_current_llm_request_settings,
+    get_current_llm_selection,
+    set_current_llm_request_settings,
+)
 
 load_dotenv()
 
@@ -35,6 +40,8 @@ _DEFAULT_TIMEOUT_SECONDS = 90.0
 _DEFAULT_MAX_RETRIES = 2
 _FALLBACK_ENCODING_NAME = "o200k_base"
 _DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+_GPT5_TEMPERATURE_MODE_ENV = "OPENAI_GPT5_TEMPERATURE_MODE"
+_DEFAULT_GPT5_TEMPERATURE_MODE = "respect_requested"
 
 
 def _extract_usage_metadata(payload: Any) -> dict[str, int] | None:
@@ -257,6 +264,7 @@ class _TelemetryCallbackHandler(BaseCallbackHandler):
     def on_llm_end(self, response, *, run_id=None, **kwargs: Any) -> Any:
         collector = get_current_collector()
         selection = get_current_llm_selection()
+        request_settings = get_current_llm_request_settings() or {}
         if not collector or not selection:
             return None
         usage = _extract_usage_metadata(response)
@@ -274,13 +282,22 @@ class _TelemetryCallbackHandler(BaseCallbackHandler):
         elif run_id is not None:
             with self._lock:
                 self._prompt_text_by_run_id.pop(run_id, None)
+        metadata = {"estimated_usage": estimated}
+        for key in (
+            "requested_temperature",
+            "effective_temperature",
+            "sampling_mode",
+        ):
+            if key in request_settings:
+                metadata[key] = request_settings[key]
+
         collector.record_llm_usage(
             provider=selection["provider"],
             model=selection["model"],
             prompt_tokens=(usage or {}).get("prompt_tokens"),
             completion_tokens=(usage or {}).get("completion_tokens"),
             total_tokens=(usage or {}).get("total_tokens"),
-            metadata={"estimated_usage": estimated},
+            metadata=metadata,
         )
         return None
 
@@ -315,6 +332,33 @@ def _read_nonnegative_int_env(name: str, default: int) -> int:
         return default
 
 
+def _normalize_gpt5_temperature_mode(value: str | None) -> str:
+    mode = (value or "").strip().lower()
+    if mode in {"respect_requested", "force_one"}:
+        return mode
+    return _DEFAULT_GPT5_TEMPERATURE_MODE
+
+
+def _resolve_openai_temperature(
+    model: str,
+    requested_temperature: float,
+) -> dict[str, Any]:
+    if not model.startswith("gpt-5"):
+        return {
+            "requested_temperature": requested_temperature,
+            "effective_temperature": requested_temperature,
+            "sampling_mode": "requested",
+        }
+
+    sampling_mode = _normalize_gpt5_temperature_mode(os.getenv(_GPT5_TEMPERATURE_MODE_ENV))
+    effective_temperature = 1.0 if sampling_mode == "force_one" else requested_temperature
+    return {
+        "requested_temperature": requested_temperature,
+        "effective_temperature": effective_temperature,
+        "sampling_mode": sampling_mode,
+    }
+
+
 def create_llm(temperature: float = 0.0) -> BaseChatModel:
     """Create an LLM instance based on environment configuration.
 
@@ -337,10 +381,22 @@ def create_llm(temperature: float = 0.0) -> BaseChatModel:
     timeout_s = runtime["request_timeout_seconds"]
     max_retries = runtime["max_retries"]
 
+    request_settings = {
+        "requested_temperature": temperature,
+        "effective_temperature": temperature,
+        "sampling_mode": "requested",
+        "provider": provider,
+        "model": model,
+    }
+    if provider == "openai":
+        request_settings.update(_resolve_openai_temperature(model, temperature))
+    set_current_llm_request_settings(request_settings)
+    effective_temperature = float(request_settings["effective_temperature"])
+
     if provider == "gemini":
         return wrap_llm(_create_gemini(model, temperature, timeout_s, max_retries))
     elif provider == "openai":
-        return wrap_llm(_create_openai(model, temperature, timeout_s, max_retries))
+        return wrap_llm(_create_openai(model, effective_temperature, timeout_s, max_retries))
     elif provider == "openrouter":
         return wrap_llm(_create_openrouter(model, temperature, timeout_s, max_retries))
     elif provider == "anthropic":
@@ -399,9 +455,6 @@ def _create_openai(
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise ValueError("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
-
-    if model.startswith("gpt-5"):
-        temperature = 1
 
     return ChatOpenAI(
         model=model,

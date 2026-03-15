@@ -17,7 +17,7 @@ from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
 from agent.pipeline.state.schemas import ArgumentsOutput
 from agent.pipeline.utils.helpers import convert_llm_arguments_to_objects
 from agent.pipeline.utils.phase_llm import invoke_with_phase_fallback
-from agent.run_context import get_current_pipeline_policy
+from agent.run_context import get_current_pipeline_policy, use_stage_context
 
 def check_if_final(
     state: IterativeInvestmentStoryState,
@@ -64,19 +64,20 @@ def generate_pro_arguments(
     policy = get_current_pipeline_policy()
 
     def _invoke() -> ArgumentsOutput:
-        llm = get_llm(temperature=0.5)
-        llm_with_structured_output = llm.with_structured_output(ArgumentsOutput)
-        return llm_with_structured_output.invoke(
-            [
-                SystemMessage(content=system_prompt),
-                HumanMessage(
-                    content=pro_user_prompt.format(
-                        n_pro_arguments=state.config.n_pro_arguments,
-                        questions_and_answers=formatted_qa_pairs,
-                    )
-                ),
-            ]
-        )
+        with use_stage_context("generation_pro"):
+            llm = get_llm(temperature=0.5)
+            llm_with_structured_output = llm.with_structured_output(ArgumentsOutput)
+            return llm_with_structured_output.invoke(
+                [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(
+                        content=pro_user_prompt.format(
+                            n_pro_arguments=state.config.n_pro_arguments,
+                            questions_and_answers=formatted_qa_pairs,
+                        )
+                    ),
+                ]
+            )
 
     arguments = invoke_with_phase_fallback(
         policy.generation if policy else None,
@@ -120,19 +121,20 @@ def generate_contra_arguments(
     policy = get_current_pipeline_policy()
 
     def _invoke() -> ArgumentsOutput:
-        llm = get_llm(temperature=0.5)
-        llm_with_structured_output = llm.with_structured_output(ArgumentsOutput)
-        return llm_with_structured_output.invoke(
-            [
-                SystemMessage(content=system_prompt),
-                HumanMessage(
-                    content=contra_user_prompt.format(
-                        n_contra_arguments=state.config.n_contra_arguments,
-                        questions_and_answers=formatted_qa_pairs,
-                    )
-                ),
-            ]
-        )
+        with use_stage_context("generation_contra"):
+            llm = get_llm(temperature=0.5)
+            llm_with_structured_output = llm.with_structured_output(ArgumentsOutput)
+            return llm_with_structured_output.invoke(
+                [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(
+                        content=contra_user_prompt.format(
+                            n_contra_arguments=state.config.n_contra_arguments,
+                            questions_and_answers=formatted_qa_pairs,
+                        )
+                    ),
+                ]
+            )
 
     arguments = invoke_with_phase_fallback(
         policy.generation if policy else None,

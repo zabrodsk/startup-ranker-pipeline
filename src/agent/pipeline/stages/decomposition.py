@@ -30,7 +30,7 @@ from agent.pipeline.state.decomposition import (
     DecompositionTree,
 )
 from agent.pipeline.utils.phase_llm import ainvoke_with_phase_fallback, invoke_with_phase_fallback
-from agent.run_context import get_current_pipeline_policy
+from agent.run_context import get_current_pipeline_policy, use_stage_context
 
 
 def _build_question_tree_from_decomposition_tree(
@@ -89,9 +89,10 @@ async def decompose_question_async(state: DecompositionInput) -> DecompositionOu
     policy = get_current_pipeline_policy()
 
     async def _invoke() -> DecompositionTree:
-        llm = get_llm(temperature=0.5)
-        llm_with_structured_output = llm.with_structured_output(DecompositionTree)
-        return await llm_with_structured_output.ainvoke(messages)
+        with use_stage_context("decomposition"):
+            llm = get_llm(temperature=0.5)
+            llm_with_structured_output = llm.with_structured_output(DecompositionTree)
+            return await llm_with_structured_output.ainvoke(messages)
 
     decomposition_tree = await ainvoke_with_phase_fallback(
         policy.decomposition if policy else None,

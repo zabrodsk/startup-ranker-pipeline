@@ -25,7 +25,7 @@ from agent.pipeline.state.schemas import (
     SingleArgumentScore,
 )
 from agent.pipeline.stages import critique, decomposition, evaluation, generation, ranking, refinement
-from agent.run_context import get_current_llm_selection, use_run_context
+from agent.run_context import get_current_llm_selection, get_current_stage_name, use_run_context
 import agent.evidence_answering as evidence_answering
 
 
@@ -71,6 +71,23 @@ class _AuthFallbackRunnable:
         self._sink.append(current)
         if current[0] == self._failing_provider:
             raise Exception("Error code: 401 - {'type':'error','error':{'type':'authentication_error','message':'invalid x-api-key'}}")
+        return self._result
+
+
+class _StageTrackingRunnable:
+    def __init__(self, result, sink):
+        self._result = result
+        self._sink = sink
+
+    def with_structured_output(self, _schema):
+        return self
+
+    def invoke(self, _messages):
+        self._sink.append(get_current_stage_name())
+        return self._result
+
+    async def ainvoke(self, _messages):
+        self._sink.append(get_current_stage_name())
         return self._result
 
 
@@ -206,6 +223,115 @@ def test_pipeline_stages_use_phase_policy(monkeypatch):
     assert seen["evaluation"][-1] == ("anthropic", "claude-haiku-4-5-20251001")
     assert seen["refinement"][-1] == ("gemini", "gemini-3.1-flash-lite-preview")
     assert all(item == ("openai", "gpt-5") for item in seen["ranking"])
+
+
+def test_pipeline_stages_set_stage_context_for_critical_llm_calls(monkeypatch):
+    monkeypatch.setenv("GOOGLE_API_KEY", "google")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic")
+    policy = build_pipeline_policy("premium", {})
+    company = Company(name="Acme", industry="Fintech")
+    qa_pairs = [{"question": "Q?", "answer": "A", "aspect": "general_company"}]
+    state = IterativeInvestmentStoryState(
+        company=company,
+        config=Config(
+            n_pro_arguments=1,
+            n_contra_arguments=1,
+            k_best_arguments_per_iteration=[1],
+            max_iterations=1,
+        ),
+        all_qa_pairs=qa_pairs,
+        current_arguments=[
+            Argument(
+                content="Argument",
+                argument_type="pro",
+                qa_indices=[0],
+                critique="Need more support",
+            )
+        ],
+        final_arguments=[Argument(content="Final pro", argument_type="pro", qa_indices=[0], score=10)],
+    )
+
+    seen = {
+        "decomposition": [],
+        "generation": [],
+        "evaluation": [],
+        "ranking": [],
+    }
+
+    monkeypatch.setattr(
+        decomposition,
+        "get_llm",
+        lambda temperature=0.0: _StageTrackingRunnable(
+            DecompositionTree(nodes=[DecompositionNode(question="Root?", sub_questions=[])]),
+            seen["decomposition"],
+        ),
+    )
+    monkeypatch.setattr(
+        generation,
+        "get_llm",
+        lambda temperature=0.0: _StageTrackingRunnable(
+            ArgumentsOutput(arguments=[{"content": "Pro case", "qa_indices": [0]}]),
+            seen["generation"],
+        ),
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "get_llm",
+        lambda temperature=0.0: _StageTrackingRunnable(
+            SingleArgumentScore(scores=[CriterionScore(score=1, reasoning="ok") for _ in range(14)]),
+            seen["evaluation"],
+        ),
+    )
+    monkeypatch.setattr(
+        ranking,
+        "get_llm",
+        lambda temperature=0.0: _StageTrackingRunnable(
+            DimensionScoreOutput(
+                raw_score=80,
+                confidence=0.8,
+                evidence_count=1,
+                evidence_snippets=["evidence"],
+                critical_gaps=[],
+            ) if temperature == 0.0 else ExecutiveSummaryOutput(
+                strategy_fit_summary="fit",
+                team_summary="team",
+                potential_summary="potential",
+                key_points=["k1"],
+                red_flags=["r1"],
+            ),
+            seen["ranking"],
+        ),
+    )
+
+    with use_run_context(llm_selection=policy.answering, pipeline_policy=policy):
+        decomposition.decompose_question(
+            DecompositionInput(question="Root?", industry="Fintech", aspect="general_company")
+        )
+        generation.generate_pro_arguments(state)
+        asyncio.run(
+            evaluation.score_single_argument(
+                Argument(
+                    content="Argument",
+                    argument_type="pro",
+                    qa_indices=[0],
+                    critique="Need more support",
+                )
+            )
+        )
+        ranked = ranking.score_company_dimensions(state)["ranking_result"]
+        state.ranking_result = ranked
+        ranking.generate_executive_summary(state)
+
+    assert seen["decomposition"] == ["decomposition"]
+    assert seen["generation"] == ["generation_pro"]
+    assert seen["evaluation"] == ["evaluation"]
+    assert seen["ranking"] == [
+        "ranking_dimension_score",
+        "ranking_dimension_score",
+        "ranking_dimension_score",
+        "ranking_executive_summary",
+    ]
 
 
 def test_evidence_answering_uses_answering_policy(monkeypatch):

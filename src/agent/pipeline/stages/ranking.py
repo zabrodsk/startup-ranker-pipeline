@@ -14,7 +14,7 @@ from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
 from agent.pipeline.state.schemas import DimensionScoreOutput, ExecutiveSummaryOutput
 from agent.pipeline.utils.phase_llm import invoke_with_phase_fallback
 from agent.prompt_library.manager import get_prompt
-from agent.run_context import get_current_pipeline_policy
+from agent.run_context import get_current_pipeline_policy, use_stage_context
 
 
 # Aspect-to-dimension mapping: general_company -> strategy_fit, team -> team, market+product -> upside
@@ -106,14 +106,15 @@ def _score_dimension(
 
     try:
         def _invoke() -> DimensionScoreOutput:
-            llm = get_llm(temperature=0.0)
-            llm_structured = llm.with_structured_output(DimensionScoreOutput)
-            return llm_structured.invoke(
-                [
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=user_content),
-                ]
-            )
+            with use_stage_context("ranking_dimension_score"):
+                llm = get_llm(temperature=0.0)
+                llm_structured = llm.with_structured_output(DimensionScoreOutput)
+                return llm_structured.invoke(
+                    [
+                        SystemMessage(content=system_prompt),
+                        HumanMessage(content=user_content),
+                    ]
+                )
         output = invoke_with_phase_fallback(
             policy.ranking if policy else None,
             _invoke,
@@ -283,14 +284,15 @@ def generate_executive_summary(
     try:
         policy = get_current_pipeline_policy()
         def _invoke() -> ExecutiveSummaryOutput:
-            llm = get_llm(temperature=0.3)
-            llm_structured = llm.with_structured_output(ExecutiveSummaryOutput)
-            return llm_structured.invoke(
-                [
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=user_content),
-                ]
-            )
+            with use_stage_context("ranking_executive_summary"):
+                llm = get_llm(temperature=0.3)
+                llm_structured = llm.with_structured_output(ExecutiveSummaryOutput)
+                return llm_structured.invoke(
+                    [
+                        SystemMessage(content=system_prompt),
+                        HumanMessage(content=user_content),
+                    ]
+                )
         output = invoke_with_phase_fallback(
             policy.ranking if policy else None,
             _invoke,

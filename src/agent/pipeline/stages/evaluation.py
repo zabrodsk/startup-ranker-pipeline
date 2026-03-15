@@ -24,7 +24,7 @@ from agent.pipeline.state.schemas import SingleArgumentScore
 from agent.rate_limit import gather_with_concurrency
 from agent.pipeline.utils.helpers import format_argument_feedback
 from agent.pipeline.utils.phase_llm import ainvoke_with_phase_fallback
-from agent.run_context import get_current_pipeline_policy
+from agent.run_context import get_current_pipeline_policy, use_stage_context
 
 
 @backoff.on_exception(
@@ -50,30 +50,31 @@ async def score_single_argument(
     max_retries = 5
     score = None
     async def _invoke() -> SingleArgumentScore:
-        llm = get_llm(temperature=0.0)
-        llm_with_structured_output = llm.with_structured_output(SingleArgumentScore)
-        for attempt in range(max_retries):
-            result = await llm_with_structured_output.ainvoke(
-                [
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(
-                        content=user_prompt.format(
-                            argument=argument.content, critique=critique
-                        )
-                    ),
-                ]
-            )
-
-            if len(result.scores) == len(criteria_mapping):
-                return result
-            if attempt < max_retries - 1:
-                print(
-                    f"Attempt {attempt + 1}: Got {len(result.scores)} scores instead of {len(criteria_mapping)}, retrying..."
+        with use_stage_context("evaluation"):
+            llm = get_llm(temperature=0.0)
+            llm_with_structured_output = llm.with_structured_output(SingleArgumentScore)
+            for attempt in range(max_retries):
+                result = await llm_with_structured_output.ainvoke(
+                    [
+                        SystemMessage(content=system_prompt),
+                        HumanMessage(
+                            content=user_prompt.format(
+                                argument=argument.content, critique=critique
+                            )
+                        ),
+                    ]
                 )
-                continue
-            raise ValueError(
-                f"After {max_retries} attempts, still got {len(result.scores)} scores instead of {len(criteria_mapping)}"
-            )
+
+                if len(result.scores) == len(criteria_mapping):
+                    return result
+                if attempt < max_retries - 1:
+                    print(
+                        f"Attempt {attempt + 1}: Got {len(result.scores)} scores instead of {len(criteria_mapping)}, retrying..."
+                    )
+                    continue
+                raise ValueError(
+                    f"After {max_retries} attempts, still got {len(result.scores)} scores instead of {len(criteria_mapping)}"
+                )
 
     score = await ainvoke_with_phase_fallback(
         policy.evaluation if policy else None,
