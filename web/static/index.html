@@ -3682,16 +3682,20 @@ function startStatusWatchdog() {
     try {
       const data = await api(`/api/status/${currentJobId}`, { timeoutMs: 12000, retries: 0 });
       if (data.status === 'done' && data.results) {
+        const confirmed = await loadConfirmedTerminalResults(currentJobId, data.results || null);
+        if (confirmed.state === 'running') {
+          return;
+        }
         upsertRecentRun({
           jobId: currentJobId,
           status: data.status,
           progress: data.progress || 'Analysis complete',
-          results: data.results || null,
+          results: confirmed.results || null,
           llm: data.llm ?? undefined,
         });
         setProgressDone();
         try {
-          renderResults(data.results);
+          renderResults(confirmed.results);
           showScreen('results-screen');
           persistActiveJob(currentJobId);
           setProcessingControls('done');
@@ -5670,16 +5674,32 @@ async function resumeActiveJob() {
   try {
     const data = await api(`/api/status/${savedJobId}`, { timeoutMs: 10000, retries: 0 });
     const freshestProgress = getFreshestProgressText(data);
-    upsertRecentRun({
-      jobId: savedJobId,
-      status: data.status,
-      progress: freshestProgress,
-      results: data.results || null,
-      llm: data.llm ?? undefined,
-    });
     if ((data.status === 'done' || data.status === 'stopped') && data.results) {
       try {
-        renderResults(data.results);
+        const confirmed = await loadConfirmedTerminalResults(savedJobId, data.results || null);
+        if (confirmed.state === 'running') {
+          upsertRecentRun({
+            jobId: savedJobId,
+            status: 'running',
+            progress: freshestProgress,
+            results: null,
+            llm: data.llm ?? undefined,
+          });
+          $('#processing-status').textContent = freshestProgress || 'Resuming analysis...';
+          setProcessingControls('running');
+          renderProgressFeed(data.progress_log || [], freshestProgress || 'Resuming analysis...', 'running');
+          pollStatus.failures = 0;
+          pollStatus();
+          return true;
+        }
+        upsertRecentRun({
+          jobId: savedJobId,
+          status: data.status,
+          progress: freshestProgress,
+          results: confirmed.results || null,
+          llm: data.llm ?? undefined,
+        });
+        renderResults(confirmed.results);
         showScreen('results-screen');
         if (data.status === 'done') persistActiveJob(savedJobId);
         else persistActiveJob(null);
@@ -5688,6 +5708,14 @@ async function resumeActiveJob() {
         console.error('resumeActiveJob: failed to render results:', renderErr);
       }
     }
+
+    upsertRecentRun({
+      jobId: savedJobId,
+      status: data.status,
+      progress: freshestProgress,
+      results: data.results || null,
+      llm: data.llm ?? undefined,
+    });
 
     if (data.status === 'error') {
       $('#processing-status').textContent = freshestProgress || 'Analysis failed.';
@@ -5797,6 +5825,26 @@ async function openSavedRun(jobId) {
   if (subtitleEl) subtitleEl.textContent = `Could not open saved results for ${jobId.toUpperCase()}.`;
   if (rankingsEl) {
     rankingsEl.innerHTML = `<p style="color:var(--text-dim)">${escapeHtml(friendlyError)}</p>`;
+  }
+}
+
+async function loadConfirmedTerminalResults(jobId, fallbackResults = null) {
+  try {
+    const analysis = await api(`/api/analyses/${jobId}`, { timeoutMs: 60000, retries: 0 });
+    const results = analysis.results || null;
+    if (!results || typeof results !== 'object') {
+      throw new Error('Saved report payload is missing.');
+    }
+    return { state: 'terminal', results };
+  } catch (err) {
+    const message = String(err?.message || '').toLowerCase();
+    if (message.includes('still in progress')) {
+      return { state: 'running', results: null };
+    }
+    if (fallbackResults && typeof fallbackResults === 'object') {
+      return { state: 'fallback', results: fallbackResults };
+    }
+    throw err;
   }
 }
 
@@ -6038,13 +6086,6 @@ async function pollStatus() {
     if (!isTerminal) {
       setProcessingControls(data.status || 'running');
     }
-    upsertRecentRun({
-      jobId: currentJobId,
-      status: data.status,
-      progress: getFreshestProgressText(data),
-      results: data.results || null,
-      llm: data.llm ?? undefined,
-    });
     const progressText = getFreshestProgressText(data);
     if (data.status === 'paused') {
       pollStatus.stallTicks = 0;
@@ -6065,7 +6106,28 @@ async function pollStatus() {
     if (data.status === 'done') {
       setProgressDone();
       try {
-        renderResults(data.results);
+        const confirmed = await loadConfirmedTerminalResults(currentJobId, data.results || null);
+        if (confirmed.state === 'running') {
+          upsertRecentRun({
+            jobId: currentJobId,
+            status: 'running',
+            progress: getFreshestProgressText(data) || 'Analysis is still in progress...',
+            results: null,
+            llm: data.llm ?? undefined,
+          });
+          $('#processing-status').textContent = getFreshestProgressText(data) || 'Analysis is still in progress...';
+          setProcessingControls('running');
+          setTimeout(pollStatus, 1500);
+          return;
+        }
+        upsertRecentRun({
+          jobId: currentJobId,
+          status: data.status,
+          progress: getFreshestProgressText(data),
+          results: confirmed.results || null,
+          llm: data.llm ?? undefined,
+        });
+        renderResults(confirmed.results);
         showScreen('results-screen');
         persistActiveJob(currentJobId);
         setProcessingControls('done');
@@ -6086,13 +6148,41 @@ async function pollStatus() {
         }
       }
     } else if (data.status === 'error') {
+      upsertRecentRun({
+        jobId: currentJobId,
+        status: data.status,
+        progress: getFreshestProgressText(data),
+        results: null,
+        llm: data.llm ?? undefined,
+      });
       $('#processing-status').textContent = data.progress;
       setSpinnerError();
       setProcessingControls('error');
     } else if (data.status === 'stopped') {
       if (data.results) {
         try {
-          renderResults(data.results);
+          const confirmed = await loadConfirmedTerminalResults(currentJobId, data.results || null);
+          if (confirmed.state === 'running') {
+            upsertRecentRun({
+              jobId: currentJobId,
+              status: 'running',
+              progress: getFreshestProgressText(data) || 'Analysis is still in progress...',
+              results: null,
+              llm: data.llm ?? undefined,
+            });
+            $('#processing-status').textContent = getFreshestProgressText(data) || 'Analysis is still in progress...';
+            setProcessingControls('running');
+            setTimeout(pollStatus, 1500);
+            return;
+          }
+          upsertRecentRun({
+            jobId: currentJobId,
+            status: data.status,
+            progress: getFreshestProgressText(data),
+            results: confirmed.results || null,
+            llm: data.llm ?? undefined,
+          });
+          renderResults(confirmed.results);
           showScreen('results-screen');
           setProcessingControls('stopped');
           persistActiveJob(null);
@@ -6103,11 +6193,25 @@ async function pollStatus() {
           console.error('Failed to render stopped results:', renderErr);
         }
       }
+      upsertRecentRun({
+        jobId: currentJobId,
+        status: data.status,
+        progress: getFreshestProgressText(data),
+        results: null,
+        llm: data.llm ?? undefined,
+      });
       $('#processing-status').textContent = data.progress || 'Analysis stopped by user.';
       setSpinnerError();
       setProcessingControls('stopped');
       persistActiveJob(null);
     } else {
+      upsertRecentRun({
+        jobId: currentJobId,
+        status: data.status,
+        progress: getFreshestProgressText(data),
+        results: null,
+        llm: data.llm ?? undefined,
+      });
       setTimeout(pollStatus, 1500);
     }
   } catch (err) {
