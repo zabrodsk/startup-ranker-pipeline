@@ -1938,6 +1938,9 @@ def load_job_status(job_id_legacy: str) -> dict[str, Any] | None:
     elif worker_status == "interrupted" and analysis_status not in {"done", "error", "stopped"}:
         status = "interrupted"
         progress = worker_progress or progress
+    elif worker_status in WORKER_TERMINAL_STATUSES and status not in {"done", "error", "stopped"}:
+        status = worker_status
+        progress = worker_progress or progress
 
     if analysis_status in {"done", "error", "stopped"} and status not in {"done", "error", "stopped"}:
         status = analysis_status
@@ -2122,6 +2125,9 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
                 progress = worker_progress or progress
             elif worker_status == "interrupted" and analysis_status not in {"done", "error", "stopped"}:
                 status = "interrupted"
+                progress = worker_progress or progress
+            elif worker_status in WORKER_TERMINAL_STATUSES and str(status).strip().lower() not in {"done", "error", "stopped"}:
+                status = worker_status
                 progress = worker_progress or progress
             if analysis_status in {"done", "error", "stopped"} and str(status).strip().lower() not in {"done", "error", "stopped"}:
                 status = analysis_status

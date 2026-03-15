@@ -586,6 +586,71 @@ def test_load_job_status_marks_stale_worker_execution_interrupted(monkeypatch) -
     }
 
 
+def test_load_job_status_promotes_terminal_worker_state_over_stale_running_status(monkeypatch) -> None:
+    import web.db as web_db
+
+    class FakeResponse:
+        def __init__(self, data):
+            self.data = data
+
+    class FakeQuery:
+        def __init__(self, table_name: str):
+            self.table_name = table_name
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, *_args, **_kwargs):
+            return self
+
+        def order(self, *_args, **_kwargs):
+            return self
+
+        def limit(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            if self.table_name == "jobs":
+                return FakeResponse(
+                    [
+                        {
+                            "run_config": {
+                                "worker_state": {
+                                    "status": "done",
+                                    "progress": "Analysis complete — 1/1 companies ranked",
+                                }
+                            }
+                        }
+                    ]
+                )
+            if self.table_name == "job_status_history":
+                return FakeResponse(
+                    [
+                        {
+                            "status": "running",
+                            "progress": "Worker running — alpha (1/1)",
+                            "created_at": "2026-03-15T17:00:00Z",
+                        }
+                    ]
+                )
+            raise AssertionError(f"Unexpected table lookup: {self.table_name}")
+
+    class FakeClient:
+        def table(self, table_name: str):
+            return FakeQuery(table_name)
+
+    monkeypatch.setattr(web_db, "_get_client", lambda: FakeClient())
+    monkeypatch.setattr(web_db, "_load_latest_analysis_snapshot", lambda client, job_id_legacy: {})
+
+    status = web_db.load_job_status("job-123")
+
+    assert status == {
+        "status": "done",
+        "progress": "Analysis complete — 1/1 companies ranked",
+        "worker_active": False,
+    }
+
+
 def test_list_saved_jobs_prefers_terminal_analysis_status_over_stale_running_status(monkeypatch) -> None:
     import web.db as web_db
 
@@ -919,6 +984,95 @@ def test_list_saved_jobs_marks_stale_worker_execution_interrupted(monkeypatch) -
                     "status": "running",
                     "progress": "Worker running — alpha (2/10)",
                     "last_heartbeat_at": "2026-03-14T18:27:35+00:00",
+                }
+            },
+            "results": None,
+            "has_results": False,
+            "worker_active": False,
+        }
+    ]
+
+
+def test_list_saved_jobs_promotes_terminal_worker_state_over_stale_running_status(monkeypatch) -> None:
+    import web.db as web_db
+
+    class FakeResponse:
+        def __init__(self, data):
+            self.data = data
+
+    class FakeQuery:
+        def __init__(self, table_name: str):
+            self.table_name = table_name
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def order(self, *_args, **_kwargs):
+            return self
+
+        def limit(self, *_args, **_kwargs):
+            return self
+
+        def in_(self, *_args, **_kwargs):
+            return self
+
+        def is_(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            if self.table_name == "jobs":
+                return FakeResponse(
+                    [
+                        {
+                            "job_id_legacy": "job-123",
+                            "input_mode": "specter",
+                            "use_web_search": True,
+                            "created_at": "2026-03-15T17:00:00Z",
+                            "run_config": {
+                                "worker_state": {
+                                    "status": "done",
+                                    "progress": "Analysis complete — 1/1 companies ranked",
+                                }
+                            },
+                        }
+                    ]
+                )
+            if self.table_name == "job_status_history":
+                return FakeResponse(
+                    [
+                        {
+                            "job_id_legacy": "job-123",
+                            "status": "running",
+                            "progress": "Worker running — alpha (1/1)",
+                            "created_at": "2026-03-15T17:00:00Z",
+                        }
+                    ]
+                )
+            if self.table_name == "analyses":
+                return FakeResponse([])
+            raise AssertionError(f"Unexpected table lookup: {self.table_name}")
+
+    class FakeClient:
+        def table(self, table_name: str):
+            return FakeQuery(table_name)
+
+    monkeypatch.setattr(web_db, "_get_client", lambda: FakeClient())
+
+    rows = web_db.list_saved_jobs(limit=10)
+
+    assert rows == [
+        {
+            "job_id": "job-123",
+            "status": "done",
+            "progress": "Analysis complete — 1/1 companies ranked",
+            "created_at": "2026-03-15T17:00:00Z",
+            "input_mode": "specter",
+            "use_web_search": True,
+            "run_name": None,
+            "run_config": {
+                "worker_state": {
+                    "status": "done",
+                    "progress": "Analysis complete — 1/1 companies ranked",
                 }
             },
             "results": None,
