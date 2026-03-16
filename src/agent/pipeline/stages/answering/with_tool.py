@@ -19,6 +19,7 @@ from agent.common.llm_config import get_llm
 from agent.dataclasses.company import Company
 from agent.pipeline.state.answer import AnswerState
 from agent.pipeline.utils.helpers import generate_context_block
+from agent.run_context import use_stage_context
 from agent.web_search import get_provider
 
 load_dotenv()
@@ -165,13 +166,15 @@ def answer_question(state: AnswerState) -> AnswerState:
                 content="Tool limit reached. Provide final answer based on available information. Do not request more tools."
             )
         )
-        llm = get_llm(temperature=0.0)
-        response = llm.invoke(state.messages)
+        with use_stage_context("answering"):
+            llm = get_llm(temperature=0.0)
+            response = llm.invoke(state.messages)
     else:
         tools = _create_tools_for_state(state)
-        llm = get_llm(temperature=0.0)
-        llm_with_tools = llm.bind_tools(tools)
-        response = llm_with_tools.invoke(state.messages)
+        with use_stage_context("answering"):
+            llm = get_llm(temperature=0.0)
+            llm_with_tools = llm.bind_tools(tools)
+            response = llm_with_tools.invoke(state.messages)
 
     state.messages.append(response)
 

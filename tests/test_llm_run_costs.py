@@ -331,9 +331,10 @@ def test_create_llm_respects_requested_temperature_for_gpt5_by_default(monkeypat
 
     called = {}
 
-    def fake_openai(model, temperature, timeout_s, max_retries):
+    def fake_openai(model, temperature, timeout_s, max_retries, reasoning_effort=None):
         called["model"] = model
         called["temperature"] = temperature
+        called["reasoning_effort"] = reasoning_effort
         return object()
 
     monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
@@ -342,7 +343,7 @@ def test_create_llm_respects_requested_temperature_for_gpt5_by_default(monkeypat
     with use_run_context(llm_selection={"provider": "openai", "model": "gpt-5"}):
         llm_module.create_llm(temperature=0.0)
 
-    assert called == {"model": "gpt-5", "temperature": 0.0}
+    assert called == {"model": "gpt-5", "temperature": 0.0, "reasoning_effort": None}
 
 
 def test_create_llm_can_force_temperature_one_for_gpt5(monkeypatch) -> None:
@@ -351,9 +352,10 @@ def test_create_llm_can_force_temperature_one_for_gpt5(monkeypatch) -> None:
 
     called = {}
 
-    def fake_openai(model, temperature, timeout_s, max_retries):
+    def fake_openai(model, temperature, timeout_s, max_retries, reasoning_effort=None):
         called["model"] = model
         called["temperature"] = temperature
+        called["reasoning_effort"] = reasoning_effort
         return object()
 
     monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
@@ -362,7 +364,7 @@ def test_create_llm_can_force_temperature_one_for_gpt5(monkeypatch) -> None:
     with use_run_context(llm_selection={"provider": "openai", "model": "gpt-5"}):
         llm_module.create_llm(temperature=0.0)
 
-    assert called == {"model": "gpt-5", "temperature": 1.0}
+    assert called == {"model": "gpt-5", "temperature": 1.0, "reasoning_effort": None}
 
 
 def test_create_llm_forces_temperature_one_for_non_gpt5_openai(monkeypatch) -> None:
@@ -371,9 +373,10 @@ def test_create_llm_forces_temperature_one_for_non_gpt5_openai(monkeypatch) -> N
 
     called = {}
 
-    def fake_openai(model, temperature, timeout_s, max_retries):
+    def fake_openai(model, temperature, timeout_s, max_retries, reasoning_effort=None):
         called["model"] = model
         called["temperature"] = temperature
+        called["reasoning_effort"] = reasoning_effort
         return object()
 
     monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
@@ -382,7 +385,7 @@ def test_create_llm_forces_temperature_one_for_non_gpt5_openai(monkeypatch) -> N
     with use_run_context(llm_selection={"provider": "openai", "model": "gpt-4.1-mini"}):
         llm_module.create_llm(temperature=0.3)
 
-    assert called == {"model": "gpt-4.1-mini", "temperature": 1.0}
+    assert called == {"model": "gpt-4.1-mini", "temperature": 1.0, "reasoning_effort": None}
 
 
 def test_create_llm_forces_temperature_one_for_o4_mini(monkeypatch) -> None:
@@ -390,9 +393,10 @@ def test_create_llm_forces_temperature_one_for_o4_mini(monkeypatch) -> None:
 
     called = {}
 
-    def fake_openai(model, temperature, timeout_s, max_retries):
+    def fake_openai(model, temperature, timeout_s, max_retries, reasoning_effort=None):
         called["model"] = model
         called["temperature"] = temperature
+        called["reasoning_effort"] = reasoning_effort
         return object()
 
     monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
@@ -401,7 +405,49 @@ def test_create_llm_forces_temperature_one_for_o4_mini(monkeypatch) -> None:
     with use_run_context(llm_selection={"provider": "openai", "model": "o4-mini"}):
         llm_module.create_llm(temperature=0.0)
 
-    assert called == {"model": "o4-mini", "temperature": 1.0}
+    assert called == {"model": "o4-mini", "temperature": 1.0, "reasoning_effort": None}
+
+
+def test_create_llm_maps_gpt52_to_stage_reasoning_effort(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    called = {}
+
+    def fake_openai(model, temperature, timeout_s, max_retries, reasoning_effort=None):
+        called["model"] = model
+        called["temperature"] = temperature
+        called["reasoning_effort"] = reasoning_effort
+        return object()
+
+    monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable: runnable)
+
+    with use_run_context(llm_selection={"provider": "openai", "model": "gpt-5.2"}):
+        with use_stage_context("evaluation"):
+            llm_module.create_llm(temperature=0.0)
+
+    assert called == {"model": "gpt-5.2", "temperature": 1.0, "reasoning_effort": "high"}
+
+
+def test_create_llm_maps_gpt54_ranking_to_xhigh_reasoning_effort(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    called = {}
+
+    def fake_openai(model, temperature, timeout_s, max_retries, reasoning_effort=None):
+        called["model"] = model
+        called["temperature"] = temperature
+        called["reasoning_effort"] = reasoning_effort
+        return object()
+
+    monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable: runnable)
+
+    with use_run_context(llm_selection={"provider": "openai", "model": "gpt-5.4"}):
+        with use_stage_context("ranking_dimension_score"):
+            llm_module.create_llm(temperature=0.0)
+
+    assert called == {"model": "gpt-5.4", "temperature": 1.0, "reasoning_effort": "xhigh"}
 
 
 def test_use_phase_llm_temporarily_overrides_selection() -> None:
@@ -638,6 +684,8 @@ def test_telemetry_callback_estimates_usage_when_response_omits_metadata() -> No
                 "requested_temperature": 0.0,
                 "effective_temperature": 0.0,
                 "sampling_mode": "respect_requested",
+                "requested_reasoning_effort": None,
+                "effective_reasoning_effort": None,
             }
         )
         llm_module._TELEMETRY_CALLBACK.on_chat_model_start(
@@ -658,6 +706,8 @@ def test_telemetry_callback_estimates_usage_when_response_omits_metadata() -> No
     assert rows[0]["metadata"]["requested_temperature"] == 0.0
     assert rows[0]["metadata"]["effective_temperature"] == 0.0
     assert rows[0]["metadata"]["sampling_mode"] == "respect_requested"
+    assert rows[0]["metadata"]["requested_reasoning_effort"] is None
+    assert rows[0]["metadata"]["effective_reasoning_effort"] is None
 
 
 def test_api_config_exposes_default_and_available_models(monkeypatch) -> None:

@@ -27,6 +27,7 @@ from agent.llm_catalog import normalize_provider
 from agent.rate_limit import wrap_llm
 from agent.run_context import (
     get_current_collector,
+    get_current_stage_name,
     get_current_llm_request_settings,
     get_current_llm_selection,
     set_current_llm_request_settings,
@@ -287,6 +288,8 @@ class _TelemetryCallbackHandler(BaseCallbackHandler):
             "requested_temperature",
             "effective_temperature",
             "sampling_mode",
+            "requested_reasoning_effort",
+            "effective_reasoning_effort",
         ):
             if key in request_settings:
                 metadata[key] = request_settings[key]
@@ -339,11 +342,56 @@ def _normalize_gpt5_temperature_mode(value: str | None) -> str:
     return _DEFAULT_GPT5_TEMPERATURE_MODE
 
 
+def _is_exact_gpt5_model(model: str) -> bool:
+    return (model or "").strip() == "gpt-5"
+
+
+def _is_reasoning_effort_model(model: str) -> bool:
+    return (model or "").strip() in {"gpt-5.2", "gpt-5.4"}
+
+
+def _resolve_reasoning_effort_for_stage(
+    model: str,
+    stage_name: str | None,
+    requested_temperature: float,
+) -> str:
+    stage = (stage_name or "").strip().lower()
+    ranking_effort = "xhigh" if model == "gpt-5.4" else "high"
+    stage_map = {
+        "decomposition": "medium",
+        "answering": "low",
+        "generation_pro": "medium",
+        "generation_contra": "medium",
+        "evaluation": "high",
+        "ranking_dimension_score": ranking_effort,
+        "ranking_executive_summary": ranking_effort,
+    }
+    if stage in stage_map:
+        return stage_map[stage]
+    if requested_temperature <= 0.0:
+        return "low"
+    return "medium"
+
+
 def _resolve_openai_temperature(
     model: str,
     requested_temperature: float,
 ) -> dict[str, Any]:
-    if not model.startswith("gpt-5"):
+    if _is_reasoning_effort_model(model):
+        effort = _resolve_reasoning_effort_for_stage(
+            model,
+            get_current_stage_name(),
+            requested_temperature,
+        )
+        return {
+            "requested_temperature": requested_temperature,
+            "effective_temperature": 1.0,
+            "sampling_mode": "reasoning_effort",
+            "requested_reasoning_effort": effort,
+            "effective_reasoning_effort": effort,
+        }
+
+    if not _is_exact_gpt5_model(model):
         return {
             "requested_temperature": requested_temperature,
             "effective_temperature": 1.0,
@@ -385,6 +433,8 @@ def create_llm(temperature: float = 0.0) -> BaseChatModel:
         "requested_temperature": temperature,
         "effective_temperature": temperature,
         "sampling_mode": "requested",
+        "requested_reasoning_effort": None,
+        "effective_reasoning_effort": None,
         "provider": provider,
         "model": model,
     }
@@ -396,7 +446,15 @@ def create_llm(temperature: float = 0.0) -> BaseChatModel:
     if provider == "gemini":
         return wrap_llm(_create_gemini(model, temperature, timeout_s, max_retries))
     elif provider == "openai":
-        return wrap_llm(_create_openai(model, effective_temperature, timeout_s, max_retries))
+        return wrap_llm(
+            _create_openai(
+                model,
+                effective_temperature,
+                timeout_s,
+                max_retries,
+                reasoning_effort=request_settings.get("effective_reasoning_effort"),
+            )
+        )
     elif provider == "openrouter":
         return wrap_llm(_create_openrouter(model, temperature, timeout_s, max_retries))
     elif provider == "anthropic":
@@ -449,6 +507,7 @@ def _create_openai(
     temperature: float,
     timeout_s: float,
     max_retries: int,
+    reasoning_effort: str | None = None,
 ) -> BaseChatModel:
     from langchain_openai import ChatOpenAI
 
@@ -460,6 +519,7 @@ def _create_openai(
         model=model,
         api_key=api_key,
         temperature=temperature,
+        reasoning_effort=reasoning_effort,
         request_timeout=timeout_s,
         max_retries=max_retries,
         callbacks=[_TELEMETRY_CALLBACK],
