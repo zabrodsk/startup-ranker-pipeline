@@ -107,6 +107,7 @@ screen.
 The production model catalog now exposes additional Gemini and OpenAI options
 without changing the existing default routing behavior.
 
+- Added Gemini model: `gemini-2.5-flash-lite`
 - Added Gemini models: `gemini-2.5-flash`, `gemini-3.1-pro-preview`
 - Added OpenAI models: `o4-mini`, `gpt-5.2`, `gpt-5.4`
 - Preserved existing defaults for:

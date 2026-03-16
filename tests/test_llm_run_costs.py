@@ -84,6 +84,7 @@ def test_available_models_payload_marks_availability(monkeypatch) -> None:
     assert {item["model"] for item in models} == {
         "gemini-3.1-flash-lite-preview",
         "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
         "gemini-3.1-pro-preview",
         "claude-haiku-4-5-20251001",
         "gpt-5-nano",
@@ -113,6 +114,7 @@ def test_validate_requested_selection_accepts_new_catalog_models(monkeypatch) ->
     monkeypatch.setenv("OPENAI_API_KEY", "openai")
 
     assert validate_requested_selection("gemini", "gemini-2.5-flash") is not None
+    assert validate_requested_selection("gemini", "gemini-2.5-flash-lite") is not None
     assert validate_requested_selection("gemini", "gemini-3.1-pro-preview") is not None
     assert validate_requested_selection("openai", "o4-mini") is not None
     assert validate_requested_selection("openai", "gpt-5.2") is not None

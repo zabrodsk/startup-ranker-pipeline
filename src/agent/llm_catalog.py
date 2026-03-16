@@ -112,6 +112,18 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
     ),
     ModelCatalogEntry(
         provider="gemini",
+        model="gemini-2.5-flash-lite",
+        label="Gemini 2.5 Flash-Lite",
+        summary="Cost-efficient throughput",
+        tier="budget",
+        pricing=ModelPricing(
+            input_per_million_tokens_usd=0.10,
+            output_per_million_tokens_usd=0.40,
+        ),
+        required_env=("GOOGLE_API_KEY",),
+    ),
+    ModelCatalogEntry(
+        provider="gemini",
         model="gemini-3.1-pro-preview",
         label="Gemini 3.1 Pro Preview",
         summary="Agentic frontier",
