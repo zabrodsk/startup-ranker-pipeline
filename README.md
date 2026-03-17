@@ -22,6 +22,14 @@ Rockaway Deal Intelligence helps investment teams evaluate and prioritize deal f
 4. **Iterative Refinement** — Devil's advocate critique and refinement
 5. **Ranking** — Composite scores (strategy fit, team, upside) with invest/not-invest recommendation
 
+### What is new in this release
+
+- **Company chat** inside the Companies screen, grounded in saved runs and evidence
+- **Shared company chat history** persisted in Supabase so all users see the same transcript per company
+- **Selectable answer model** for company Q&A
+- **Visible cost tracking** for each answer, web-search usage, and total session cost
+- **Expandable Companies workspace** with collapsible sidebar and assessment panel for more room while reviewing chat
+
 ---
 
 ## Quick Start
@@ -110,6 +118,7 @@ The web UI lets you upload files, run analyses, and download results without tou
 | **Web search** | Optional Perplexity/Brave search for extra evidence |
 | **VC strategy** | Optional investment thesis for tailored scoring |
 | **Results** | Summary table, executive summaries, key points, red flags, pro/contra arguments, Excel download |
+| **Company chat** | Ask follow-up questions per company across saved runs, with citations, web-search fallback, and shared history |
 
 ### Local run
 
@@ -170,6 +179,12 @@ screen. Finished runs always expose an **Open results** action and the server
 decides whether the saved report can be opened, which avoids stale browser-side
 availability state. Both the **Analysis** and **Companies** headers expose a
 manual **Refresh** action for an immediate server sync.
+
+The **Companies** page now includes a company-level chat panel. It answers from
+persisted evidence first, can fall back to web search for broader questions
+such as market sizing and competitors, and shows per-answer citations plus LLM
+and web-search costs. Company chat history is shared across users through
+Supabase persistence.
 
 ### Deploy via Cloudflare Tunnel
 
@@ -254,6 +269,7 @@ Copy `.env.example` to `.env` and set:
 | `LLM_MAX_RETRIES` | optional | Max retries on transient LLM failures (default: `2`) |
 | `SUPABASE_URL` | optional | Supabase project URL for persistent storage |
 | `SUPABASE_SERVICE_ROLE_KEY` | optional | Supabase service-role key |
+| `COMPANY_CHAT_DB_TIMEOUT_SEC` | optional | Fail-fast timeout for shared company-chat persistence calls (default: `3`) |
 | `ENABLE_SPECTER_WORKER_SERVICE` | optional | Queue Specter runs for the dedicated worker service instead of executing them in the web process |
 | `SPECTER_WORKER_POLL_SECONDS` | optional | Poll interval for the dedicated Specter worker (code default: `5`; current Railway production override: `10`) |
 | `RESTART_ON_IDLE_AFTER_ANALYSIS` | optional | When `true`, the web service can restart after completed analyses have been persisted/served so idle memory is reclaimed |
@@ -305,7 +321,7 @@ Available OpenRouter models in the UI: `openrouter/hunter-alpha`
 When configured, the app persists completed analyses to Supabase so results survive restarts and Excel files can be downloaded even after the temp directory is cleaned up.
 
 1. Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in `.env`
-2. Apply migrations from `supabase/migrations/` in order
+2. Apply migrations from `supabase/migrations/` in order, including `20260316000000_company_chat_sessions.sql` for shared company chat history
 3. The app auto-creates the `analysis-exports` storage bucket on first use
 
 See [`supabase/README.md`](./supabase/README.md) for full setup details.

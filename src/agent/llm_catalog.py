@@ -310,6 +310,27 @@ def available_models_payload() -> list[dict[str, Any]]:
     return models
 
 
+def available_chat_models_payload() -> list[dict[str, Any]]:
+    models: list[dict[str, Any]] = []
+    for entry in MODEL_CATALOG:
+        env_available = _has_required_env(entry)
+        models.append(
+            {
+                "provider": entry.provider,
+                "model": entry.model,
+                "label": entry.label,
+                "summary": entry.summary,
+                "tier": entry.tier,
+                "available": env_available,
+                "selectable": env_available,
+                "pricing_available": entry.pricing is not None,
+                "supports_structured_output": entry.supports_structured_output,
+                "unavailable_reason": "" if env_available else "Missing provider credentials.",
+            }
+        )
+    return models
+
+
 def validate_requested_selection(
     provider: str | None,
     model: str | None,
@@ -325,6 +346,20 @@ def validate_requested_selection(
         raise ValueError(
             f"{entry.label} is not supported for structured-output analysis runs yet."
         )
+    return entry
+
+
+def validate_chat_requested_selection(
+    provider: str | None,
+    model: str | None,
+) -> ModelCatalogEntry | None:
+    if not provider and not model:
+        return None
+    entry = find_model_entry(provider, model)
+    if not entry:
+        raise ValueError("Unknown chat LLM model selection.")
+    if not _has_required_env(entry):
+        raise ValueError(f"{entry.label} is not available in this environment.")
     return entry
 
 

@@ -40,10 +40,12 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from agent.llm_catalog import (
     available_models_payload,
+    available_chat_models_payload,
     model_label,
     current_default_selection,
     pricing_catalog_payload,
     serialize_selection,
+    validate_chat_requested_selection,
     validate_requested_selection,
 )
 from agent.llm_policy import (
@@ -859,6 +861,8 @@ _person_service = PersonIntelService()
 class CompanyChatRequest(BaseModel):
     message: str
     active_job_id: str | None = None
+    llm_provider: str | None = None
+    llm_model: str | None = None
 
     @field_validator("message")
     @classmethod
@@ -872,24 +876,33 @@ class CompanyChatRequest(BaseModel):
 class CompanyChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
-    citations: list[dict[str, Any]] = []
+    citations: list[dict[str, Any]] = Field(default_factory=list)
     created_at: str
+    llm_label: str | None = None
+    run_costs: dict[str, Any] | None = None
 
 
 class CompanyChatResponse(BaseModel):
     company_lookup_key: str
     transcript: list[CompanyChatMessage]
     run_count: int = 0
-    source_counts: dict[str, int] = {}
+    source_counts: dict[str, int] = Field(default_factory=dict)
     web_search_enabled: bool = True
     model_label: str = "Gemini 3.1 Flash Lite"
-    used_run_ids: list[str] = []
+    llm_provider: str = "gemini"
+    llm_model: str = "gemini-3.1-flash-lite-preview"
+    session_run_costs: dict[str, Any] = Field(default_factory=dict)
+    available_models: list[dict[str, Any]] = Field(default_factory=list)
+    used_run_ids: list[str] = Field(default_factory=list)
     used_web_search: bool = False
     web_search_query: str | None = None
 
 
 def _chat_session_key(session_id: str, company_lookup_key: str) -> tuple[str, str]:
     return (session_id, company_lookup_key.strip().lower())
+
+
+COMPANY_CHAT_DB_TIMEOUT_SEC = 3.0
 
 
 def _now_iso() -> str:
@@ -912,15 +925,144 @@ def _compress_company_chat_session(session: dict[str, Any], max_messages: int = 
         session["summary"] = _truncate_summary(f"{summary}\n{summary_line}".strip())
 
 
+def _default_company_chat_session() -> dict[str, Any]:
+    return {
+        "company_name": None,
+        "summary": "",
+        "transcript": [],
+        "selection": serialize_selection("gemini", "gemini-3.1-flash-lite-preview"),
+        "model_executions": [],
+    }
+
+
+def _normalize_company_chat_transcript(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            normalized.append(CompanyChatMessage(**item).model_dump())
+        except Exception:
+            continue
+    return normalized
+
+
+def _normalize_company_chat_session_payload(payload: dict[str, Any] | None) -> dict[str, Any]:
+    session = _default_company_chat_session()
+    source = payload or {}
+    session["company_name"] = source.get("company_name")
+    session["summary"] = str(source.get("summary") or "")
+    session["transcript"] = _normalize_company_chat_transcript(source.get("transcript") or [])
+    session["model_executions"] = list(source.get("model_executions") or [])
+    session["selection"] = _company_chat_selection(source)
+    _compress_company_chat_session(session)
+    return session
+
+
 def _get_or_create_company_chat_session(session_id: str, company_lookup_key: str) -> dict[str, Any]:
-    return _company_chat_sessions.setdefault(
-        _chat_session_key(session_id, company_lookup_key),
-        {"summary": "", "transcript": []},
-    )
+    return _company_chat_sessions.setdefault(_chat_session_key(session_id, company_lookup_key), _default_company_chat_session())
 
 
-def _company_chat_model_label() -> str:
-    return model_label("gemini", "gemini-3.1-flash-lite-preview")
+async def _load_company_chat_session(session_id: str, company_lookup_key: str) -> dict[str, Any]:
+    if db and db.is_configured():
+        load_persisted = getattr(db, "load_company_chat_session", None)
+        persisted = await _call_company_chat_db(load_persisted, company_lookup_key)
+        if isinstance(persisted, dict):
+            session = _normalize_company_chat_session_payload(persisted)
+            _company_chat_sessions[_chat_session_key(session_id, company_lookup_key)] = session
+            return session
+    return _normalize_company_chat_session_payload(_get_or_create_company_chat_session(session_id, company_lookup_key))
+
+
+async def _persist_company_chat_session(
+    session_id: str,
+    company_lookup_key: str,
+    company_name: str,
+    chat_session: dict[str, Any],
+) -> None:
+    normalized = _normalize_company_chat_session_payload(chat_session)
+    normalized["company_name"] = company_name
+    _company_chat_sessions[_chat_session_key(session_id, company_lookup_key)] = normalized
+    if db and db.is_configured():
+        persist_persisted = getattr(db, "persist_company_chat_session", None)
+        await _call_company_chat_db(
+            persist_persisted,
+            company_lookup_key=company_lookup_key,
+            company_name=company_name,
+            selection=normalized.get("selection"),
+            summary=normalized.get("summary") or "",
+            transcript=normalized.get("transcript") or [],
+            model_executions=normalized.get("model_executions") or [],
+        )
+
+
+async def _clear_company_chat_session(session_id: str, company_lookup_key: str) -> dict[str, Any]:
+    current = await _load_company_chat_session(session_id, company_lookup_key)
+    selection = _company_chat_selection(current)
+    company_name = current.get("company_name") or company_lookup_key
+    normalized_key = (company_lookup_key or "").strip().lower()
+    for key in list(_company_chat_sessions.keys()):
+        if key[1] == normalized_key:
+            _company_chat_sessions.pop(key, None)
+    cleared = _default_company_chat_session()
+    cleared["selection"] = selection
+    cleared["company_name"] = company_name
+    _company_chat_sessions[_chat_session_key(session_id, company_lookup_key)] = cleared
+    if db and db.is_configured():
+        persist_persisted = getattr(db, "persist_company_chat_session", None)
+        await _call_company_chat_db(
+            persist_persisted,
+            company_lookup_key=company_lookup_key,
+            company_name=company_name,
+            selection=selection,
+            summary="",
+            transcript=[],
+            model_executions=[],
+        )
+    return cleared
+
+
+async def _call_company_chat_db(func: Any, *args: Any, timeout: float = COMPANY_CHAT_DB_TIMEOUT_SEC, **kwargs: Any) -> Any:
+    if not callable(func):
+        return None
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(func, *args, **kwargs), timeout=timeout)
+    except Exception:
+        return None
+
+
+def _company_chat_selection(session: dict[str, Any] | None = None) -> dict[str, str]:
+    selection = (session or {}).get("selection") if isinstance(session, dict) else None
+    if isinstance(selection, dict) and selection.get("provider") and selection.get("model"):
+        return serialize_selection(selection.get("provider"), selection.get("model"))
+    default = serialize_selection("gemini", "gemini-3.1-flash-lite-preview")
+    try:
+        validate_chat_requested_selection(default.get("provider"), default.get("model"))
+        return default
+    except Exception:
+        fallback = current_default_selection()
+        return serialize_selection(fallback.get("provider"), fallback.get("model"))
+
+
+def _company_chat_model_label(session: dict[str, Any] | None = None) -> str:
+    selection = _company_chat_selection(session)
+    return model_label(selection.get("provider"), selection.get("model"))
+
+
+def _company_chat_session_costs(session: dict[str, Any] | None) -> dict[str, Any]:
+    transcript = list((session or {}).get("transcript") or [])
+    aggregate: dict[str, Any] | None = None
+    for item in transcript:
+        if item.get("role") != "assistant":
+            continue
+        run_costs = item.get("run_costs")
+        if not isinstance(run_costs, dict):
+            continue
+        aggregate = _merge_run_cost_summaries(aggregate, run_costs)
+    if isinstance(aggregate, dict):
+        return aggregate
+    rows = list((session or {}).get("model_executions") or [])
+    return build_run_costs_from_model_executions(rows)
 
 
 def _runtime_versions() -> dict[str, str]:
@@ -3784,15 +3926,20 @@ async def get_company_chat(
     if not context:
         raise HTTPException(status_code=404, detail="Company chat context not found")
 
-    chat_session = _get_or_create_company_chat_session(session_id, company_lookup_key)
+    chat_session = await _load_company_chat_session(session_id, company_lookup_key)
     _company, _store, _citation_map, meta = build_company_chat_store(context)
+    selection = _company_chat_selection(chat_session)
     return CompanyChatResponse(
         company_lookup_key=company_lookup_key,
         transcript=[CompanyChatMessage(**item) for item in chat_session.get("transcript") or []],
         run_count=meta["run_count"],
         source_counts=meta["source_counts"],
         web_search_enabled=True,
-        model_label=_company_chat_model_label(),
+        model_label=_company_chat_model_label(chat_session),
+        llm_provider=selection["provider"],
+        llm_model=selection["model"],
+        session_run_costs=_company_chat_session_costs(chat_session),
+        available_models=available_chat_models_payload(),
     )
 
 
@@ -3811,7 +3958,15 @@ async def post_company_chat(
     if not context:
         raise HTTPException(status_code=404, detail="Company chat context not found")
 
-    chat_session = _get_or_create_company_chat_session(session_id, company_lookup_key)
+    chat_session = await _load_company_chat_session(session_id, company_lookup_key)
+    if req.llm_provider or req.llm_model:
+        selected_entry = validate_chat_requested_selection(req.llm_provider, req.llm_model)
+        selection = serialize_selection(selected_entry.provider, selected_entry.model)
+        chat_session["selection"] = selection
+    else:
+        selection = _company_chat_selection(chat_session)
+        chat_session["selection"] = selection
+
     transcript = list(chat_session.get("transcript") or [])
     transcript.append(
         CompanyChatMessage(
@@ -3831,18 +3986,30 @@ async def post_company_chat(
         question=req.message,
         use_web_search=True,
         active_job_id=req.active_job_id,
+        llm_selection=selection,
     )
 
     chat_session["summary"] = transient_session["summary"]
+    session_model_executions = chat_session.setdefault("model_executions", [])
+    session_model_executions.extend(result.get("model_executions") or [])
     chat_session["transcript"] = transcript + [
         CompanyChatMessage(
             role="assistant",
             content=result["answer"],
             citations=result["citations"],
             created_at=_now_iso(),
+            llm_label=result.get("model_label"),
+            run_costs=result.get("run_costs"),
         ).model_dump()
     ]
     _compress_company_chat_session(chat_session)
+    await _persist_company_chat_session(
+        session_id,
+        company_lookup_key,
+        context.get("company_name") or "Unknown company",
+        chat_session,
+    )
+    session_run_costs = _company_chat_session_costs(chat_session)
 
     return {
         "company_lookup_key": company_lookup_key,
@@ -3853,6 +4020,11 @@ async def post_company_chat(
         "source_counts": result["source_counts"],
         "web_search_enabled": True,
         "model_label": result["model_label"],
+        "llm_provider": selection["provider"],
+        "llm_model": selection["model"],
+        "run_costs": result.get("run_costs"),
+        "session_run_costs": session_run_costs,
+        "available_models": available_chat_models_payload(),
         "used_run_ids": result["used_run_ids"],
         "used_web_search": result["used_web_search"],
         "web_search_query": result["web_search_query"],
@@ -3866,7 +4038,7 @@ async def delete_company_chat(
 ):
     if not _check_session(session_id):
         raise HTTPException(status_code=401, detail="Not authenticated")
-    _company_chat_sessions.pop(_chat_session_key(session_id, company_lookup_key), None)
+    await _clear_company_chat_session(session_id, company_lookup_key)
     return {"company_lookup_key": company_lookup_key, "cleared": True}
 
 

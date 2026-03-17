@@ -2010,6 +2010,11 @@
       grid-template-columns: minmax(280px, 20%) minmax(0, 1fr);
       gap: 0;
       min-height: 0;
+      transition: grid-template-columns 0.22s ease, gap 0.22s ease;
+    }
+    .companies-page.is-sidebar-collapsed {
+      grid-template-columns: 72px minmax(0, 1fr);
+      gap: 16px;
     }
     .companies-screen-toolbar {
       justify-content: space-between;
@@ -2021,10 +2026,27 @@
       min-height: 0;
       background: var(--bg-surface);
     }
+    .companies-page-sidebar.is-collapsed {
+      border-right: none;
+      overflow: visible;
+      background: transparent;
+    }
     .companies-sidebar-shell {
       min-height: 100%;
       display: flex;
       flex-direction: column;
+    }
+    .companies-sidebar-rail {
+      min-height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      padding: 18px 10px;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: var(--radius-xl);
+      background: linear-gradient(180deg, rgba(11, 14, 24, 0.98), rgba(7, 10, 18, 0.98));
+      box-shadow: var(--shadow-lg);
     }
     .companies-sidebar-head {
       padding: 26px 24px 18px;
@@ -2043,6 +2065,12 @@
       font-weight: 700;
       color: var(--text-white);
     }
+    .companies-sidebar-head-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-left: auto;
+    }
     .companies-sidebar-count {
       min-width: 40px;
       height: 40px;
@@ -2056,6 +2084,62 @@
       color: var(--text-light);
       font-size: 14px;
       font-weight: 700;
+    }
+    .companies-sidebar-toggle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      width: 40px;
+      height: 40px;
+      padding: 0;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.04);
+      color: var(--text-light);
+      cursor: pointer;
+      transition: border-color 0.18s ease, background 0.18s ease, transform 0.12s ease;
+    }
+    .companies-sidebar-toggle:hover,
+    .companies-sidebar-toggle:focus-visible {
+      border-color: var(--blue-border-accent);
+      background: rgba(8, 57, 103, 0.28);
+      outline: none;
+      transform: translateY(-1px);
+    }
+    .companies-sidebar-toggle svg {
+      width: 18px;
+      height: 18px;
+    }
+    .companies-sidebar-rail .companies-sidebar-toggle {
+      width: 44px;
+      height: 44px;
+      border-radius: 16px;
+    }
+    .companies-sidebar-collapsed-badge {
+      min-width: 44px;
+      height: 44px;
+      padding: 0 10px;
+      border-radius: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0.45);
+      border: 1px solid rgba(255,255,255,0.06);
+      color: var(--text-light);
+      font-size: 13px;
+      font-weight: 700;
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+      letter-spacing: 0.5px;
+    }
+    .companies-sidebar-collapsed-hint {
+      font-size: 10px;
+      color: var(--text-dim);
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
     }
     .companies-sidebar-sort {
       display: inline-flex;
@@ -2151,6 +2235,20 @@
       overflow: auto;
       padding: 8px 0 8px 24px;
     }
+    .companies-page-detail-topbar {
+      display: flex;
+      justify-content: flex-start;
+      margin-bottom: 14px;
+    }
+    .companies-page-detail-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .companies-page-detail-toggle svg {
+      width: 14px;
+      height: 14px;
+    }
     .companies-page-empty {
       min-height: 100%;
       display: flex;
@@ -2189,51 +2287,244 @@
       display: flex;
       flex-direction: column;
       gap: 18px;
+      min-height: 0;
     }
-    /* ── iMessage-style chat ───────────────────────── */
+    .company-detail-stack.is-assessment-collapsed {
+      min-height: calc(100vh - 176px);
+    }
+    /* ── Company chat ─────────────────────────────── */
     .company-chat-card {
-      margin-top: 24px;
-      border-top: 1px solid rgba(255,255,255,0.06);
+      position: relative;
       display: flex;
       flex-direction: column;
-      gap: 0;
-      padding-top: 22px;
+      gap: 16px;
+      min-height: 360px;
+      max-height: min(76vh, 840px);
+      padding: 24px;
+      background:
+        radial-gradient(circle at top right, rgba(23, 76, 136, 0.16), transparent 34%),
+        linear-gradient(180deg, rgba(11, 14, 24, 0.98), rgba(7, 10, 18, 0.98));
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow-lg);
+      overflow: hidden;
+    }
+    .company-chat-card.is-expanded {
+      min-height: calc(100vh - 248px);
+      max-height: none;
+    }
+    .company-chat-card::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      pointer-events: none;
+      background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0));
+      opacity: 0.7;
     }
     .company-chat-head {
       display: flex;
-      flex-direction: column;
-      gap: 6px;
-      margin-bottom: 16px;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      flex-wrap: wrap;
+      position: relative;
+      z-index: 1;
     }
     .company-chat-title {
       display: flex;
       flex-direction: column;
-      gap: 4px;
+      gap: 6px;
       min-width: 0;
     }
     .company-chat-title h3 {
-      font-size: 17px;
+      font-size: 20px;
       font-weight: 700;
       letter-spacing: -0.02em;
       color: var(--text-white);
     }
     .company-chat-title p {
       color: var(--text-dim);
-      font-size: 12px;
+      font-size: 13px;
       line-height: 1.5;
     }
-
-    /* Chat log — the scrollable conversation area */
+    .company-chat-toolbar {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 10px;
+      min-width: min(100%, 320px);
+    }
+    .company-chat-toolbar-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+    .company-chat-toolbar-main {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .company-chat-model-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      min-width: 0;
+    }
+    .company-assessment-toggle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 40px;
+      padding: 0;
+      flex-shrink: 0;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.04);
+      color: var(--text-light);
+      cursor: pointer;
+      transition: border-color 0.18s ease, background 0.18s ease, transform 0.12s ease;
+    }
+    .company-assessment-toggle:hover,
+    .company-assessment-toggle:focus-visible {
+      border-color: var(--blue-border-accent);
+      background: rgba(8, 57, 103, 0.28);
+      outline: none;
+      transform: translateY(-1px);
+    }
+    .company-assessment-toggle svg {
+      width: 18px;
+      height: 18px;
+      transform: rotate(90deg);
+      transition: transform 0.18s ease;
+    }
+    .company-assessment-toggle.is-collapsed svg {
+      transform: rotate(-90deg);
+    }
+    .company-chat-model-control {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 0;
+      width: 100%;
+    }
+    .company-chat-model-caption {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: rgba(255,255,255,0.42);
+    }
+    .company-chat-model-hint {
+      font-size: 11px;
+      line-height: 1.45;
+      color: rgba(255,255,255,0.48);
+      padding-left: 2px;
+    }
+    .company-chat-model-shell {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 1 1 auto;
+      min-width: 0;
+      padding: 11px 42px 11px 14px;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.10);
+      background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.03));
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+      transition: border-color 0.2s var(--ease-out-quart),
+                  background 0.2s var(--ease-out-quart),
+                  box-shadow 0.2s var(--ease-out-quart);
+    }
+    .company-chat-model-shell::after {
+      content: '';
+      position: absolute;
+      right: 16px;
+      top: 50%;
+      width: 8px;
+      height: 8px;
+      border-right: 1.5px solid rgba(255,255,255,0.48);
+      border-bottom: 1.5px solid rgba(255,255,255,0.48);
+      transform: translateY(-60%) rotate(45deg);
+      pointer-events: none;
+    }
+    .company-chat-model-shell:focus-within {
+      border-color: rgba(91, 231, 196, 0.32);
+      background: linear-gradient(180deg, rgba(7, 33, 32, 0.66), rgba(8, 24, 25, 0.7));
+      box-shadow: 0 0 0 3px rgba(91, 231, 196, 0.08);
+    }
+    .company-chat-model-icon {
+      width: 18px;
+      height: 18px;
+      color: rgba(124, 245, 200, 0.84);
+      flex-shrink: 0;
+    }
+    .company-chat-model-select {
+      width: 100%;
+      appearance: none;
+      border: none;
+      background: transparent;
+      color: var(--text-light);
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1.4;
+      padding: 0;
+      outline: none;
+      min-width: 0;
+    }
+    .company-chat-model-select:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .company-chat-head-metrics {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-start;
+      gap: 8px;
+    }
+    .company-chat-metric {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 1.3;
+      color: rgba(255,255,255,0.72);
+      padding: 7px 12px;
+      border-radius: var(--radius-full);
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      white-space: nowrap;
+    }
+    .company-chat-shell {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: 0;
+      padding: 0 16px 18px;
+      border-radius: 22px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background:
+        linear-gradient(180deg, rgba(18, 20, 30, 0.96), rgba(10, 13, 22, 0.98)),
+        radial-gradient(circle at top left, rgba(255,255,255,0.03), transparent 46%);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+      overflow: hidden;
+    }
     .company-chat-log {
       display: flex;
       flex-direction: column;
-      gap: 4px;
-      min-height: 200px;
-      max-height: 540px;
+      flex: 1 1 auto;
+      gap: 8px;
+      min-height: 0;
       overflow-y: auto;
-      padding: 12px 4px 12px 4px;
+      padding: 18px 2px 14px;
       scroll-behavior: smooth;
-      overscroll-behavior: contain;
+      overscroll-behavior: auto;
     }
     .company-chat-log::-webkit-scrollbar { width: 4px; }
     .company-chat-log::-webkit-scrollbar-track { background: transparent; }
@@ -2245,7 +2536,7 @@
       align-items: center;
       justify-content: center;
       text-align: center;
-      padding: 40px 20px;
+      padding: 48px 24px;
       color: var(--text-dim);
       line-height: 1.6;
       font-size: 13px;
@@ -2257,12 +2548,12 @@
     .company-chat-message {
       display: flex;
       flex-direction: column;
-      gap: 6px;
-      padding: 10px 14px;
-      border-radius: 18px;
-      border: none;
+      gap: 8px;
+      padding: 14px 16px;
+      border-radius: 20px;
+      border: 1px solid transparent;
       min-width: 0;
-      max-width: min(78%, 520px);
+      max-width: min(88%, 760px);
       position: relative;
       /* entrance animation */
       animation: chat-bubble-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
@@ -2283,12 +2574,15 @@
       }
     }
 
-    /* User bubble — green, right-aligned like iMessage */
+    /* User bubble — blue, right-aligned to match chat actions */
     .company-chat-message.user {
       align-self: flex-end;
-      background: linear-gradient(180deg, #1a8d4e 0%, #147a40 100%);
+      background: linear-gradient(180deg, rgba(8, 99, 191, 0.98) 0%, rgba(7, 77, 152, 0.98) 100%);
       color: #fff;
-      border-bottom-right-radius: 6px;
+      border-color: rgba(26, 136, 255, 0.24);
+      border-bottom-right-radius: 8px;
+      max-width: min(74%, 580px);
+      box-shadow: 0 14px 32px rgba(6, 33, 66, 0.26);
     }
     .company-chat-message.user + .company-chat-message.user {
       margin-top: -2px;
@@ -2298,8 +2592,11 @@
     /* Assistant bubble — subtle dark, left-aligned */
     .company-chat-message.assistant {
       align-self: flex-start;
-      background: rgba(255,255,255,0.06);
-      border-bottom-left-radius: 6px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.05));
+      border-color: rgba(255,255,255,0.06);
+      border-bottom-left-radius: 8px;
+      max-width: min(94%, 980px);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
     }
     .company-chat-message.assistant + .company-chat-message.assistant {
       margin-top: -2px;
@@ -2317,8 +2614,9 @@
       align-self: flex-start;
       max-width: fit-content;
       min-width: 72px;
-      background: rgba(255,255,255,0.06);
-      border-bottom-left-radius: 6px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.05));
+      border: 1px solid rgba(255,255,255,0.06);
+      border-bottom-left-radius: 8px;
       padding: 12px 16px;
     }
 
@@ -2359,13 +2657,47 @@
     /* Message text content */
     .company-chat-content {
       font-size: 14px;
-      line-height: 1.6;
+      line-height: 1.68;
       color: var(--text-light);
       white-space: pre-wrap;
       word-break: break-word;
     }
     .company-chat-message.user .company-chat-content {
       color: #fff;
+    }
+    .company-chat-turn-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 2px;
+    }
+    .company-chat-turn-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 10px;
+      line-height: 1.3;
+      color: rgba(255,255,255,0.62);
+      padding: 4px 9px;
+      border-radius: var(--radius-full);
+      background: rgba(255,255,255,0.045);
+      border: 1px solid rgba(255,255,255,0.07);
+      white-space: nowrap;
+    }
+    button.company-chat-turn-pill {
+      appearance: none;
+      cursor: pointer;
+      color: var(--text-light);
+      transition: border-color 0.18s var(--ease-out-quart),
+                  background 0.18s var(--ease-out-quart),
+                  transform 0.12s var(--ease-out-quart);
+    }
+    button.company-chat-turn-pill:hover,
+    button.company-chat-turn-pill:focus-visible {
+      border-color: rgba(91, 231, 196, 0.28);
+      background: rgba(91, 231, 196, 0.08);
+      outline: none;
+      transform: translateY(-1px);
     }
 
     /* Typing dots */
@@ -2414,10 +2746,10 @@
     .company-chat-citation {
       appearance: none;
       border: 1px solid rgba(255,255,255,0.08);
-      background: rgba(255,255,255,0.04);
+      background: rgba(255,255,255,0.035);
       color: var(--text-mid);
       border-radius: var(--radius-full);
-      padding: 4px 10px;
+      padding: 5px 10px;
       font-size: 11px;
       cursor: pointer;
       transition: border-color 0.18s var(--ease-out-quart),
@@ -2437,25 +2769,26 @@
       transform: translateY(0) scale(0.97);
     }
 
-    /* ── Composer bar (iMessage-style) ──────────── */
     .company-chat-composer {
       display: flex;
       align-items: flex-end;
-      gap: 8px;
-      padding: 10px 0 0;
-      border-top: 1px solid rgba(255,255,255,0.06);
-      margin-top: 8px;
+      gap: 10px;
+      padding: 14px 0 0;
+      border-top: 1px solid rgba(255,255,255,0.07);
+      margin-top: 0;
+      flex-shrink: 0;
+      background: linear-gradient(180deg, rgba(12, 16, 28, 0.72), rgba(10, 12, 21, 0.98));
     }
     .company-chat-textarea {
       flex: 1;
-      min-height: 40px;
+      min-height: 44px;
       max-height: 140px;
       resize: none;
-      border-radius: 20px;
-      border: 1px solid rgba(255,255,255,0.1);
-      background: rgba(255,255,255,0.04);
+      border-radius: 18px;
+      border: 1px solid rgba(26, 136, 255, 0.22);
+      background: linear-gradient(180deg, rgba(6, 43, 76, 0.26) 0%, rgba(8, 38, 66, 0.18) 100%);
       color: var(--text-white);
-      padding: 9px 16px;
+      padding: 11px 16px;
       font: 14px/1.45 var(--font-body);
       outline: none;
       transition: border-color 0.2s var(--ease-out-quart),
@@ -2463,12 +2796,12 @@
                   box-shadow 0.2s var(--ease-out-quart);
     }
     .company-chat-textarea::placeholder {
-      color: var(--text-dim);
+      color: rgba(194, 214, 235, 0.56);
     }
     .company-chat-textarea:focus {
-      border-color: rgba(91, 231, 196, 0.3);
-      background: rgba(4, 10, 18, 0.7);
-      box-shadow: 0 0 0 3px rgba(91, 231, 196, 0.06);
+      border-color: rgba(26, 136, 255, 0.42);
+      background: linear-gradient(180deg, rgba(6, 43, 76, 0.38) 0%, rgba(8, 38, 66, 0.26) 100%);
+      box-shadow: 0 0 0 3px rgba(26, 136, 255, 0.10);
     }
     .company-chat-actions {
       display: none;
@@ -2491,13 +2824,13 @@
     /* Chat buttons */
     .company-chat-btn {
       appearance: none;
-      border: none;
-      border-radius: 50%;
-      background: transparent;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 14px;
+      background: rgba(255,255,255,0.04);
       color: var(--text-dim);
       padding: 0;
-      width: 36px;
-      height: 36px;
+      width: 42px;
+      height: 42px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -2512,22 +2845,25 @@
     .company-chat-btn:hover,
     .company-chat-btn:focus-visible {
       color: var(--text-light);
-      background: rgba(255,255,255,0.06);
+      background: rgba(255,255,255,0.07);
+      border-color: rgba(255,255,255,0.14);
       outline: none;
     }
     .company-chat-btn:active {
       transform: scale(0.92);
     }
     .company-chat-btn.primary {
-      background: #1a8d4e;
+      background: linear-gradient(180deg, rgba(8, 99, 191, 0.98) 0%, rgba(7, 77, 152, 0.98) 100%);
       color: #fff;
-      border-radius: 50%;
-      width: 36px;
-      height: 36px;
+      border-color: rgba(26, 136, 255, 0.28);
+      border-radius: 14px;
+      width: 42px;
+      height: 42px;
       font-size: 0;
+      box-shadow: 0 10px 24px rgba(6, 33, 66, 0.28);
     }
     .company-chat-btn.primary:hover {
-      background: #1fa058;
+      background: linear-gradient(180deg, rgba(10, 116, 223, 1) 0%, rgba(8, 88, 173, 1) 100%);
     }
     .company-chat-btn.primary:active {
       transform: scale(0.9);
@@ -2548,10 +2884,11 @@
       align-items: center;
       gap: 4px;
       font-size: 10px;
-      color: var(--text-dim);
-      padding: 2px 8px;
+      color: rgba(255,255,255,0.66);
+      padding: 4px 9px;
       border-radius: var(--radius-full);
-      background: rgba(255,255,255,0.04);
+      background: rgba(0, 210, 106, 0.08);
+      border: 1px solid rgba(0, 210, 106, 0.12);
       margin-bottom: 2px;
       width: fit-content;
     }
@@ -2811,7 +3148,23 @@
       .companies-sidebar-head { padding-left: 16px; padding-right: 16px; }
       .saved-company-card { padding: 14px; }
       .companies-page { grid-template-columns: 1fr; }
+      .companies-page.is-sidebar-collapsed { grid-template-columns: 1fr; gap: 12px; }
       .companies-page-sidebar { border-right: none; border-bottom: 1px solid var(--border); max-height: 38vh; }
+      .companies-page-sidebar.is-collapsed {
+        max-height: none;
+        border-bottom: none;
+      }
+      .companies-sidebar-rail {
+        min-height: auto;
+        flex-direction: row;
+        justify-content: space-between;
+        padding: 12px 16px;
+      }
+      .companies-sidebar-collapsed-badge,
+      .companies-sidebar-collapsed-hint {
+        writing-mode: initial;
+        transform: none;
+      }
       .companies-page-detail { padding: 16px 0 0; }
 
       /* ── Empty states ────────────────────── */
@@ -2819,13 +3172,44 @@
 
       /* ── Chat mobile adaptation ──────────── */
       .company-chat-card {
-        margin-top: 16px;
-        padding-top: 16px;
+        padding: 16px;
+        min-height: 280px;
+        max-height: min(64vh, 620px);
+      }
+      .company-chat-head {
+        align-items: stretch;
+      }
+      .company-chat-toolbar {
+        width: 100%;
+      }
+      .company-chat-toolbar-top {
+        align-items: stretch;
+      }
+      .company-chat-model-row {
+        align-items: stretch;
+      }
+      .company-assessment-toggle {
+        width: 44px;
+        height: 44px;
+        margin-top: 0;
+        border-radius: 16px;
+      }
+      .company-chat-model-control {
+        width: 100%;
+      }
+      .company-chat-model-shell {
+        width: 100%;
+      }
+      .company-chat-head-metrics {
+        justify-content: flex-start;
+      }
+      .company-chat-shell {
+        border-radius: 18px;
+        padding: 0 12px 16px;
       }
       .company-chat-log {
-        max-height: 420px;
-        min-height: 160px;
-        padding: 8px 2px;
+        min-height: 0;
+        padding: 12px 0 10px;
       }
       .company-chat-message {
         max-width: 88%;
@@ -2849,7 +3233,7 @@
       }
       .company-chat-composer {
         gap: 6px;
-        padding-top: 8px;
+        padding: 12px 0 0;
       }
       .company-chat-textarea {
         padding: 10px 14px;
@@ -3649,7 +4033,10 @@
         font-size: 15px;
       }
       .company-chat-head {
-        margin-bottom: 10px;
+        gap: 12px;
+      }
+      .companies-page-detail-topbar {
+        margin-bottom: 12px;
       }
     }
 
@@ -3977,13 +4364,10 @@
       </div>
     </a>
     <div class="header-right">
+      <button type="button" class="btn-ghost" id="analysis-refresh-btn">Refresh</button>
       <button type="button" class="btn-ghost is-active" id="analysis-current-tab" data-nav-section="analysis" aria-current="page">Analysis</button>
       <button type="button" class="btn-ghost" id="saved-jobs-open-analysis" data-nav-section="companies">Companies</button>
-      <button type="button" class="btn-ghost" id="analysis-refresh-btn">Refresh</button>
-      <button class="btn-ghost" id="new-analysis-btn-history">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        New Analysis
-      </button>
+      <button class="btn-ghost" id="new-analysis-btn-history">New Analysis</button>
     </div>
   </div>
   <div id="analysis-screen-content" class="analysis-screen-content"></div>
@@ -4005,13 +4389,10 @@
       </div>
     </a>
     <div class="header-right">
+      <button type="button" class="btn-ghost" id="companies-refresh-btn">Refresh</button>
       <button type="button" class="btn-ghost" id="analysis-open-companies" data-nav-section="analysis">Analysis</button>
       <button type="button" class="btn-ghost is-active" id="companies-current-tab" data-nav-section="companies" aria-current="page">Companies</button>
-      <button type="button" class="btn-ghost" id="companies-refresh-btn">Refresh</button>
-      <button class="btn-ghost" id="new-analysis-btn-companies">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        New Analysis
-      </button>
+      <button class="btn-ghost" id="new-analysis-btn-companies">New Analysis</button>
     </div>
   </div>
   <div id="companies-screen-content" class="companies-screen-content"></div>
@@ -4077,10 +4458,7 @@
     <div class="header-right">
       <button class="btn-ghost" id="analysis-open-results" data-nav-section="analysis">Analysis</button>
       <button type="button" class="btn-ghost" id="saved-jobs-open-results" data-nav-section="companies">Companies</button>
-      <button class="btn-ghost" id="new-analysis-btn">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        New Analysis
-      </button>
+      <button class="btn-ghost" id="new-analysis-btn">New Analysis</button>
     </div>
   </div>
   <div class="results-body">
@@ -4186,6 +4564,8 @@ const SHOW_PRO_CONTRA_ARGUMENTS = true;
 const SHOW_AVG_PRO_CONTRA_SCORES = false;
 const DEFAULT_RANKINGS_SORT = 'top_scored';
 const DEFAULT_SAVED_COMPANY_SORT = 'top_scored';
+const COMPANIES_SIDEBAR_COLLAPSED_KEY = 'companies_sidebar_collapsed_v1';
+const COMPANY_ASSESSMENT_COLLAPSED_KEY = 'company_assessment_collapsed_v1';
 let vcInvestmentStrategy = localStorage.getItem(VC_STRATEGY_KEY) || '';
 let personIntelState = {};
 let rankingsSortMode = DEFAULT_RANKINGS_SORT;
@@ -4205,6 +4585,10 @@ let companyRunsCollapsed = new Set();
 let companyChatStateByKey = {};
 let companyChatCitationRegistry = {};
 let companiesPageJustOpened = false;
+let companiesSidebarCollapsed = localStorage.getItem(COMPANIES_SIDEBAR_COLLAPSED_KEY) === '1';
+let companyAssessmentCollapsed = localStorage.getItem(COMPANY_ASSESSMENT_COLLAPSED_KEY) === '1';
+let companiesSidebarScrollTop = 0;
+let companiesDetailScrollTop = 0;
 let previousScreenBeforeCompanies = 'upload-screen';
 let previousScreenBeforeAnalysis = 'upload-screen';
 let previousScreenBeforeInfo = 'upload-screen';
@@ -5204,7 +5588,6 @@ function getServerAuthoritativeRuns() {
   });
 }
 
-function renderSavedJobCards(runs, { limit = null, emptyText = 'No saved jobs found yet.' } = {}) {
 function renderSavedJobCards(
   runs,
   { limit = null, emptyText = 'No saved jobs found yet.', showStopAction = false } = {}
@@ -5582,6 +5965,16 @@ function getSelectedCompanyState(companies) {
   return { company, run };
 }
 
+function setCompaniesSidebarCollapsed(nextValue) {
+  companiesSidebarCollapsed = !!nextValue;
+  localStorage.setItem(COMPANIES_SIDEBAR_COLLAPSED_KEY, companiesSidebarCollapsed ? '1' : '0');
+}
+
+function setCompanyAssessmentCollapsed(nextValue) {
+  companyAssessmentCollapsed = !!nextValue;
+  localStorage.setItem(COMPANY_ASSESSMENT_COLLAPSED_KEY, companyAssessmentCollapsed ? '1' : '0');
+}
+
 function getCompanyChatState(companyLookupKey) {
   if (!companyLookupKey) return null;
   if (!companyChatStateByKey[companyLookupKey]) {
@@ -5595,11 +5988,26 @@ function getCompanyChatState(companyLookupKey) {
       run_count: 0,
       web_search_enabled: true,
       model_label: 'Gemini 3.1 Flash Lite',
+      selectedLlmKey: 'gemini:gemini-3.1-flash-lite-preview',
+      sessionRunCosts: null,
+      availableModels: [],
       draft: '',
       lastQuestion: '',
     };
   }
   return companyChatStateByKey[companyLookupKey];
+}
+
+function getChatAvailableModels(state) {
+  const fromState = (state?.availableModels || []).filter((item) => item?.available && item?.provider !== 'openrouter');
+  if (fromState.length) return fromState;
+  return (analysisConfig?.available_models || []).filter((item) => item?.available && item?.provider !== 'openrouter');
+}
+
+function formatChatCostSummary(costs) {
+  if (!costs || costs.status === 'unavailable') return 'Cost unavailable';
+  if (costs.total_usd === null || costs.total_usd === undefined) return 'Cost partial';
+  return formatUsd(costs.total_usd);
 }
 
 async function fetchCompanyChat(companyLookupKey, { silent = true, force = false } = {}) {
@@ -5619,6 +6027,9 @@ async function fetchCompanyChat(companyLookupKey, { silent = true, force = false
     state.run_count = data.run_count || 0;
     state.web_search_enabled = data.web_search_enabled !== false;
     state.model_label = data.model_label || 'Gemini 3.1 Flash Lite';
+    state.selectedLlmKey = data.llm_provider && data.llm_model ? `${data.llm_provider}:${data.llm_model}` : state.selectedLlmKey;
+    state.sessionRunCosts = data.session_run_costs || null;
+    state.availableModels = data.available_models || state.availableModels || [];
     state.error = '';
     renderSavedCompaniesWindow();
     return state;
@@ -5638,13 +6049,22 @@ async function sendCompanyChatMessage(companyLookupKey, activeJobId, message) {
   state.sending = true;
   state.error = '';
   state.lastQuestion = message;
+  state.scrollIntent = 'bottom';
   /* Optimistic: show user bubble immediately before server responds */
   state.transcript = [...(state.transcript || []), { role: 'user', content: message, citations: [] }];
   renderSavedCompaniesWindow();
   try {
+    const selectedModel = getModelByKey(state.selectedLlmKey)
+      || getChatAvailableModels(state).find((item) => `${item.provider}:${item.model}` === state.selectedLlmKey)
+      || null;
     const data = await api(`/api/companies/${encodeURIComponent(companyLookupKey)}/chat`, {
       method: 'POST',
-      body: JSON.stringify({ message, active_job_id: activeJobId || null }),
+      body: JSON.stringify({
+        message,
+        active_job_id: activeJobId || null,
+        llm_provider: selectedModel?.provider || null,
+        llm_model: selectedModel?.model || null,
+      }),
       timeoutMs: 45000,
       retries: 0,
     });
@@ -5655,11 +6075,16 @@ async function sendCompanyChatMessage(companyLookupKey, activeJobId, message) {
     state.run_count = data.run_count || state.run_count || 0;
     state.web_search_enabled = data.web_search_enabled !== false;
     state.model_label = data.model_label || state.model_label || 'Gemini 3.1 Flash Lite';
+    state.selectedLlmKey = data.llm_provider && data.llm_model ? `${data.llm_provider}:${data.llm_model}` : state.selectedLlmKey;
+    state.sessionRunCosts = data.session_run_costs || state.sessionRunCosts || null;
+    state.availableModels = data.available_models || state.availableModels || [];
     state.error = '';
+    state.scrollIntent = 'latest-assistant';
     renderSavedCompaniesWindow();
   } catch (err) {
     state.sending = false;
     state.error = err.message || 'Chat request failed.';
+    state.scrollIntent = 'bottom';
     renderSavedCompaniesWindow();
   }
 }
@@ -5679,6 +6104,7 @@ async function clearCompanyChat(companyLookupKey) {
     state.loaded = true;
     state.sending = false;
     state.transcript = [];
+    state.sessionRunCosts = null;
     state.error = '';
     renderSavedCompaniesWindow();
   } catch (err) {
@@ -5694,6 +6120,8 @@ function openChatCitationModal(registryKey) {
   const meta = [
     citation.job_id ? `Run ${citation.job_id}` : '',
     citation.created_at ? formatRunTimestamp(citation.created_at) : '',
+    citation.web_search_provider ? `Provider ${String(citation.web_search_provider).toUpperCase()}` : '',
+    citation.web_search_cost_usd != null ? `Cost ${formatUsd(citation.web_search_cost_usd)}` : '',
     citation.source_file || '',
     citation.page_or_slide ? `Location ${citation.page_or_slide}` : '',
   ].filter(Boolean);
@@ -5797,6 +6225,7 @@ function renderCompanyChatSection(company, run) {
   const companyLookupKey = getCompanyLookupKey(company);
   const state = getCompanyChatState(companyLookupKey);
   if (!state) return '';
+  const assessmentToggleTitle = companyAssessmentCollapsed ? 'Show company assessment' : 'Hide company assessment';
 
   const companyName = company?.company_name || run?.results?.company_name || 'this company';
   const transcript = state.transcript || [];
@@ -5812,9 +6241,23 @@ function renderCompanyChatSection(company, run) {
         }).join('');
         const usedWeb = (message.citations || []).some((citation) => citation.kind === 'web');
         const webBadge = usedWeb ? `<span class="company-chat-web-badge"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg> Web</span>` : '';
-        return `<div class="company-chat-message ${message.role}">
+        const webCitation = (message.citations || []).find((citation) => citation.kind === 'web') || null;
+        const webCitationKey = webCitation ? `${companyLookupKey}::${msgIndex}::web-cost` : '';
+        if (webCitation) {
+          companyChatCitationRegistry[webCitationKey] = webCitation;
+        }
+        const webSearchCost = Number(message.run_costs?.perplexity_usd || 0);
+        const turnMeta = message.role === 'assistant'
+          ? `<div class="company-chat-turn-meta">
+              ${message.llm_label ? `<span class="company-chat-turn-pill">${escapeHtml(message.llm_label)}</span>` : ''}
+              ${message.run_costs ? `<span class="company-chat-turn-pill">Q&A cost ${escapeHtml(formatChatCostSummary(message.run_costs))}</span>` : ''}
+              ${webCitation ? `<button type="button" class="company-chat-turn-pill" data-chat-citation="${escapeHtml(webCitationKey)}">Web-search cost ${escapeHtml(webSearchCost > 0 ? formatUsd(webSearchCost) : 'Used')}</button>` : ''}
+            </div>`
+          : '';
+        return `<div class="company-chat-message ${message.role}" data-chat-role="${escapeHtml(message.role)}" data-chat-message-index="${msgIndex}">
           ${webBadge}
           <div class="company-chat-content">${escapeHtml(message.content || '')}</div>
+          ${turnMeta}
           ${citations ? `<div class="company-chat-citations">${citations}</div>` : ''}
         </div>`;
       }).join('')
@@ -5848,7 +6291,40 @@ function renderCompanyChatSection(company, run) {
   const disabled = state.sending ? 'disabled' : '';
   const modelLabel = state.model_label || 'Gemini 3.1 Flash Lite';
   const runCount = state.run_count || 0;
-  const contextNote = `${runCount} run${runCount === 1 ? '' : 's'} · ${escapeHtml(modelLabel)}`;
+  const availableModels = getChatAvailableModels(state);
+  const selectedLlmKey = state.selectedLlmKey || '';
+  const formatChatModelOptionLabel = (item) => {
+    const base = String(item?.label || item?.model || 'Model').replace(/^OpenRouter · /, '');
+    if (item?.provider === 'openrouter' && !/via OpenRouter$/i.test(base)) {
+      return `${base} via OpenRouter`;
+    }
+    return base;
+  };
+  const tierOrder = ['budget', 'balanced', 'premium'];
+  const tierLabels = { budget: 'Budget', balanced: 'Balanced', premium: 'Premium' };
+  const groupedModels = new Map();
+  availableModels.forEach((item) => {
+    const tier = tierOrder.includes(item?.tier) ? item.tier : 'other';
+    if (!groupedModels.has(tier)) groupedModels.set(tier, []);
+    groupedModels.get(tier).push(item);
+  });
+  const modelOptionsHtml = [...tierOrder, 'other']
+    .filter((tier) => groupedModels.has(tier))
+    .map((tier) => {
+      const options = groupedModels.get(tier).map((item) => {
+        const key = `${item.provider}:${item.model}`;
+        return `<option value="${escapeHtml(key)}" ${selectedLlmKey === key ? 'selected' : ''}>${escapeHtml(formatChatModelOptionLabel(item))}</option>`;
+      }).join('');
+      if (tier === 'other') return options;
+      return `<optgroup label="${escapeHtml(tierLabels[tier])}">${options}</optgroup>`;
+    }).join('');
+  const selectedModel = availableModels.find((item) => `${item.provider}:${item.model}` === selectedLlmKey) || null;
+  const selectedModelHint = selectedModel
+    ? `${selectedModel.summary || selectedModel.tier || ''}${selectedModel.pricing_available === false ? ' · pricing TBD' : ''}`
+    : 'Choose the model used to answer this company chat.';
+  const contextNote = `${runCount} run${runCount === 1 ? '' : 's'} indexed`;
+  const sessionCostText = formatChatCostSummary(state.sessionRunCosts);
+  const questionCount = transcript.filter((message) => message.role === 'assistant').length;
 
   /* Arrow-up send icon (like iMessage) */
   const sendIconSvg = `<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M3.4 20.4l17.45-7.48a1 1 0 0 0 0-1.84L3.4 3.6a.993.993 0 0 0-1.39.91L2 9.12c0 .5.37.93.87.99L17 12 2.87 13.88c-.5.07-.87.5-.87 1l.01 4.61c0 .71.73 1.2 1.39.91z"/></svg>`;
@@ -5856,21 +6332,48 @@ function renderCompanyChatSection(company, run) {
   /* Trash icon for clear */
   const clearIconSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`;
 
+  const modelSparkSvg = `<svg class="company-chat-model-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.8 4.4L18 9.2l-4.2 1.8L12 15.5 10.2 11 6 9.2l4.2-1.8L12 3z"/><path d="M18.2 15.2l.9 2.2 2.2.9-2.2.9-.9 2.2-.9-2.2-2.2-.9 2.2-.9.9-2.2z"/><path d="M5.6 14.5l.8 2 .8.3-.8.3-.8 2-.8-2-.8-.3.8-.3.8-2z"/></svg>`;
+  const assessmentChevronSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>`;
+
   return `
-    <section class="company-chat-card">
+    <section class="company-chat-card${companyAssessmentCollapsed ? ' is-expanded' : ''}">
       <div class="company-chat-head">
         <div class="company-chat-title">
           <h3>Chat · ${escapeHtml(companyName)}</h3>
           <p>${contextNote}</p>
         </div>
+        <div class="company-chat-toolbar">
+          <div class="company-chat-toolbar-top">
+            <label class="company-chat-model-control company-chat-toolbar-main">
+              <span class="company-chat-model-caption">Answer model</span>
+              <span class="company-chat-model-row">
+                <span class="company-chat-model-shell">
+                  ${modelSparkSvg}
+                  <select class="company-chat-model-select" data-company-chat-model="${escapeHtml(companyLookupKey)}" ${disabled} ${availableModels.length ? '' : 'disabled'}>
+                    ${modelOptionsHtml || '<option value="">No chat models available</option>'}
+                  </select>
+                </span>
+                <button type="button" class="company-assessment-toggle${companyAssessmentCollapsed ? ' is-collapsed' : ''}" data-company-assessment-toggle title="${escapeHtml(assessmentToggleTitle)}" aria-label="${escapeHtml(assessmentToggleTitle)}">${assessmentChevronSvg}</button>
+              </span>
+              <span class="company-chat-model-hint">${escapeHtml(selectedModelHint)}</span>
+            </label>
+          </div>
+          <div class="company-chat-head-metrics">
+            <span class="company-chat-metric">${escapeHtml(modelLabel)}</span>
+            <span class="company-chat-metric">Session ${escapeHtml(sessionCostText)}</span>
+            <span class="company-chat-metric">${escapeHtml(String(questionCount))} answer${questionCount === 1 ? '' : 's'}</span>
+          </div>
+        </div>
       </div>
-      <div class="company-chat-log" data-company-chat-log="${escapeHtml(companyLookupKey)}">${loadingHtml}</div>
-      ${errorHtml}
-      <form class="company-chat-composer" data-company-chat-form="${escapeHtml(companyLookupKey)}">
-        <button type="button" class="company-chat-btn" data-company-chat-clear="${escapeHtml(companyLookupKey)}" ${disabled} title="Clear conversation">${clearIconSvg}</button>
-        <textarea class="company-chat-textarea" data-company-chat-input="${escapeHtml(companyLookupKey)}" placeholder="Ask about ${escapeHtml(companyName)}…" rows="1" ${disabled}>${escapeHtml(state.draft || '')}</textarea>
-        <button type="submit" class="company-chat-btn primary" ${disabled} title="Send message">${state.sending ? '<span class="company-chat-shimmer mono" style="font-size:0;width:18px;height:18px;display:block;background:rgba(255,255,255,0.3);border-radius:50%;animation:chat-dot-bounce 1.4s ease-in-out infinite"></span>' : sendIconSvg}</button>
-      </form>
+      <div class="company-chat-shell">
+        <div class="company-chat-log" data-company-chat-log="${escapeHtml(companyLookupKey)}">${loadingHtml}</div>
+        ${errorHtml}
+        <form class="company-chat-composer" data-company-chat-form="${escapeHtml(companyLookupKey)}">
+          <button type="button" class="company-chat-btn" data-company-chat-clear="${escapeHtml(companyLookupKey)}" ${disabled} title="Clear conversation">${clearIconSvg}</button>
+          <textarea class="company-chat-textarea" data-company-chat-input="${escapeHtml(companyLookupKey)}" placeholder="Ask about ${escapeHtml(companyName)}…" rows="1" ${disabled}>${escapeHtml(state.draft || '')}</textarea>
+          <button type="submit" class="company-chat-btn primary" ${disabled} title="Send message">${state.sending ? '<span class="company-chat-shimmer mono" style="font-size:0;width:18px;height:18px;display:block;background:rgba(255,255,255,0.3);border-radius:50%;animation:chat-dot-bounce 1.4s ease-in-out infinite"></span>' : sendIconSvg}</button>
+        </form>
+      </div>
     </section>
   `;
 }
@@ -5936,17 +6439,8 @@ function renderCompanyDetail(company, run) {
     </button>`;
 
   currentResults = result;
-
-  return `
-    <div class="company-detail-stack" data-company-detail="${escapeHtml(companyLookupKey)}">
-      <div class="results-title-row">
-        <div class="results-title">
-          <h1>${escapeHtml(companyName)}</h1>
-          <p>${escapeHtml(subtitleBits.join(' • '))}</p>
-        </div>
-        <button class="recent-run-open" data-job-open="${escapeHtml(run?.job_id || '')}">Open full run</button>
-      </div>
-      <div class="rank-card">
+  const detailStackClass = `company-detail-stack${companyAssessmentCollapsed ? ' is-assessment-collapsed' : ''}`;
+  const assessmentCardHtml = companyAssessmentCollapsed ? '' : `<div class="rank-card">
         <div class="rank-top">
           ${rank ? `<span class="rank-badge first">#${escapeHtml(String(rank))}</span>` : ''}
           <span class="rank-name">${escapeHtml(companyName)}</span>
@@ -5966,7 +6460,18 @@ function renderCompanyDetail(company, run) {
           </div>
         </div>` : ''}
         ${personIntelHtml}
+      </div>`;
+
+  return `
+    <div class="${detailStackClass}" data-company-detail="${escapeHtml(companyLookupKey)}">
+      <div class="results-title-row">
+        <div class="results-title">
+          <h1>${escapeHtml(companyName)}</h1>
+          <p>${escapeHtml(subtitleBits.join(' • '))}</p>
+        </div>
+        <button class="recent-run-open" data-job-open="${escapeHtml(run?.job_id || '')}">Open full run</button>
       </div>
+      ${assessmentCardHtml}
       ${renderCompanyChatSection(company, run)}
     </div>
   `;
@@ -6018,9 +6523,13 @@ function renderSavedCompaniesWindow() {
 
   // Save sidebar scroll position before re-render
   const sidebar = content.querySelector('.companies-page-sidebar');
-  const savedScrollTop = sidebar ? sidebar.scrollTop : 0;
+  if (sidebar && !companiesSidebarCollapsed) {
+    companiesSidebarScrollTop = sidebar.scrollTop;
+  }
   const detail = content.querySelector('.companies-page-detail');
-  const savedDetailScrollTop = detail ? detail.scrollTop : 0;
+  if (detail) {
+    companiesDetailScrollTop = detail.scrollTop;
+  }
   const savedPageScrollTop = window.scrollY;
 
   const totalCount = savedCompaniesCache.length;
@@ -6108,42 +6617,57 @@ function renderSavedCompaniesWindow() {
         </div>
         Select a company on the left to view its scoring and run history.
       </div>`;
-
-  content.innerHTML = `<div class="companies-page">
-    <div class="companies-page-sidebar">
-      <div class="companies-sidebar-shell">
-        <div class="companies-sidebar-head">
-          <div class="companies-sidebar-head-row">
-            <div class="companies-sidebar-title">Companies</div>
-            <div class="companies-sidebar-count">${companies.length}${companies.length !== totalCount ? `<span class="companies-sidebar-count-total"> / ${totalCount}</span>` : ''}</div>
-          </div>
-          <div class="companies-sidebar-search-wrap">
-            <span class="companies-sidebar-search-icon">⌕</span>
-            <input id="companies-search-input" class="companies-sidebar-search-input" type="text" placeholder="Search companies…" autocomplete="off" value="${escapeHtml(savedCompanySearch)}">
-            ${savedCompanySearch ? `<button class="companies-sidebar-search-clear" id="companies-search-clear" title="Clear">✕</button>` : ''}
-          </div>
-          <label class="companies-sidebar-sort" for="companies-sort-select">
-            <span class="companies-sidebar-sort-icon">⇅</span>
-            <select id="companies-sort-select" class="companies-sidebar-sort-select">
-              <option value="top_scored">TOP SCORED</option>
-              <option value="alphabetical">ALPHABETICAL</option>
-              <option value="strategy_fit">STRATEGY FIT</option>
-              <option value="team">TEAM</option>
-              <option value="upside">POTENTIAL</option>
-            </select>
-          </label>
+  const collapseIconSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>`;
+  const expandIconSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>`;
+  const sidebarPanelHtml = companiesSidebarCollapsed
+    ? `<div class="companies-page-sidebar is-collapsed">
+        <div class="companies-sidebar-rail">
+          <button type="button" class="companies-sidebar-toggle" data-companies-sidebar-toggle="expand" title="Show companies" aria-label="Show companies">${expandIconSvg}</button>
+          <div class="companies-sidebar-collapsed-badge">${companies.length}</div>
+          <div class="companies-sidebar-collapsed-hint">Companies</div>
         </div>
-        <div class="companies-page-list">${sidebarHtml}</div>
-      </div>
-    </div>
-    <div class="companies-page-detail">${detailHtml}</div>
+      </div>`
+    : `<div class="companies-page-sidebar">
+        <div class="companies-sidebar-shell">
+          <div class="companies-sidebar-head">
+            <div class="companies-sidebar-head-row">
+              <div class="companies-sidebar-title">Companies</div>
+              <div class="companies-sidebar-head-actions">
+                <div class="companies-sidebar-count">${companies.length}${companies.length !== totalCount ? `<span class="companies-sidebar-count-total"> / ${totalCount}</span>` : ''}</div>
+                <button type="button" class="companies-sidebar-toggle" data-companies-sidebar-toggle="collapse" title="Hide companies" aria-label="Hide companies">${collapseIconSvg}</button>
+              </div>
+            </div>
+            <div class="companies-sidebar-search-wrap">
+              <span class="companies-sidebar-search-icon">⌕</span>
+              <input id="companies-search-input" class="companies-sidebar-search-input" type="text" placeholder="Search companies…" autocomplete="off" value="${escapeHtml(savedCompanySearch)}">
+              ${savedCompanySearch ? `<button class="companies-sidebar-search-clear" id="companies-search-clear" title="Clear">✕</button>` : ''}
+            </div>
+            <label class="companies-sidebar-sort" for="companies-sort-select">
+              <span class="companies-sidebar-sort-icon">⇅</span>
+              <select id="companies-sort-select" class="companies-sidebar-sort-select">
+                <option value="top_scored">TOP SCORED</option>
+                <option value="alphabetical">ALPHABETICAL</option>
+                <option value="strategy_fit">STRATEGY FIT</option>
+                <option value="team">TEAM</option>
+                <option value="upside">POTENTIAL</option>
+              </select>
+            </label>
+          </div>
+          <div class="companies-page-list">${sidebarHtml}</div>
+        </div>
+      </div>`;
+  const detailTopbarHtml = '';
+
+  content.innerHTML = `<div class="companies-page${companiesSidebarCollapsed ? ' is-sidebar-collapsed' : ''}">
+    ${sidebarPanelHtml}
+    <div class="companies-page-detail">${detailTopbarHtml}${detailHtml}</div>
   </div>`;
 
   // Restore sidebar scroll position after re-render
   const newSidebar = content.querySelector('.companies-page-sidebar');
-  if (newSidebar) newSidebar.scrollTop = savedScrollTop;
+  if (newSidebar && !companiesSidebarCollapsed) newSidebar.scrollTop = companiesSidebarScrollTop;
   const newDetail = content.querySelector('.companies-page-detail');
-  if (newDetail) newDetail.scrollTop = savedDetailScrollTop;
+  if (newDetail) newDetail.scrollTop = companiesDetailScrollTop;
   if (window.scrollY !== savedPageScrollTop) {
     window.scrollTo(0, savedPageScrollTop);
   }
@@ -6203,6 +6727,12 @@ function renderSavedCompaniesWindow() {
       selectCompanyRun(el.dataset.companyRunOpen || '', el.dataset.jobId || null);
     });
   });
+  content.querySelectorAll('[data-companies-sidebar-toggle]').forEach((el) => {
+    el.addEventListener('click', () => {
+      setCompaniesSidebarCollapsed(el.dataset.companiesSidebarToggle === 'collapse' ? true : false);
+      renderSavedCompaniesWindow();
+    });
+  });
   bindCompanyChatActions(content, activeCompany, activeRun);
   if (activeCompany) {
     const chatState = getCompanyChatState(getCompanyLookupKey(activeCompany));
@@ -6227,11 +6757,32 @@ function _scrollChatLogToBottom(root, companyLookupKey) {
   }
 }
 
+function _scrollChatLogToLatestAssistant(root, companyLookupKey) {
+  const log = root.querySelector(`[data-company-chat-log="${CSS.escape(companyLookupKey)}"]`);
+  if (!log) return;
+  const messages = log.querySelectorAll('[data-chat-role="assistant"]:not(.typing)');
+  const latestAssistant = messages[messages.length - 1];
+  if (!latestAssistant) {
+    _scrollChatLogToBottom(root, companyLookupKey);
+    return;
+  }
+  requestAnimationFrame(() => {
+    log.scrollTop = Math.max(0, latestAssistant.offsetTop - 12);
+  });
+}
+
 function bindCompanyChatActions(root, activeCompany, activeRun) {
   if (!root || !activeCompany) return;
   const companyLookupKey = getCompanyLookupKey(activeCompany);
   const state = getCompanyChatState(companyLookupKey);
   const textarea = root.querySelector(`[data-company-chat-input="${CSS.escape(companyLookupKey)}"]`);
+  const modelSelect = root.querySelector(`[data-company-chat-model="${CSS.escape(companyLookupKey)}"]`);
+  if (modelSelect) {
+    modelSelect.addEventListener('change', (event) => {
+      state.selectedLlmKey = event.target.value || state.selectedLlmKey;
+      renderSavedCompaniesWindow();
+    });
+  }
   if (textarea) {
     /* Auto-resize textarea as user types */
     textarea.addEventListener('input', (event) => {
@@ -6281,8 +6832,20 @@ function bindCompanyChatActions(root, activeCompany, activeRun) {
     });
   });
 
-  /* Auto-scroll to latest message */
-  _scrollChatLogToBottom(root, companyLookupKey);
+  root.querySelectorAll('[data-company-assessment-toggle]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setCompanyAssessmentCollapsed(!companyAssessmentCollapsed);
+      renderSavedCompaniesWindow();
+    });
+  });
+
+  if (state?.scrollIntent === 'bottom') {
+    _scrollChatLogToBottom(root, companyLookupKey);
+    state.scrollIntent = '';
+  } else if (state?.scrollIntent === 'latest-assistant') {
+    _scrollChatLogToLatestAssistant(root, companyLookupKey);
+    state.scrollIntent = '';
+  }
 }
 
 async function fetchSavedJobs({ silent = true } = {}) {

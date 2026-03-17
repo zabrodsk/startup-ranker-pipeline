@@ -30,10 +30,18 @@ _ANSWER_NO_EVIDENCE_PATTERNS = [
     r"no\s+information\s+(about|regarding|on)\s+",
     r"there\s+is\s+no\s+information",
     r"does\s+not\s+contain\s+(any\s+)?(information|data|evidence)",
+    r"does\s+not\s+contain\s+a\s+specific\s+",
+    r"does\s+not\s+name\s+specific",
+    r"does\s+not\s+identify\s+.*?\s+by\s+name",
+    r"does\s+not\s+provide\s+the\s+necessary\s+data",
+    r"absence\s+of\s+(disclosed\s+)?(tam|sam|som|market\s+sizing|market\s+data)",
+    r"not\s+named\s+in\s+the\s+(documents|evidence|materials)",
+    r"not\s+identified\s+in\s+the\s+(documents|evidence|materials)",
     r"contains\s+no\s+(information|historical|data|evidence)",
     r"however,\s+there\s+is\s+no",
     r"but\s+contains\s+no\s+",
     r"insufficient\s+information\s+available",
+    r"difficult\s+to\s+(calculate|estimate|validate)",
     r"no\s+relevant\s+(document\s+)?chunks\s+found",
     r"outlines\s+.*?\s+but\s+contains\s+no\s+",  # "strategy outlines X but contains no Y"
 ]
@@ -63,6 +71,28 @@ _TOKEN_STOPWORDS = {
     "its", "they", "them", "you", "your", "can", "could", "would", "should", "built",
     "support", "supports", "product", "company",
 }
+
+_WEB_HEAVY_QUESTION_PATTERNS = [
+    r"\btam\b",
+    r"\bsam\b",
+    r"\bsom\b",
+    r"total\s+addressable\s+market",
+    r"serviceable\s+available\s+market",
+    r"serviceable\s+obtainable\s+market",
+    r"market\s+siz(?:e|ing)",
+    r"market\s+share",
+    r"\bcagr\b",
+    r"competitor",
+    r"competitive\s+landscape",
+    r"\brival",
+    r"\balternative",
+    r"\bcompare\b",
+    r"\bcomparison\b",
+    r"\bversus\b",
+    r"\bvs\b",
+    r"\bmoat",
+]
+_WEB_HEAVY_QUESTION_RE = re.compile("|".join(f"({p})" for p in _WEB_HEAVY_QUESTION_PATTERNS), re.IGNORECASE)
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -181,6 +211,25 @@ def _answer_indicates_no_evidence(answer: Any) -> bool:
     return bool(_ANSWER_NO_EVIDENCE_RE.search(text))
 
 
+def _question_prefers_web_search(question: str) -> bool:
+    """Return True for question types that typically benefit from external data."""
+    return bool(_WEB_HEAVY_QUESTION_RE.search(question or ""))
+
+
+def _web_search_domain_filter(company: Company, question: str) -> list[str] | None:
+    """Use broad web search for market/competitor questions, tighter domains otherwise."""
+    if _question_prefers_web_search(question):
+        return None
+    if not company.domain:
+        return None
+
+    raw = company.domain.strip().lower()
+    raw = re.sub(r"^https?://(www\.)?", "", raw).split("/")[0]
+    if not raw:
+        return None
+    return [raw, "crunchbase.com", "linkedin.com"]
+
+
 def _tokenize_text(text: str) -> set[str]:
     tokens = set(re.findall(r"[a-z0-9]+", (text or "").lower()))
     return {t for t in tokens if len(t) >= 3 and t not in _TOKEN_STOPWORDS}
@@ -222,6 +271,28 @@ _QUESTION_PREFIX_RE = re.compile(
     re.IGNORECASE,
 )
 _WEB_SEARCH_QUERY_MAX_LEN = 180
+_WEB_QUERY_DROP_TOKENS = {
+    "what", "which", "when", "where", "why", "how", "who", "are", "is", "does", "do",
+    "the", "a", "an", "and", "or", "of", "for", "with", "to", "their", "them", "these",
+    "those", "main", "direct", "specific",
+}
+
+
+def _ordered_query_terms(text: str, company_name: str) -> list[str]:
+    company_tokens = set(re.findall(r"[a-z0-9]+", (company_name or "").lower()))
+    terms: list[str] = []
+
+    for raw_token in re.findall(r"[a-z0-9]+", (text or "").lower()):
+        token = raw_token
+        if token in company_tokens or token in _WEB_QUERY_DROP_TOKENS:
+            continue
+        if token in {"compare", "compared", "versus", "vs"}:
+            token = "comparison"
+        if terms and terms[-1] == token:
+            continue
+        terms.append(token)
+
+    return terms
 
 
 def _build_web_search_query(company: Company, question: str) -> str:
@@ -233,13 +304,38 @@ def _build_web_search_query(company: Company, question: str) -> str:
     q = question.strip()
     q = _QUESTION_PREFIX_RE.sub("", q, count=1)
     q = re.sub(r"\bthe company'?s?\b", company.name, q, flags=re.IGNORECASE)
-    # Collapse multiple spaces, remove parenthetical noise except acronyms like (TAM)
+    q = re.sub(
+        rf"\b(?:compare|compared)\s+(?:to|with)\s+{re.escape(company.name)}\b",
+        "comparison",
+        q,
+        flags=re.IGNORECASE,
+    )
+    q = re.sub(
+        rf"\b(?:vs\.?|versus)\s+{re.escape(company.name)}\b",
+        "comparison",
+        q,
+        flags=re.IGNORECASE,
+    )
+    q = re.sub(r"[^\w\s]", " ", q)
     q = re.sub(r"\s+", " ", q).strip()
-    # Build company-first query
-    parts = [company.name, q]
-    if company.industry and ("market" in q.lower() or "tam" in q.lower() or "segment" in q.lower()):
-        parts.append(company.industry)
-    result = " ".join(parts)
+
+    ordered_terms = _ordered_query_terms(q, company.name)
+    ordered_terms = ordered_terms or ["overview"]
+
+    q_lower = q.lower()
+    if any(token in q_lower for token in ("competitor", "rival", "alternative", "compare", "comparison")):
+        for token in ("competitors", "alternatives", "rivals"):
+            if token not in ordered_terms:
+                ordered_terms.append(token)
+    if company.industry and ("market" in q_lower or "tam" in q_lower or "segment" in q_lower):
+        ordered_terms.extend(_ordered_query_terms(company.industry, company.name))
+
+    deduped_terms: list[str] = []
+    for term in ordered_terms:
+        if term not in deduped_terms:
+            deduped_terms.append(term)
+
+    result = " ".join([company.name, *deduped_terms])
     if len(result) > _WEB_SEARCH_QUERY_MAX_LEN:
         result = result[: _WEB_SEARCH_QUERY_MAX_LEN - 3].rsplit(" ", 1)[0] + "..."
     return result
@@ -252,21 +348,9 @@ def _run_web_search(
     """Run a web search using the configured provider."""
     from datetime import datetime
 
-    provider_name = os.getenv("WEB_SEARCH_PROVIDER", "sonar")
-    pplx_key = os.getenv("PPLX_API_KEY") or os.getenv("PERPLEXITY_API_KEY")
-    brave_key = os.getenv("BRAVE_SEARCH_API_KEY")
-
-    if provider_name == "sonar" and (not pplx_key or pplx_key == "your_perplexity_api_key_here"):
-        if brave_key:
-            provider_name = "brave"
-        else:
-            return "No web search API key configured."
-
-    if provider_name == "brave" and not brave_key:
-        if pplx_key and pplx_key != "your_perplexity_api_key_here":
-            provider_name = "sonar"
-        else:
-            return "No web search API key configured."
+    provider_name = _resolve_web_search_provider_name()
+    if not provider_name:
+        return "No web search API key configured."
 
     try:
         from agent.web_search import get_provider
@@ -285,6 +369,26 @@ def _run_web_search(
         return result
     except Exception as exc:
         return f"Web search failed: {exc}"
+
+
+def _resolve_web_search_provider_name() -> str | None:
+    provider_name = os.getenv("WEB_SEARCH_PROVIDER", "sonar")
+    pplx_key = os.getenv("PPLX_API_KEY") or os.getenv("PERPLEXITY_API_KEY")
+    brave_key = os.getenv("BRAVE_SEARCH_API_KEY")
+
+    if provider_name == "sonar" and (not pplx_key or pplx_key == "your_perplexity_api_key_here"):
+        if brave_key:
+            provider_name = "brave"
+        else:
+            return None
+
+    if provider_name == "brave" and not brave_key:
+        if pplx_key and pplx_key != "your_perplexity_api_key_here":
+            provider_name = "sonar"
+        else:
+            return None
+
+    return provider_name
 
 
 CHUNK_PREVIEW_CHARS = 200
@@ -381,11 +485,16 @@ async def answer_question_from_evidence(
         # Step 2: Decide whether to run Perplexity based on the answer
         # "answer" trigger: search only when LLM says it lacks evidence
         # "no_chunks" trigger: search only when we had no chunks (legacy)
-        if WEB_SEARCH_TRIGGER == "answer":
-            needs_search = use_web_search and _answer_indicates_no_evidence(grounded_answer)
-        else:
-            needs_search = use_web_search and not chunks
-        web_search_decision = "needed" if needs_search else "not needed"
+        search_reason: str | None = None
+        if use_web_search:
+            if WEB_SEARCH_TRIGGER == "answer" and _answer_indicates_no_evidence(grounded_answer):
+                search_reason = "documents incomplete"
+            elif _question_prefers_web_search(question):
+                search_reason = "question benefits from external web context"
+            elif WEB_SEARCH_TRIGGER != "answer" and not chunks:
+                search_reason = "no chunks"
+        needs_search = search_reason is not None
+        web_search_decision = f"needed: {search_reason}" if search_reason else "not needed"
 
         # Per-company cap: check and increment under lock
         do_search = False
@@ -402,17 +511,7 @@ async def answer_question_from_evidence(
         if do_search:
             web_search_decision = "attempted"
             web_search_query = _build_web_search_query(company, question)
-            domain_filter = None
-            if company.domain:
-                raw = company.domain.strip().lower()
-                raw = re.sub(r"^https?://(www\.)?", "", raw).split("/")[0]
-                if raw:
-                    domain_filter = [raw, "crunchbase.com", "linkedin.com"]
-                domain_filter = [
-                    company.domain,
-                    "crunchbase.com",
-                    "linkedin.com",
-                ]
+            domain_filter = _web_search_domain_filter(company, question)
             web_results = await asyncio.wait_for(
                 asyncio.to_thread(_run_web_search, web_search_query, domain_filter),
                 timeout=WEB_SEARCH_TIMEOUT_SEC,

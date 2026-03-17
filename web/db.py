@@ -2602,6 +2602,97 @@ def load_company_chat_context(company_lookup_key: str) -> dict[str, Any] | None:
     }
 
 
+def load_company_chat_session(company_lookup_key: str) -> dict[str, Any] | None:
+    """Load the shared persisted chat session for a company."""
+    client = _get_client()
+    if not client:
+        return None
+
+    normalized_lookup_key = (company_lookup_key or "").strip().lower()
+    if not normalized_lookup_key:
+        return None
+
+    try:
+        rows = (
+            client.table("company_chat_sessions")
+            .select("company_key, company_name, selection, summary, transcript, model_executions, created_at, updated_at")
+            .eq("company_key", normalized_lookup_key)
+            .limit(1)
+            .execute()
+        )
+        if not rows.data:
+            return None
+        row = rows.data[0] or {}
+        return {
+            "company_lookup_key": row.get("company_key") or normalized_lookup_key,
+            "company_name": row.get("company_name"),
+            "selection": _serialize(row.get("selection") or {}),
+            "summary": str(row.get("summary") or ""),
+            "transcript": _serialize(row.get("transcript") or []),
+            "model_executions": _serialize(row.get("model_executions") or []),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+        }
+    except Exception as exc:
+        _log_supabase_error("load_company_chat_session", "company_chat_sessions", exc)
+        return None
+
+
+def persist_company_chat_session(
+    *,
+    company_lookup_key: str,
+    company_name: str | None,
+    selection: dict[str, Any] | None,
+    summary: str,
+    transcript: list[dict[str, Any]],
+    model_executions: list[dict[str, Any]] | None = None,
+) -> bool:
+    """Persist the shared chat transcript for a company."""
+    client = _get_client()
+    if not client:
+        return False
+
+    normalized_lookup_key = (company_lookup_key or "").strip().lower()
+    if not normalized_lookup_key:
+        return False
+
+    try:
+        client.table("company_chat_sessions").upsert(
+            {
+                "company_key": normalized_lookup_key,
+                "company_name": company_name or normalized_lookup_key,
+                "selection": _serialize(selection or {}),
+                "summary": str(summary or ""),
+                "transcript": _serialize(transcript or []),
+                "model_executions": _serialize(model_executions or []),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            on_conflict="company_key",
+        ).execute()
+        return True
+    except Exception as exc:
+        _log_supabase_error("persist_company_chat_session", "company_chat_sessions", exc)
+        return False
+
+
+def delete_company_chat_session(company_lookup_key: str) -> bool:
+    """Delete the shared persisted chat transcript for a company."""
+    client = _get_client()
+    if not client:
+        return False
+
+    normalized_lookup_key = (company_lookup_key or "").strip().lower()
+    if not normalized_lookup_key:
+        return False
+
+    try:
+        client.table("company_chat_sessions").delete().eq("company_key", normalized_lookup_key).execute()
+        return True
+    except Exception as exc:
+        _log_supabase_error("delete_company_chat_session", "company_chat_sessions", exc)
+        return False
+
+
 def _extract_company_runs_from_payload(
     job_id_legacy: str,
     payload: dict[str, Any],

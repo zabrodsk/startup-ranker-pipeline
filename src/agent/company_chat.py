@@ -11,6 +11,9 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from agent.dataclasses.company import Company
 from agent.evidence_answering import (
+    _resolve_web_search_provider_name,
+    _question_prefers_web_search,
+    _web_search_domain_filter,
     WEB_RESULTS_TRUNCATE,
     WEB_SEARCH_TIMEOUT_SEC,
     _answer_indicates_no_evidence,
@@ -20,9 +23,16 @@ from agent.evidence_answering import (
     _web_results_add_value,
 )
 from agent.ingest.store import Chunk, EvidenceStore
-from agent.llm import chat_llm_selection, create_chat_llm
+from agent.llm import chat_llm_selection, create_llm
+from agent.llm_catalog import serialize_selection
 from agent.retrieval import retrieve_chunks
-from agent.run_context import use_company_context, use_run_context, use_stage_context
+from agent.run_context import (
+    PERPLEXITY_SEARCH_PRICE_PER_REQUEST_USD,
+    RunTelemetryCollector,
+    use_company_context,
+    use_run_context,
+    use_stage_context,
+)
 
 CHAT_CHUNK_PREFIX = "chunk"
 CHAT_QA_PREFIX = "qa"
@@ -106,6 +116,8 @@ class ChatCitation:
     score: float | None = None
     web_search_query: str | None = None
     web_search_results: str | None = None
+    web_search_provider: str | None = None
+    web_search_cost_usd: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -123,6 +135,8 @@ class ChatCitation:
             "score": self.score,
             "web_search_query": self.web_search_query,
             "web_search_results": self.web_search_results,
+            "web_search_provider": self.web_search_provider,
+            "web_search_cost_usd": self.web_search_cost_usd,
         }
 
 
@@ -318,8 +332,14 @@ async def answer_company_question(
     question: str,
     use_web_search: bool = True,
     active_job_id: str | None = None,
+    llm_selection: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     company, store, citation_map, meta = build_company_chat_store(context)
+    selection = serialize_selection(
+        (llm_selection or chat_llm_selection()).get("provider"),
+        (llm_selection or chat_llm_selection()).get("model"),
+    )
+    collector = RunTelemetryCollector(selected_llm=selection)
     retrieved = retrieve_chunks(question, store, k=CHAT_TOP_K)
     evidence_text = "\n---\n".join(
         f"[{chunk.chunk_id}] ({chunk.source_file}):\n{chunk.text}" for chunk in retrieved
@@ -344,63 +364,76 @@ async def answer_company_question(
         "evidence_text": evidence_text,
     }
 
-    async def _invoke(prompt_text: str) -> str:
-        with use_company_context(context.get("company_lookup_key")):
-            with use_stage_context("company_chat"):
-                with use_run_context(llm_selection=chat_llm_selection()):
-                    llm = create_chat_llm(temperature=0.2)
+    used_web_search = False
+    web_search_query = None
+    web_search_results = None
+    citations = list(local_citations)
+
+    with use_company_context(context.get("company_lookup_key")):
+        with use_stage_context("company_chat"):
+            with use_run_context(llm_selection=selection, telemetry_collector=collector):
+                llm = create_llm(temperature=0.2)
+
+                async def _invoke(prompt_text: str) -> str:
                     response = await llm.ainvoke(
                         [
                             SystemMessage(content=CHAT_SYSTEM_PROMPT),
                             HumanMessage(content=prompt_text),
                         ]
                     )
-        return _coerce_text(response.content).strip()
+                    return _coerce_text(response.content).strip()
 
-    answer = await _invoke(CHAT_GROUNDED_PROMPT.format(**prompt_kwargs))
-    used_web_search = False
-    web_search_query = None
-    web_search_results = None
-    citations = list(local_citations)
+                answer = await _invoke(CHAT_GROUNDED_PROMPT.format(**prompt_kwargs))
 
-    if use_web_search and _answer_indicates_no_evidence(answer):
-        web_search_query = _build_web_search_query(company, question)
-        try:
-            raw_web_results = await asyncio.wait_for(
-                asyncio.to_thread(_run_web_search, web_search_query, None),
-                timeout=WEB_SEARCH_TIMEOUT_SEC,
-            )
-            useful, reason = _web_results_add_value(question, company.name, raw_web_results)
-            if useful:
-                used_web_search = True
-                web_search_results = raw_web_results[:WEB_RESULTS_TRUNCATE]
-                if len(raw_web_results) > WEB_RESULTS_TRUNCATE:
-                    web_search_results += "\n...[truncated]"
-                answer = await _invoke(
-                    CHAT_HYBRID_PROMPT.format(
-                        **prompt_kwargs,
-                        web_results=raw_web_results,
-                    )
-                )
-                citations.insert(
-                    0,
-                    ChatCitation(
-                        kind="web",
-                        citation_id="web:fallback",
-                        label="Web fallback",
-                        excerpt=_trim_excerpt(raw_web_results),
-                        web_search_query=web_search_query,
-                        web_search_results=web_search_results,
-                    ).to_dict(),
-                )
-            else:
-                web_search_results = f"Skipped web fallback: {reason}"
-        except Exception as exc:
-            web_search_results = f"Web fallback failed: {exc}"
+                prefers_web = _question_prefers_web_search(question)
+                if use_web_search and (_answer_indicates_no_evidence(answer) or prefers_web):
+                    web_search_query = _build_web_search_query(company, question)
+                    try:
+                        raw_web_results = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                _run_web_search,
+                                web_search_query,
+                                _web_search_domain_filter(company, question),
+                            ),
+                            timeout=WEB_SEARCH_TIMEOUT_SEC,
+                        )
+                        useful, reason = _web_results_add_value(question, company.name, raw_web_results)
+                        if useful or (prefers_web and raw_web_results and not str(raw_web_results).lower().startswith("web search failed")):
+                            used_web_search = True
+                            web_search_results = raw_web_results[:WEB_RESULTS_TRUNCATE]
+                            if len(raw_web_results) > WEB_RESULTS_TRUNCATE:
+                                web_search_results += "\n...[truncated]"
+                            answer = await _invoke(
+                                CHAT_HYBRID_PROMPT.format(
+                                    **prompt_kwargs,
+                                    web_results=raw_web_results,
+                                )
+                            )
+                            web_search_provider = _resolve_web_search_provider_name()
+                            citations.insert(
+                                0,
+                                ChatCitation(
+                                    kind="web",
+                                    citation_id="web:fallback",
+                                    label="Web fallback",
+                                    excerpt=_trim_excerpt(raw_web_results),
+                                    web_search_query=web_search_query,
+                                    web_search_results=web_search_results,
+                                    web_search_provider=web_search_provider,
+                                    web_search_cost_usd=PERPLEXITY_SEARCH_PRICE_PER_REQUEST_USD
+                                    if web_search_provider == "sonar"
+                                    else None,
+                                ).to_dict(),
+                            )
+                        else:
+                            web_search_results = f"Skipped web fallback: {reason}"
+                    except Exception as exc:
+                        web_search_results = f"Web fallback failed: {exc}"
 
     used_run_ids = list(
         dict.fromkeys(citation.get("job_id") for citation in citations if citation.get("job_id"))
     )
+    run_costs = collector.build_run_costs()
     return {
         "answer": answer or "Insufficient information available.",
         "citations": citations,
@@ -408,7 +441,10 @@ async def answer_company_question(
         "used_web_search": used_web_search,
         "web_search_query": web_search_query,
         "web_search_results": web_search_results,
-        "model_label": "Gemini 3.1 Flash Lite",
+        "llm_selection": selection,
+        "model_label": selection["label"],
+        "run_costs": run_costs,
+        "model_executions": collector.snapshot_model_executions(),
         "source_counts": meta["source_counts"],
         "run_count": meta["run_count"],
     }

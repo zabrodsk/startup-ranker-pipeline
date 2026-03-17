@@ -23,7 +23,8 @@ Persistent storage for Rockaway Deal Intelligence analyses.
    - `20260306010000_company_runs.sql`
    - `20260313000000_enable_rls_phase1_internal_tables.sql`
    - `20260313000001_enable_rls_phase2_app_tables.sql`
-   Tables include companies, jobs, pitch_decks, chunks, analyses, analysis_events, job_controls, job_status_history, analysis_errors, source_files, model_executions, person_profile_jobs, company_runs.
+   - `20260316000000_company_chat_sessions.sql`
+   Tables include companies, jobs, pitch_decks, chunks, analyses, analysis_events, job_controls, job_status_history, analysis_errors, source_files, model_executions, person_profile_jobs, company_runs, company_chat_sessions.
 4. The app auto-creates the `analysis-exports` bucket on first persist. Or create it manually in [Storage](https://supabase.com/dashboard/project/ykxtuqcfhpauddnbxqyq/storage/buckets).
 
 ## Behavior
@@ -35,6 +36,7 @@ When configured, the app will:
 - Load completed jobs from Supabase on startup (in addition to JSON file)
 - Serve Excel downloads from Storage when local file is missing (e.g. after restart)
 - Fall back to Supabase for `/api/status/{job_id}` when job not in memory
+- Persist shared company chat history, selected answer model, citations, and web-search cost metadata per company
 
 ## Security model
 
@@ -57,3 +59,6 @@ When configured, the app will:
 
 - `GET /api/analyses/{job_id}` – Return analysis results for a completed job
 - `GET /api/companies/{company_name}/analyses` – Return analyses for a company by name (requires Supabase)
+- `GET /api/companies/{company_lookup_key}/chat` – Return shared company chat transcript and metadata
+- `POST /api/companies/{company_lookup_key}/chat` – Append a new shared company chat answer
+- `DELETE /api/companies/{company_lookup_key}/chat` – Clear shared company chat history for that company
