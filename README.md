@@ -51,6 +51,8 @@ python -m web
 
 Then open **http://localhost:8000** in your browser. Set `APP_PASSWORD` in `.env` for login.
 
+- The app opens on **New Analysis** by default after login
+- **Specter** is the pre-selected input mode on the intake screen
 - **Upload** PDF, PPTX, Word, Excel, or CSV files
 - Choose **Pitch Deck** (each file = one company), **Specter** (company + people CSVs), or **Multi-file** (all files = one company)
 - Optionally enable **web search** for richer evidence
@@ -119,6 +121,11 @@ The web UI lets you upload files, run analyses, and download results without tou
 | **VC strategy** | Optional investment thesis for tailored scoring |
 | **Results** | Summary table, executive summaries, key points, red flags, pro/contra arguments, Excel download |
 | **Company chat** | Ask follow-up questions per company across saved runs, with citations, web-search fallback, and shared history |
+
+Current UI defaults:
+- Landing screen is **New Analysis**
+- Default input mode is **Specter**
+- The **Advanced: choose one model for the whole pipeline** selector excludes OpenRouter options
 
 ### Local run
 
