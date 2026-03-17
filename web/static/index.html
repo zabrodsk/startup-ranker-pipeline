@@ -6988,7 +6988,7 @@ function syncRoute() {
   }
   const activeScreenId = getActiveScreenId();
   if (!activeScreenId || activeScreenId === 'password-screen') {
-    openCompaniesPage();
+    openNewAnalysis();
   }
 }
 
@@ -7608,7 +7608,7 @@ async function resumeActiveJob() {
       });
       renderRecentRuns();
     }
-    openCompaniesPage();
+    openNewAnalysis();
     return false;
   }
 }
@@ -7717,7 +7717,7 @@ async function loadConfirmedTerminalResults(jobId, fallbackResults = null) {
         backfillRecentRunsWithLlm();
         const resumed = await resumeActiveJob();
         if (!resumed) {
-          openCompaniesPage();
+          openNewAnalysis();
         } else {
           fetchSavedCompanies();
         }
