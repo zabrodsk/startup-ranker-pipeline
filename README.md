@@ -169,6 +169,30 @@ Railway runs the same image in two service roles:
 - `startup-ranker-web` starts `python -m agent.railway_service` with `SERVICE_ROLE=web`
 - `startup-ranker-worker` starts `python -m agent.railway_service` with `SERVICE_ROLE=worker`
 
+### Railway environment mapping
+
+The current Railway setup uses two separate projects:
+
+- Staging: `startup-ranker-mvp`
+  - URL: `https://rockaway-deal-intelligence.up.railway.app`
+- Production: `rockaway-deal-intelligence-prod`
+  - URL: `https://startup-ranker-web-production.up.railway.app`
+
+As of March 18, 2026, the verified live config is:
+
+- Staging is serving the new GPT-5.4 pipeline defaults:
+  - decomposition -> `gpt-5.4-mini`
+  - answering -> `gpt-5.4-nano`
+  - generation -> `gpt-5.4-mini`
+  - evaluation -> `gpt-5.4-mini`
+  - ranking -> `gpt-5.4-mini`
+- Production is still serving the previous defaults:
+  - decomposition -> `gemini-3.1-pro-preview`
+  - answering -> `gemini-2.5-flash`
+  - generation -> `gpt-5.2`
+  - evaluation -> `o4-mini`
+  - ranking -> `gpt-5.2`
+
 Current production behavior:
 
 - `ENABLE_SPECTER_WORKER_SERVICE=true` on web, so Specter runs queue to the dedicated worker

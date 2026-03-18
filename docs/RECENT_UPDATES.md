@@ -143,6 +143,37 @@ for New Analysis without removing legacy label/cost compatibility for old saved
   `reasoning` parameter for that model, the app retries once in
   temperature-only mode and records the fallback in telemetry
 
+## Railway Environment Mapping And Live Verification (2026-03-18)
+
+The current Railway naming is easy to misread, so the canonical environment
+mapping is now:
+
+- Staging:
+  - project: `startup-ranker-mvp`
+  - URL: `https://rockaway-deal-intelligence.up.railway.app`
+- Production:
+  - project: `rockaway-deal-intelligence-prod`
+  - URL: `https://startup-ranker-web-production.up.railway.app`
+
+Verified live `/api/config` on March 18, 2026:
+
+- Staging is serving the GPT-5.4 mini/nano rollout:
+  - available OpenAI models include `gpt-5.4-mini` and `gpt-5.4-nano`
+  - phase defaults are:
+    - decomposition -> `gpt-5.4-mini`
+    - answering -> `gpt-5.4-nano`
+    - generation -> `gpt-5.4-mini`
+    - evaluation -> `gpt-5.4-mini`
+    - ranking -> `gpt-5.4-mini`
+- Production is still serving the prior defaults:
+  - available OpenAI mini models are still `gpt-5-mini` and `gpt-5-nano`
+  - phase defaults are:
+    - decomposition -> `gemini-3.1-pro-preview`
+    - answering -> `gemini-2.5-flash`
+    - generation -> `gpt-5.2`
+    - evaluation -> `o4-mini`
+    - ranking -> `gpt-5.2`
+
 ---
 
 ## Files Changed (v0.0.6)
