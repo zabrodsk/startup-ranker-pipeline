@@ -49,6 +49,7 @@ from agent.llm_catalog import (
     validate_requested_selection,
 )
 from agent.llm_policy import (
+    build_default_phase_model_policy,
     build_phase_model_policy,
     build_phase_policy_display_label,
     build_pipeline_policy,
@@ -1968,6 +1969,15 @@ async def start_analysis(
             quality_tier,
             effective_phase_models=effective_phase_models,
         )
+    elif not (req.llm_provider or req.llm_model):
+        try:
+            pipeline_policy = build_default_phase_model_policy()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        phase_models = phase_model_defaults_payload()
+        llm_selection = dict(pipeline_policy.answering)
+        effective_phase_models = resolve_effective_phase_models(pipeline_policy)
+        llm_display = build_phase_policy_display_label(effective_phase_models)
     else:
         try:
             selected_entry = validate_requested_selection(req.llm_provider, req.llm_model)
@@ -1989,7 +1999,7 @@ async def start_analysis(
     cache["use_web_search"] = req.use_web_search
     cache["instructions"] = req.instructions
     cache["llm_selection"] = llm_selection
-    cache["phase_models"] = phase_models if req.phase_models else None
+    cache["phase_models"] = phase_models if (req.phase_models or pipeline_policy is not None and quality_tier is None) else None
     cache["quality_tier"] = quality_tier
     cache["premium_phase_models"] = (
         premium_phase_models if quality_tier == "premium" else None
@@ -2001,7 +2011,7 @@ async def start_analysis(
         "vc_investment_strategy": req.vc_investment_strategy,
         "instructions": req.instructions,
         "use_web_search": req.use_web_search,
-        "phase_models": phase_models if req.phase_models else None,
+        "phase_models": phase_models if (req.phase_models or pipeline_policy is not None and quality_tier is None) else None,
         "quality_tier": quality_tier,
         "premium_phase_models": premium_phase_models if quality_tier == "premium" else None,
         "effective_phase_models": effective_phase_models,

@@ -326,6 +326,10 @@ def build_phase_model_policy(
     )
 
 
+def build_default_phase_model_policy() -> PipelineModelPolicy:
+    return build_phase_model_policy(default_phase_model_selections())
+
+
 def build_pipeline_policy(
     quality_tier: PublicQualityTier,
     premium_phase_models: dict[str, Any] | None = None,

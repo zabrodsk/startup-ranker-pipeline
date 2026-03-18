@@ -15,6 +15,7 @@ if str(ROOT / "src") not in sys.path:
 
 from agent.llm_catalog import available_models_payload, validate_requested_selection
 from agent.llm_policy import (
+    build_default_phase_model_policy,
     build_phase_model_policy,
     build_pipeline_policy,
     phase_model_defaults_payload,
@@ -964,6 +965,55 @@ def test_start_analysis_persists_phase_model_selection(monkeypatch) -> None:
         assert cache["run_config"]["llm"] == (
             "Per-phase · D Claude Haiku 4.5 · A Gemini 3.1 Flash Lite"
             " · G GPT-5 · E GPT-5.4 mini · R GPT-4.1 mini"
+        )
+
+
+def test_start_analysis_defaults_to_phase_model_policy_when_no_selection_is_provided(monkeypatch) -> None:
+    from web import app as web_app_module
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "google")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic")
+
+    started = {"called": False}
+
+    class FakeThread:
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            started["called"] = True
+
+    monkeypatch.setattr(web_app_module.threading, "Thread", FakeThread)
+
+    with TestClient(app) as client:
+        _login(client)
+        upload = client.post(
+            "/api/upload",
+            files={"files": ("deck.txt", io.BytesIO(b"sample content"), "text/plain")},
+        )
+        job_id = upload.json()["job_id"]
+
+        analyze = client.post(
+            f"/api/analyze/{job_id}",
+            json={"input_mode": "pitchdeck"},
+        )
+        assert analyze.status_code == 200
+        assert started["called"] is True
+
+        cache = web_app_module._results_cache[job_id]
+        expected_policy = build_default_phase_model_policy()
+        expected_effective = expected_policy.as_dict()
+        expected_defaults = phase_model_defaults_payload()
+        assert cache["llm_selection"] == expected_effective["answering"]
+        assert cache["phase_models"] == expected_defaults
+        assert cache["effective_phase_models"] == expected_effective
+        assert cache["quality_tier"] is None
+        assert cache["run_config"]["phase_models"] == expected_defaults
+        assert cache["run_config"]["llm"] == (
+            "Per-phase · D GPT-5.4 mini · A GPT-5.4 nano"
+            " · G GPT-5.4 mini · E GPT-5.4 mini · R GPT-5.4 mini"
         )
 
 
