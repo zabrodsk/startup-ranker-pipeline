@@ -467,7 +467,7 @@ def test_pipeline_policy_can_route_five_user_selected_models(monkeypatch):
             "decomposition": {"provider": "anthropic", "model": "claude-haiku-4-5-20251001"},
             "answering": {"provider": "gemini", "model": "gemini-3.1-flash-lite-preview"},
             "generation": {"provider": "openai", "model": "gpt-5"},
-            "evaluation": {"provider": "openai", "model": "gpt-5-mini"},
+            "evaluation": {"provider": "openai", "model": "gpt-5.4-mini"},
             "ranking": {"provider": "openai", "model": "gpt-4.1-mini"},
         }
     )
@@ -477,5 +477,5 @@ def test_pipeline_policy_can_route_five_user_selected_models(monkeypatch):
     assert policy.critique["model"] == "gemini-3.1-flash-lite-preview"
     assert policy.refinement["model"] == "gemini-3.1-flash-lite-preview"
     assert policy.generation["model"] == "gpt-5"
-    assert policy.evaluation["model"] == "gpt-5-mini"
+    assert policy.evaluation["model"] == "gpt-5.4-mini"
     assert policy.ranking["model"] == "gpt-4.1-mini"

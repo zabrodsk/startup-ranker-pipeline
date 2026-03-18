@@ -22,7 +22,7 @@ from agent.prompt_library.manager import get_prompt
 from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
 from agent.pipeline.state.schemas import IndividualRefinedArgumentOutput
 from agent.rate_limit import gather_with_concurrency
-from agent.run_context import get_current_pipeline_policy, use_phase_llm
+from agent.run_context import get_current_pipeline_policy, use_phase_llm, use_stage_context
 
 @backoff.on_exception(
     backoff.expo, RateLimitError, max_tries=5, max_time=60, jitter=backoff.full_jitter
@@ -41,24 +41,25 @@ async def _refine_individual_pro_argument(
     pro_user_prompt = get_prompt("refinement.pro_user", prompt_overrides)
     policy = get_current_pipeline_policy()
     with use_phase_llm(policy.refinement if policy else None):
-        llm = get_llm(temperature=0.5)
-        llm_with_structured_output = llm.with_structured_output(
-            IndividualRefinedArgumentOutput
-        )
-        refined_argument: IndividualRefinedArgumentOutput = (
-            await llm_with_structured_output.ainvoke(
-                [
-                    SystemMessage(content=pro_system_prompt),
-                    HumanMessage(
-                        content=pro_user_prompt.format(
-                            argument=argument.content,
-                            argument_feedback=argument.argument_feedback,
-                            questions_and_answers=qa_pairs_formatted,
-                        )
-                    ),
-                ]
+        with use_stage_context("refinement"):
+            llm = get_llm(temperature=0.7)
+            llm_with_structured_output = llm.with_structured_output(
+                IndividualRefinedArgumentOutput
             )
-        )
+            refined_argument: IndividualRefinedArgumentOutput = (
+                await llm_with_structured_output.ainvoke(
+                    [
+                        SystemMessage(content=pro_system_prompt),
+                        HumanMessage(
+                            content=pro_user_prompt.format(
+                                argument=argument.content,
+                                argument_feedback=argument.argument_feedback,
+                                questions_and_answers=qa_pairs_formatted,
+                            )
+                        ),
+                    ]
+                )
+            )
 
     return refined_argument
 
@@ -80,24 +81,25 @@ async def _refine_individual_contra_argument(
     contra_user_prompt = get_prompt("refinement.contra_user", prompt_overrides)
     policy = get_current_pipeline_policy()
     with use_phase_llm(policy.refinement if policy else None):
-        llm = get_llm(temperature=0.5)
-        llm_with_structured_output = llm.with_structured_output(
-            IndividualRefinedArgumentOutput
-        )
-        refined_argument: IndividualRefinedArgumentOutput = (
-            await llm_with_structured_output.ainvoke(
-                [
-                    SystemMessage(content=contra_system_prompt),
-                    HumanMessage(
-                        content=contra_user_prompt.format(
-                            argument=argument.content,
-                            argument_feedback=argument.argument_feedback,
-                            questions_and_answers=qa_pairs_formatted,
-                        )
-                    ),
-                ]
+        with use_stage_context("refinement"):
+            llm = get_llm(temperature=0.7)
+            llm_with_structured_output = llm.with_structured_output(
+                IndividualRefinedArgumentOutput
             )
-        )
+            refined_argument: IndividualRefinedArgumentOutput = (
+                await llm_with_structured_output.ainvoke(
+                    [
+                        SystemMessage(content=contra_system_prompt),
+                        HumanMessage(
+                            content=contra_user_prompt.format(
+                                argument=argument.content,
+                                argument_feedback=argument.argument_feedback,
+                                questions_and_answers=qa_pairs_formatted,
+                            )
+                        ),
+                    ]
+                )
+            )
 
     return refined_argument
 

@@ -87,8 +87,8 @@ def test_available_models_payload_marks_availability(monkeypatch) -> None:
         "gemini-2.5-flash-lite",
         "gemini-3.1-pro-preview",
         "claude-haiku-4-5-20251001",
-        "gpt-5-nano",
-        "gpt-5-mini",
+        "gpt-5.4-nano",
+        "gpt-5.4-mini",
         "gpt-5",
         "gpt-4.1-mini",
         "o4-mini",
@@ -127,6 +127,8 @@ def test_validate_requested_selection_accepts_new_catalog_models(monkeypatch) ->
     assert validate_requested_selection("openai", "o4-mini") is not None
     assert validate_requested_selection("openai", "gpt-5.2") is not None
     assert validate_requested_selection("openai", "gpt-5.4") is not None
+    assert validate_requested_selection("openai", "gpt-5.4-mini") is not None
+    assert validate_requested_selection("openai", "gpt-5.4-nano") is not None
 
 
 def test_build_pipeline_policy_resolves_cheap_and_premium(monkeypatch) -> None:
@@ -179,7 +181,7 @@ def test_build_phase_model_policy_resolves_five_user_facing_phases(monkeypatch) 
             "decomposition": {"provider": "anthropic", "model": "claude-haiku-4-5-20251001"},
             "answering": {"provider": "gemini", "model": "gemini-3.1-flash-lite-preview"},
             "generation": {"provider": "openai", "model": "gpt-5"},
-            "evaluation": {"provider": "openai", "model": "gpt-5-mini"},
+            "evaluation": {"provider": "openai", "model": "gpt-5.4-mini"},
             "ranking": {"provider": "openai", "model": "gpt-4.1-mini"},
         }
     )
@@ -189,7 +191,7 @@ def test_build_phase_model_policy_resolves_five_user_facing_phases(monkeypatch) 
     assert policy.critique["provider"] == "gemini"
     assert policy.refinement["provider"] == "gemini"
     assert policy.generation["model"] == "gpt-5"
-    assert policy.evaluation["model"] == "gpt-5-mini"
+    assert policy.evaluation["model"] == "gpt-5.4-mini"
     assert policy.ranking["model"] == "gpt-4.1-mini"
 
 
@@ -201,29 +203,29 @@ def test_phase_model_defaults_follow_new_analysis_recommendations(monkeypatch) -
     defaults = phase_model_defaults_payload()
 
     assert defaults["decomposition"] == {
-        "provider": "gemini",
-        "model": "gemini-3.1-pro-preview",
-        "label": "Gemini 3.1 Pro Preview",
+        "provider": "openai",
+        "model": "gpt-5.4-mini",
+        "label": "GPT-5.4 mini",
     }
     assert defaults["answering"] == {
-        "provider": "gemini",
-        "model": "gemini-2.5-flash",
-        "label": "Gemini 2.5 Flash",
+        "provider": "openai",
+        "model": "gpt-5.4-nano",
+        "label": "GPT-5.4 nano",
     }
     assert defaults["generation"] == {
         "provider": "openai",
-        "model": "gpt-5.2",
-        "label": "GPT-5.2",
+        "model": "gpt-5.4-mini",
+        "label": "GPT-5.4 mini",
     }
     assert defaults["evaluation"] == {
         "provider": "openai",
-        "model": "o4-mini",
-        "label": "o4-mini",
+        "model": "gpt-5.4-mini",
+        "label": "GPT-5.4 mini",
     }
     assert defaults["ranking"] == {
         "provider": "openai",
-        "model": "gpt-5.2",
-        "label": "GPT-5.2",
+        "model": "gpt-5.4-mini",
+        "label": "GPT-5.4 mini",
     }
 
 
@@ -265,11 +267,11 @@ def test_is_authentication_api_error_detects_status_and_message() -> None:
 def test_model_catalog_validation_accepts_openai_entries_when_key_present(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
-    entry = validate_requested_selection("openai", "gpt-5-mini")
+    entry = validate_requested_selection("openai", "gpt-5.4-mini")
 
     assert entry is not None
     assert entry.provider == "openai"
-    assert entry.model == "gpt-5-mini"
+    assert entry.model == "gpt-5.4-mini"
 
 
 def test_model_catalog_validation_accepts_openrouter_entries_when_key_present(monkeypatch) -> None:
@@ -311,7 +313,7 @@ def test_create_llm_prefers_run_context_selection_over_env(monkeypatch) -> None:
 
     monkeypatch.setattr(llm_module, "_create_gemini", fake_gemini)
     monkeypatch.setattr(llm_module, "_create_anthropic", fake_anthropic)
-    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable: runnable)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable, **kwargs: runnable)
 
     with use_run_context(llm_selection={"provider": "anthropic", "model": "claude-haiku-4-5-20251001"}):
         llm_module.create_llm()
@@ -331,7 +333,7 @@ def test_create_chat_llm_always_uses_fixed_gemini_model(monkeypatch) -> None:
         return object()
 
     monkeypatch.setattr(llm_module, "_create_gemini", fake_gemini)
-    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable: runnable)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable, **kwargs: runnable)
     monkeypatch.setenv("LLM_PROVIDER", "anthropic")
     monkeypatch.setenv("MODEL_NAME", "claude-haiku-4-5-20251001")
 
@@ -354,7 +356,7 @@ def test_create_llm_uses_openrouter_selection_and_key(monkeypatch) -> None:
         return object()
 
     monkeypatch.setattr(llm_module, "_create_openrouter", fake_openrouter)
-    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable: runnable)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable, **kwargs: runnable)
 
     with use_run_context(llm_selection={"provider": "openrouter", "model": "openrouter/hunter-alpha"}):
         llm_module.create_llm()
@@ -378,7 +380,7 @@ def test_create_llm_respects_requested_temperature_for_gpt5_by_default(monkeypat
         return object()
 
     monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
-    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable: runnable)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable, **kwargs: runnable)
 
     with use_run_context(llm_selection={"provider": "openai", "model": "gpt-5"}):
         llm_module.create_llm(temperature=0.0)
@@ -399,7 +401,7 @@ def test_create_llm_can_force_temperature_one_for_gpt5(monkeypatch) -> None:
         return object()
 
     monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
-    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable: runnable)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable, **kwargs: runnable)
 
     with use_run_context(llm_selection={"provider": "openai", "model": "gpt-5"}):
         llm_module.create_llm(temperature=0.0)
@@ -407,7 +409,7 @@ def test_create_llm_can_force_temperature_one_for_gpt5(monkeypatch) -> None:
     assert called == {"model": "gpt-5", "temperature": 1.0, "reasoning_effort": None}
 
 
-def test_create_llm_forces_temperature_one_for_non_gpt5_openai(monkeypatch) -> None:
+def test_create_llm_passes_requested_temperature_for_non_gpt5_openai(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
     monkeypatch.setenv("OPENAI_GPT5_TEMPERATURE_MODE", "force_one")
 
@@ -420,15 +422,15 @@ def test_create_llm_forces_temperature_one_for_non_gpt5_openai(monkeypatch) -> N
         return object()
 
     monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
-    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable: runnable)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable, **kwargs: runnable)
 
     with use_run_context(llm_selection={"provider": "openai", "model": "gpt-4.1-mini"}):
         llm_module.create_llm(temperature=0.3)
 
-    assert called == {"model": "gpt-4.1-mini", "temperature": 1.0, "reasoning_effort": None}
+    assert called == {"model": "gpt-4.1-mini", "temperature": 0.3, "reasoning_effort": None}
 
 
-def test_create_llm_forces_temperature_one_for_o4_mini(monkeypatch) -> None:
+def test_create_llm_passes_requested_temperature_for_o4_mini(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
 
     called = {}
@@ -440,15 +442,15 @@ def test_create_llm_forces_temperature_one_for_o4_mini(monkeypatch) -> None:
         return object()
 
     monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
-    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable: runnable)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable, **kwargs: runnable)
 
     with use_run_context(llm_selection={"provider": "openai", "model": "o4-mini"}):
         llm_module.create_llm(temperature=0.0)
 
-    assert called == {"model": "o4-mini", "temperature": 1.0, "reasoning_effort": None}
+    assert called == {"model": "o4-mini", "temperature": 0.0, "reasoning_effort": None}
 
 
-def test_create_llm_maps_gpt52_to_stage_reasoning_effort(monkeypatch) -> None:
+def test_create_llm_maps_gpt54_mini_decomposition_to_temperature_plus_reasoning(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
 
     called = {}
@@ -460,34 +462,55 @@ def test_create_llm_maps_gpt52_to_stage_reasoning_effort(monkeypatch) -> None:
         return object()
 
     monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
-    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable: runnable)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable, **kwargs: runnable)
 
-    with use_run_context(llm_selection={"provider": "openai", "model": "gpt-5.2"}):
+    with use_run_context(llm_selection={"provider": "openai", "model": "gpt-5.4-mini"}):
+        with use_stage_context("decomposition"):
+            llm_module.create_llm(temperature=0.2)
+
+    assert called == {"model": "gpt-5.4-mini", "temperature": 0.5, "reasoning_effort": "none"}
+
+
+def test_create_llm_maps_gpt54_nano_answering_to_temperature_plus_reasoning(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    called = {}
+
+    def fake_openai(model, temperature, timeout_s, max_retries, reasoning_effort=None):
+        called["model"] = model
+        called["temperature"] = temperature
+        called["reasoning_effort"] = reasoning_effort
+        return object()
+
+    monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable, **kwargs: runnable)
+
+    with use_run_context(llm_selection={"provider": "openai", "model": "gpt-5.4-nano"}):
+        with use_stage_context("answering"):
+            llm_module.create_llm(temperature=0.2)
+
+    assert called == {"model": "gpt-5.4-nano", "temperature": 0.0, "reasoning_effort": "none"}
+
+
+def test_create_llm_maps_gpt54_mini_evaluation_to_reasoning_only(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    called = {}
+
+    def fake_openai(model, temperature, timeout_s, max_retries, reasoning_effort=None):
+        called["model"] = model
+        called["temperature"] = temperature
+        called["reasoning_effort"] = reasoning_effort
+        return object()
+
+    monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable, **kwargs: runnable)
+
+    with use_run_context(llm_selection={"provider": "openai", "model": "gpt-5.4-mini"}):
         with use_stage_context("evaluation"):
             llm_module.create_llm(temperature=0.0)
 
-    assert called == {"model": "gpt-5.2", "temperature": 1.0, "reasoning_effort": "high"}
-
-
-def test_create_llm_maps_gpt54_ranking_to_xhigh_reasoning_effort(monkeypatch) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
-
-    called = {}
-
-    def fake_openai(model, temperature, timeout_s, max_retries, reasoning_effort=None):
-        called["model"] = model
-        called["temperature"] = temperature
-        called["reasoning_effort"] = reasoning_effort
-        return object()
-
-    monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
-    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable: runnable)
-
-    with use_run_context(llm_selection={"provider": "openai", "model": "gpt-5.4"}):
-        with use_stage_context("ranking_dimension_score"):
-            llm_module.create_llm(temperature=0.0)
-
-    assert called == {"model": "gpt-5.4", "temperature": 1.0, "reasoning_effort": "xhigh"}
+    assert called == {"model": "gpt-5.4-mini", "temperature": None, "reasoning_effort": "medium"}
 
 
 def test_use_phase_llm_temporarily_overrides_selection() -> None:
@@ -770,7 +793,7 @@ def test_api_config_exposes_default_and_available_models(monkeypatch) -> None:
     providers = {item["provider"] for item in payload["available_models"]}
     assert providers == {"gemini", "anthropic", "openai", "openrouter"}
     assert any(item["model"] == "gemini-3.1-flash-lite-preview" and item["available"] for item in payload["available_models"])
-    assert any(item["model"] == "gpt-5-mini" and item["available"] for item in payload["available_models"])
+    assert any(item["model"] == "gpt-5.4-mini" and item["available"] for item in payload["available_models"])
     assert any(
         item["model"] == "openrouter/hunter-alpha"
         and item["available"]
@@ -923,7 +946,7 @@ def test_start_analysis_persists_phase_model_selection(monkeypatch) -> None:
                     "decomposition": {"provider": "anthropic", "model": "claude-haiku-4-5-20251001"},
                     "answering": {"provider": "gemini", "model": "gemini-3.1-flash-lite-preview"},
                     "generation": {"provider": "openai", "model": "gpt-5"},
-                    "evaluation": {"provider": "openai", "model": "gpt-5-mini"},
+                    "evaluation": {"provider": "openai", "model": "gpt-5.4-mini"},
                     "ranking": {"provider": "openai", "model": "gpt-4.1-mini"},
                 },
             },
@@ -940,7 +963,7 @@ def test_start_analysis_persists_phase_model_selection(monkeypatch) -> None:
         assert cache["run_config"]["phase_models"]["generation"]["model"] == "gpt-5"
         assert cache["run_config"]["llm"] == (
             "Per-phase · D Claude Haiku 4.5 · A Gemini 3.1 Flash Lite"
-            " · G GPT-5 · E GPT-5 mini · R GPT-4.1 mini"
+            " · G GPT-5 · E GPT-5.4 mini · R GPT-4.1 mini"
         )
 
 

@@ -9,7 +9,11 @@ from datetime import datetime, timezone
 from threading import Lock, Semaphore
 from typing import Any, Awaitable, Iterable
 
-from agent.run_context import get_current_collector, get_current_llm_selection
+from agent.run_context import (
+    get_current_collector,
+    get_current_llm_request_settings,
+    get_current_llm_selection,
+)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -153,23 +157,42 @@ class ThrottledRunnable:
         *,
         throttle: InvocationThrottle,
         retry_policy: RetryPolicy,
+        fallback_builder: Any | None = None,
     ):
         self._runnable = runnable
         self._throttle = throttle
         self._retry_policy = retry_policy
+        self._fallback_builder = fallback_builder
+        self._fallback_applied = False
 
     def with_structured_output(self, *args: Any, **kwargs: Any) -> "ThrottledRunnable":
+        fallback_builder = None
+        if self._fallback_builder is not None:
+            def fallback_builder():
+                base = self._fallback_builder()
+                if base is None:
+                    return None
+                return base.with_structured_output(*args, **kwargs)
         return ThrottledRunnable(
             self._runnable.with_structured_output(*args, **kwargs),
             throttle=self._throttle,
             retry_policy=self._retry_policy,
+            fallback_builder=fallback_builder,
         )
 
     def bind_tools(self, *args: Any, **kwargs: Any) -> "ThrottledRunnable":
+        fallback_builder = None
+        if self._fallback_builder is not None:
+            def fallback_builder():
+                base = self._fallback_builder()
+                if base is None:
+                    return None
+                return base.bind_tools(*args, **kwargs)
         return ThrottledRunnable(
             self._runnable.bind_tools(*args, **kwargs),
             throttle=self._throttle,
             retry_policy=self._retry_policy,
+            fallback_builder=fallback_builder,
         )
 
     async def ainvoke(self, *args: Any, **kwargs: Any) -> Any:
@@ -180,10 +203,12 @@ class ThrottledRunnable:
             try:
                 return await self._runnable.ainvoke(*args, **kwargs)
             except Exception as exc:
-                retryable = is_retryable_api_error(exc)
                 selection = get_current_llm_selection() or {}
                 collector = get_current_collector()
                 latency_ms = int((time.monotonic() - started) * 1000)
+                if self._try_reasoning_fallback(exc, selection, collector, latency_ms):
+                    continue
+                retryable = is_retryable_api_error(exc)
                 if attempt >= self._retry_policy.max_retries or not retryable:
                     if collector:
                         collector.record_execution_event(
@@ -236,10 +261,12 @@ class ThrottledRunnable:
             try:
                 return self._runnable.invoke(*args, **kwargs)
             except Exception as exc:
-                retryable = is_retryable_api_error(exc)
                 selection = get_current_llm_selection() or {}
                 collector = get_current_collector()
                 latency_ms = int((time.monotonic() - started) * 1000)
+                if self._try_reasoning_fallback(exc, selection, collector, latency_ms):
+                    continue
+                retryable = is_retryable_api_error(exc)
                 if attempt >= self._retry_policy.max_retries or not retryable:
                     if collector:
                         collector.record_execution_event(
@@ -284,15 +311,57 @@ class ThrottledRunnable:
             attempt += 1
             time.sleep(delay)
 
+    def _try_reasoning_fallback(
+        self,
+        exc: Exception,
+        selection: dict[str, Any],
+        collector: Any,
+        latency_ms: int,
+    ) -> bool:
+        if self._fallback_applied or self._fallback_builder is None:
+            return False
+        if not _supports_reasoning_fallback(exc, selection):
+            return False
+
+        fallback_runnable = self._fallback_builder()
+        if fallback_runnable is None:
+            return False
+
+        self._runnable = fallback_runnable
+        self._fallback_applied = True
+        if collector:
+            collector.record_execution_event(
+                service="llm",
+                status="retrying",
+                provider=selection.get("provider"),
+                model=selection.get("model"),
+                latency_ms=latency_ms,
+                max_retries=self._retry_policy.max_retries,
+                error_message=str(exc)[:500],
+                metadata={
+                    "attempt": 1,
+                    "retry_delay_seconds": 0.0,
+                    "status_code": _extract_status_code(exc),
+                    "error_type": exc.__class__.__name__,
+                    "reasoning_fallback_applied": True,
+                },
+            )
+        return True
+
     def __getattr__(self, name: str) -> Any:
         return getattr(self._runnable, name)
 
 
-def wrap_llm(runnable: Any) -> ThrottledRunnable:
+def wrap_llm(
+    runnable: Any,
+    *,
+    fallback_builder: Any | None = None,
+) -> ThrottledRunnable:
     return ThrottledRunnable(
         runnable,
         throttle=llm_throttle(),
         retry_policy=llm_retry_policy(),
+        fallback_builder=fallback_builder,
     )
 
 
@@ -403,6 +472,38 @@ def is_authentication_api_error(exc: Exception) -> bool:
 
     error_text = _exception_text(exc)
     return any(marker in error_text for marker in _AUTHENTICATION_MARKERS)
+
+
+def _supports_reasoning_fallback(
+    exc: Exception,
+    selection: dict[str, Any],
+) -> bool:
+    if selection.get("provider") != "openai" or selection.get("model") != "gpt-5.4-nano":
+        return False
+
+    request_settings = get_current_llm_request_settings() or {}
+    if not request_settings.get("effective_reasoning_effort"):
+        return False
+
+    status_code = _extract_status_code(exc)
+    if status_code != 400:
+        return False
+
+    error_text = _exception_text(exc)
+    if "reasoning" not in error_text:
+        return False
+    return any(
+        marker in error_text
+        for marker in (
+            "unsupported_parameter",
+            "unsupported parameter",
+            "unsupported_value",
+            "unsupported value",
+            "does not support",
+            "not supported",
+            "unknown parameter",
+        )
+    )
 
 
 def compute_retry_delay(exc: Exception, attempt: int, retry_policy: RetryPolicy) -> float:

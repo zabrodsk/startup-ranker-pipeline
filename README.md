@@ -304,11 +304,25 @@ ANTHROPIC_API_KEY=your_anthropic_api_key_here
 
 ```
 LLM_PROVIDER=openai
-MODEL_NAME=gpt-5-mini
+MODEL_NAME=gpt-5.4-mini
 OPENAI_API_KEY=your_openai_api_key_here
 ```
 
-Available OpenAI models in the UI: `gpt-5-nano`, `gpt-5-mini`, `gpt-5`, `gpt-4.1-mini`, `o4-mini`, `gpt-5.2`, `gpt-5.4`
+Available OpenAI models in the UI: `gpt-5.4-nano`, `gpt-5.4-mini`, `gpt-5`, `gpt-4.1-mini`, `o4-mini`, `gpt-5.2`, `gpt-5.4`
+
+Default pipeline models on the New Analysis page:
+
+- Decomposition: `gpt-5.4-mini`
+- Q&A: `gpt-5.4-nano`
+- Generation: `gpt-5.4-mini`
+- Evaluation: `gpt-5.4-mini`
+- Ranking: `gpt-5.4-mini`
+
+OpenAI sampling behavior:
+
+- Base `gpt-5` keeps the existing `OPENAI_GPT5_TEMPERATURE_MODE` temperature path
+- `gpt-5.4-mini` and `gpt-5.4-nano` use phase-aware `reasoning.effort`, and some phases also send temperature
+- Other OpenAI models keep the stage-requested temperature unchanged
 
 **Example for OpenRouter:**
 

@@ -31,6 +31,17 @@ UserSelectablePhase = Literal[
     "ranking",
 ]
 CriticalPipelinePhase = Literal["decomposition", "generation", "evaluation", "ranking"]
+OpenAIReasoningPhase = Literal[
+    "decomposition",
+    "answering",
+    "generation_pro",
+    "generation_contra",
+    "critique",
+    "evaluation",
+    "refinement",
+    "ranking_dimension_score",
+    "ranking_executive_summary",
+]
 
 _CRITICAL_PHASES: tuple[CriticalPipelinePhase, ...] = (
     "decomposition",
@@ -205,7 +216,7 @@ def _default_gpt5_family_entry() -> ModelCatalogEntry | None:
     return _first_available_entry(
         ("openai", "gpt-5"),
         ("openai", "gpt-5.2"),
-        ("openai", "gpt-5-mini"),
+        ("openai", "gpt-5.4-mini"),
         ("openai", "gpt-4.1-mini"),
         include_tier_fallback=False,
     )
@@ -240,30 +251,33 @@ def _first_available_entry(
 
 def default_phase_model_selections() -> dict[UserSelectablePhase, dict[str, str]]:
     decomposition = _first_available_entry(
+        ("openai", "gpt-5.4-mini"),
         ("gemini", "gemini-3.1-pro-preview"),
         ("gemini", "gemini-2.5-flash"),
         ("openai", "gpt-5.2"),
         ("openai", "gpt-5"),
     )
     answering = _first_available_entry(
+        ("openai", "gpt-5.4-nano"),
         ("gemini", "gemini-2.5-flash"),
         ("gemini", "gemini-3.1-flash-lite-preview"),
         ("anthropic", "claude-haiku-4-5-20251001"),
-        ("openai", "gpt-5-mini"),
+        ("openai", "gpt-5.4-mini"),
     )
     generation = _first_available_entry(
+        ("openai", "gpt-5.4-mini"),
         ("openai", "gpt-5.2"),
         ("openai", "gpt-5"),
-        ("openai", "gpt-5-mini"),
         ("gemini", "gemini-3.1-pro-preview"),
     )
     evaluation = _first_available_entry(
+        ("openai", "gpt-5.4-mini"),
         ("openai", "o4-mini"),
-        ("openai", "gpt-5-mini"),
         ("openai", "gpt-4.1-mini"),
         ("anthropic", "claude-haiku-4-5-20251001"),
     )
     ranking = _first_available_entry(
+        ("openai", "gpt-5.4-mini"),
         ("openai", "gpt-5.2"),
         ("openai", "gpt-5"),
         ("openai", "o4-mini"),
@@ -440,7 +454,7 @@ def get_alternate_premium_selection(
     if provider == "anthropic" or family == "claude":
         fallback = _first_available_entry(
             ("openai", "gpt-5"),
-            ("openai", "gpt-5-mini"),
+            ("openai", "gpt-5.4-mini"),
             ("openai", "gpt-4.1-mini"),
             include_tier_fallback=False,
         )
@@ -508,3 +522,76 @@ def phase_model_defaults_payload() -> dict[UserSelectablePhase, dict[str, str]]:
         return default_phase_model_selections()
     except ValueError:
         return {}
+
+
+def resolve_openai_phase_sampling(
+    model: str | None,
+    stage_name: str | None,
+    requested_temperature: float | None,
+) -> dict[str, float | str | None] | None:
+    model_norm = (model or "").strip()
+    stage = (stage_name or "").strip().lower()
+
+    if model_norm in {"gpt-5.4-mini", "gpt-5.4-nano"}:
+        stage_map: dict[str, dict[str, float | str | None]] = {
+            "decomposition": {"temperature": 0.5, "reasoning_effort": "none"},
+            "answering": {"temperature": 0.0, "reasoning_effort": "none"},
+            "generation_pro": {"temperature": 0.7, "reasoning_effort": "none"},
+            "generation_contra": {"temperature": 0.7, "reasoning_effort": "none"},
+            "critique": {"temperature": 0.5, "reasoning_effort": "none"},
+            "evaluation": {"temperature": None, "reasoning_effort": "medium"},
+            "refinement": {"temperature": 0.7, "reasoning_effort": "none"},
+            "ranking_dimension_score": {"temperature": None, "reasoning_effort": "high"},
+            "ranking_executive_summary": {"temperature": None, "reasoning_effort": "high"},
+        }
+        return stage_map.get(
+            stage,
+            {
+                "temperature": requested_temperature,
+                "reasoning_effort": "none",
+            },
+        )
+
+    if model_norm in {"gpt-5.2", "gpt-5.4"}:
+        ranking_effort = "xhigh" if model_norm == "gpt-5.4" else "high"
+        stage_map = {
+            "decomposition": {"temperature": None, "reasoning_effort": "medium"},
+            "answering": {"temperature": None, "reasoning_effort": "low"},
+            "generation_pro": {"temperature": None, "reasoning_effort": "medium"},
+            "generation_contra": {"temperature": None, "reasoning_effort": "medium"},
+            "critique": {"temperature": None, "reasoning_effort": "none"},
+            "evaluation": {"temperature": None, "reasoning_effort": "high"},
+            "refinement": {"temperature": None, "reasoning_effort": "medium"},
+            "ranking_dimension_score": {"temperature": None, "reasoning_effort": ranking_effort},
+            "ranking_executive_summary": {"temperature": None, "reasoning_effort": ranking_effort},
+        }
+        if stage in stage_map:
+            return stage_map[stage]
+        return {
+            "temperature": None,
+            "reasoning_effort": "low" if requested_temperature is not None and requested_temperature <= 0.0 else "medium",
+        }
+
+    return None
+
+
+def resolve_openai_reasoning_fallback_temperature(
+    model: str | None,
+    stage_name: str | None,
+) -> float | None:
+    if (model or "").strip() != "gpt-5.4-nano":
+        return None
+
+    stage = (stage_name or "").strip().lower()
+    fallback_map = {
+        "answering": 0.0,
+        "decomposition": 0.5,
+        "generation_pro": 0.7,
+        "generation_contra": 0.7,
+        "critique": 0.5,
+        "refinement": 0.7,
+        "evaluation": 0.0,
+        "ranking_dimension_score": 0.0,
+        "ranking_executive_summary": 0.3,
+    }
+    return fallback_map.get(stage)

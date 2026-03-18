@@ -52,25 +52,25 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
     ),
     ModelCatalogEntry(
         provider="openai",
-        model="gpt-5-nano",
-        label="GPT-5 nano",
-        summary="Ultra fast",
+        model="gpt-5.4-nano",
+        label="GPT-5.4 nano",
+        summary="Cheapest GPT-5.4",
         tier="budget",
         pricing=ModelPricing(
-            input_per_million_tokens_usd=0.05,
-            output_per_million_tokens_usd=0.40,
+            input_per_million_tokens_usd=0.20,
+            output_per_million_tokens_usd=1.25,
         ),
         required_env=("OPENAI_API_KEY",),
     ),
     ModelCatalogEntry(
         provider="openai",
-        model="gpt-5-mini",
-        label="GPT-5 mini",
-        summary="Balanced pick",
+        model="gpt-5.4-mini",
+        label="GPT-5.4 mini",
+        summary="Strong mini model",
         tier="balanced",
         pricing=ModelPricing(
-            input_per_million_tokens_usd=0.25,
-            output_per_million_tokens_usd=2.00,
+            input_per_million_tokens_usd=0.75,
+            output_per_million_tokens_usd=4.50,
         ),
         required_env=("OPENAI_API_KEY",),
     ),
@@ -215,6 +215,33 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
 _DEFAULT_PROVIDER = "gemini"
 _DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 
+_LEGACY_MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
+    ModelCatalogEntry(
+        provider="openai",
+        model="gpt-5-nano",
+        label="GPT-5 nano",
+        summary="Legacy GPT-5 nano",
+        tier="budget",
+        pricing=ModelPricing(
+            input_per_million_tokens_usd=0.05,
+            output_per_million_tokens_usd=0.40,
+        ),
+        required_env=("OPENAI_API_KEY",),
+    ),
+    ModelCatalogEntry(
+        provider="openai",
+        model="gpt-5-mini",
+        label="GPT-5 mini",
+        summary="Legacy GPT-5 mini",
+        tier="balanced",
+        pricing=ModelPricing(
+            input_per_million_tokens_usd=0.25,
+            output_per_million_tokens_usd=2.00,
+        ),
+        required_env=("OPENAI_API_KEY",),
+    ),
+)
+
 _PROVIDER_ALIASES = {
     "google": "gemini",
     "gemini": "gemini",
@@ -248,6 +275,22 @@ def find_model_entry(provider: str | None, model: str | None) -> ModelCatalogEnt
     return None
 
 
+def find_compatible_model_entry(
+    provider: str | None,
+    model: str | None,
+) -> ModelCatalogEntry | None:
+    entry = find_model_entry(provider, model)
+    if entry is not None:
+        return entry
+
+    provider_norm = normalize_provider(provider)
+    model_norm = (model or "").strip()
+    for legacy in _LEGACY_MODEL_CATALOG:
+        if legacy.provider == provider_norm and legacy.model == model_norm:
+            return legacy
+    return None
+
+
 def get_tier_default(
     tier: Literal["budget", "balanced", "premium"],
 ) -> ModelCatalogEntry | None:
@@ -258,7 +301,7 @@ def get_tier_default(
 
 
 def model_label(provider: str | None, model: str | None) -> str:
-    entry = find_model_entry(provider, model)
+    entry = find_compatible_model_entry(provider, model)
     if entry:
         return entry.label
     provider_norm = normalize_provider(provider or _DEFAULT_PROVIDER)
@@ -370,7 +413,7 @@ def estimate_llm_cost_usd(
     prompt_tokens: int,
     completion_tokens: int,
 ) -> float | None:
-    entry = find_model_entry(provider, model)
+    entry = find_compatible_model_entry(provider, model)
     if not entry or not entry.pricing:
         return None
     prompt_cost = (prompt_tokens / 1_000_000) * entry.pricing.input_per_million_tokens_usd

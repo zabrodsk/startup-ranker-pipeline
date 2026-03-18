@@ -21,7 +21,7 @@ from agent.prompt_library.manager import get_prompt
 from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
 from agent.pipeline.state.schemas import ArgumentCritique
 from agent.rate_limit import gather_with_concurrency
-from agent.run_context import get_current_pipeline_policy, use_phase_llm
+from agent.run_context import get_current_pipeline_policy, use_phase_llm, use_stage_context
 
 @backoff.on_exception(
     backoff.expo, RateLimitError, max_tries=5, max_time=60, jitter=backoff.full_jitter
@@ -41,8 +41,9 @@ async def _apply_devils_advocate_to_pro_argument(
     pro_system_prompt = get_prompt("critique.pro_system", prompt_overrides)
     policy = get_current_pipeline_policy()
     with use_phase_llm(policy.critique if policy else None):
-        llm = get_llm(temperature=0.5)
-        llm_with_structured_output = llm.with_structured_output(ArgumentCritique)
+        with use_stage_context("critique"):
+            llm = get_llm(temperature=0.5)
+            llm_with_structured_output = llm.with_structured_output(ArgumentCritique)
 
     user_prompt = pro_user_prompt.format(
         questions_and_answers=qa_pairs_formatted, argument=argument.content
@@ -77,8 +78,9 @@ async def _apply_devils_advocate_to_contra_argument(
     contra_system_prompt = get_prompt("critique.contra_system", prompt_overrides)
     policy = get_current_pipeline_policy()
     with use_phase_llm(policy.critique if policy else None):
-        llm = get_llm(temperature=0.5)
-        llm_with_structured_output = llm.with_structured_output(ArgumentCritique)
+        with use_stage_context("critique"):
+            llm = get_llm(temperature=0.5)
+            llm_with_structured_output = llm.with_structured_output(ArgumentCritique)
 
     user_prompt = contra_user_prompt.format(
         questions_and_answers=qa_pairs_formatted, argument=argument.content

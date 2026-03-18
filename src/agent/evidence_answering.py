@@ -107,6 +107,7 @@ from agent.run_context import (
     get_current_collector,
     get_current_pipeline_policy,
     use_phase_llm,
+    use_stage_context,
 )
 
 GROUNDED_SYSTEM_PROMPT = """\
@@ -470,16 +471,17 @@ async def answer_question_from_evidence(
             grounded_answer = "Unknown from provided documents."
         else:
             with use_phase_llm(policy.answering if policy else None):
-                llm = create_llm(temperature=0.2)
-                user_content = grounded_user_prompt.format(
-                    company_summary=company.get_company_summary(),
-                    question=question,
-                    chunks_text=chunks_text,
-                )
-                response = await llm.ainvoke([
-                    SystemMessage(content=grounded_system_prompt),
-                    HumanMessage(content=vc_block + user_content),
-                ])
+                with use_stage_context("answering"):
+                    llm = create_llm(temperature=0.2)
+                    user_content = grounded_user_prompt.format(
+                        company_summary=company.get_company_summary(),
+                        question=question,
+                        chunks_text=chunks_text,
+                    )
+                    response = await llm.ainvoke([
+                        SystemMessage(content=grounded_system_prompt),
+                        HumanMessage(content=vc_block + user_content),
+                    ])
             grounded_answer = _coerce_text(response.content) or "Unknown from provided documents."
 
         # Step 2: Decide whether to run Perplexity based on the answer
@@ -536,17 +538,18 @@ async def answer_question_from_evidence(
             web_search_decision = f"used: {reason}"
 
             with use_phase_llm(policy.answering if policy else None):
-                llm = create_llm(temperature=0.2)
-                user_content = hybrid_user_prompt.format(
-                    company_summary=company.get_company_summary(),
-                    question=question,
-                    chunks_text=chunks_text,
-                    web_results=web_results,
-                )
-                response = await llm.ainvoke([
-                    SystemMessage(content=hybrid_system_prompt),
-                    HumanMessage(content=vc_block + user_content),
-                ])
+                with use_stage_context("answering"):
+                    llm = create_llm(temperature=0.2)
+                    user_content = hybrid_user_prompt.format(
+                        company_summary=company.get_company_summary(),
+                        question=question,
+                        chunks_text=chunks_text,
+                        web_results=web_results,
+                    )
+                    response = await llm.ainvoke([
+                        SystemMessage(content=hybrid_system_prompt),
+                        HumanMessage(content=vc_block + user_content),
+                    ])
             answer = _coerce_text(response.content) or "Unknown from provided documents."
             provenance = {
                 "chunk_ids": chunk_ids,

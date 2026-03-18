@@ -5066,20 +5066,42 @@ function getPhaseModelDefaults() {
     return found ? `${found.provider}:${found.model}` : null;
   };
 
-  const answeringKey = findKey('gemini', 'gemini-3.1-flash-lite-preview')
+  const decompositionKey = findKey('openai', 'gpt-5.4-mini')
+    || findKey('gemini', 'gemini-3.1-pro-preview')
+    || findKey('gemini', 'gemini-2.5-flash')
+    || findKey('openai', 'gpt-5.2')
+    || findKey('openai', 'gpt-5');
+  const answeringKey = findKey('openai', 'gpt-5.4-nano')
+    || findKey('gemini', 'gemini-2.5-flash')
+    || findKey('gemini', 'gemini-3.1-flash-lite-preview')
     || findKey('anthropic', 'claude-haiku-4-5-20251001')
     || (available[0] ? `${available[0].provider}:${available[0].model}` : null);
-  const criticalKey = findKey('openai', 'gpt-5')
+  const generationKey = findKey('openai', 'gpt-5.4-mini')
+    || findKey('openai', 'gpt-5.2')
+    || findKey('openai', 'gpt-5')
+    || findKey('gemini', 'gemini-3.1-pro-preview')
+    || decompositionKey
+    || answeringKey;
+  const evaluationKey = findKey('openai', 'gpt-5.4-mini')
+    || findKey('openai', 'o4-mini')
+    || findKey('openai', 'gpt-4.1-mini')
     || findKey('anthropic', 'claude-haiku-4-5-20251001')
-    || findKey('openai', 'gpt-5-mini')
+    || generationKey
+    || answeringKey;
+  const rankingKey = findKey('openai', 'gpt-5.4-mini')
+    || findKey('openai', 'gpt-5.2')
+    || findKey('openai', 'gpt-5')
+    || findKey('openai', 'o4-mini')
+    || findKey('anthropic', 'claude-haiku-4-5-20251001')
+    || generationKey
     || answeringKey;
 
   return {
-    decomposition: criticalKey,
+    decomposition: decompositionKey || generationKey || answeringKey,
     answering: answeringKey,
-    generation: criticalKey,
-    evaluation: criticalKey,
-    ranking: criticalKey,
+    generation: generationKey,
+    evaluation: evaluationKey,
+    ranking: rankingKey,
   };
 }
 

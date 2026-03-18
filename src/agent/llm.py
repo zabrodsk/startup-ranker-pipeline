@@ -24,12 +24,16 @@ from langchain_core.messages import BaseMessage
 import tiktoken
 
 from agent.llm_catalog import normalize_provider
+from agent.llm_policy import (
+    resolve_openai_phase_sampling,
+    resolve_openai_reasoning_fallback_temperature,
+)
 from agent.rate_limit import wrap_llm
 from agent.run_context import (
     get_current_collector,
-    get_current_stage_name,
     get_current_llm_request_settings,
     get_current_llm_selection,
+    get_current_stage_name,
     set_current_llm_request_settings,
 )
 
@@ -294,6 +298,7 @@ class _TelemetryCallbackHandler(BaseCallbackHandler):
             "sampling_mode",
             "requested_reasoning_effort",
             "effective_reasoning_effort",
+            "reasoning_fallback_applied",
         ):
             if key in request_settings:
                 metadata[key] = request_settings[key]
@@ -351,71 +356,64 @@ def _is_exact_gpt5_model(model: str) -> bool:
 
 
 def _is_reasoning_effort_model(model: str) -> bool:
-    return (model or "").strip() in {"gpt-5.2", "gpt-5.4"}
+    return (model or "").strip() in {"gpt-5.2", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"}
 
 
-def _resolve_reasoning_effort_for_stage(
+def _resolve_openai_request_settings(
     model: str,
-    stage_name: str | None,
-    requested_temperature: float,
-) -> str:
-    stage = (stage_name or "").strip().lower()
-    ranking_effort = "xhigh" if model == "gpt-5.4" else "high"
-    stage_map = {
-        "decomposition": "medium",
-        "answering": "low",
-        "generation_pro": "medium",
-        "generation_contra": "medium",
-        "evaluation": "high",
-        "ranking_dimension_score": ranking_effort,
-        "ranking_executive_summary": ranking_effort,
-    }
-    if stage in stage_map:
-        return stage_map[stage]
-    if requested_temperature <= 0.0:
-        return "low"
-    return "medium"
-
-
-def _resolve_openai_temperature(
-    model: str,
-    requested_temperature: float,
+    requested_temperature: float | None,
+    requested_reasoning_effort: str | None,
 ) -> dict[str, Any]:
     if _is_reasoning_effort_model(model):
-        effort = _resolve_reasoning_effort_for_stage(
+        resolved = resolve_openai_phase_sampling(
             model,
             get_current_stage_name(),
             requested_temperature,
         )
+        resolved_temperature = requested_temperature
+        resolved_reasoning_effort = requested_reasoning_effort
+        if resolved:
+            resolved_temperature = resolved.get("temperature")
+            resolved_reasoning_effort = resolved.get("reasoning_effort")
+        sampling_mode = (
+            "temperature_plus_reasoning"
+            if resolved_temperature is not None and resolved_reasoning_effort is not None
+            else "reasoning_effort"
+        )
         return {
             "requested_temperature": requested_temperature,
-            "effective_temperature": 1.0,
-            "sampling_mode": "reasoning_effort",
-            "requested_reasoning_effort": effort,
-            "effective_reasoning_effort": effort,
-        }
-
-    if not _is_exact_gpt5_model(model):
-        return {
-            "requested_temperature": requested_temperature,
-            "effective_temperature": 1.0,
-            "sampling_mode": "default_one",
+            "effective_temperature": resolved_temperature,
+            "sampling_mode": sampling_mode,
+            "requested_reasoning_effort": resolved_reasoning_effort,
+            "effective_reasoning_effort": resolved_reasoning_effort,
+            "reasoning_fallback_applied": False,
         }
 
     sampling_mode = _normalize_gpt5_temperature_mode(os.getenv(_GPT5_TEMPERATURE_MODE_ENV))
-    effective_temperature = 1.0 if sampling_mode == "force_one" else requested_temperature
+    effective_temperature = requested_temperature
+    if _is_exact_gpt5_model(model):
+        effective_temperature = 1.0 if sampling_mode == "force_one" else requested_temperature
+    else:
+        sampling_mode = "requested"
     return {
         "requested_temperature": requested_temperature,
         "effective_temperature": effective_temperature,
         "sampling_mode": sampling_mode,
+        "requested_reasoning_effort": requested_reasoning_effort,
+        "effective_reasoning_effort": requested_reasoning_effort,
+        "reasoning_fallback_applied": False,
     }
 
 
-def create_llm(temperature: float = 0.0) -> BaseChatModel:
+def create_llm(
+    temperature: float | None = 0.0,
+    reasoning_effort: str | None = None,
+) -> BaseChatModel:
     """Create an LLM instance based on environment configuration.
 
     Args:
         temperature: Sampling temperature (0.0 = deterministic, higher = more random).
+        reasoning_effort: Optional reasoning effort for OpenAI reasoning-capable models.
 
     Returns:
         A LangChain chat model instance for the configured provider.
@@ -423,7 +421,7 @@ def create_llm(temperature: float = 0.0) -> BaseChatModel:
     Raises:
         ValueError: If the provider is unknown or required keys are missing.
     """
-    if not (0.0 <= temperature <= 2.0):
+    if temperature is not None and not (0.0 <= temperature <= 2.0):
         raise ValueError(f"Temperature must be between 0.0 and 2.0, got {temperature}")
 
     selection = get_current_llm_selection() or {}
@@ -437,19 +435,27 @@ def create_llm(temperature: float = 0.0) -> BaseChatModel:
         "requested_temperature": temperature,
         "effective_temperature": temperature,
         "sampling_mode": "requested",
-        "requested_reasoning_effort": None,
-        "effective_reasoning_effort": None,
+        "requested_reasoning_effort": reasoning_effort,
+        "effective_reasoning_effort": reasoning_effort,
+        "reasoning_fallback_applied": False,
         "provider": provider,
         "model": model,
     }
     if provider == "openai":
-        request_settings.update(_resolve_openai_temperature(model, temperature))
+        request_settings.update(
+            _resolve_openai_request_settings(model, temperature, reasoning_effort)
+        )
     set_current_llm_request_settings(request_settings)
-    effective_temperature = float(request_settings["effective_temperature"])
+    effective_temperature = request_settings["effective_temperature"]
 
     if provider == "gemini":
         return wrap_llm(_create_gemini(model, temperature, timeout_s, max_retries))
     elif provider == "openai":
+        fallback_builder = _build_openai_reasoning_fallback_builder(
+            model,
+            timeout_s,
+            max_retries,
+        )
         return wrap_llm(
             _create_openai(
                 model,
@@ -457,7 +463,8 @@ def create_llm(temperature: float = 0.0) -> BaseChatModel:
                 timeout_s,
                 max_retries,
                 reasoning_effort=request_settings.get("effective_reasoning_effort"),
-            )
+            ),
+            fallback_builder=fallback_builder,
         )
     elif provider == "openrouter":
         return wrap_llm(_create_openrouter(model, temperature, timeout_s, max_retries))
@@ -524,7 +531,7 @@ def _create_gemini(
 
 def _create_openai(
     model: str,
-    temperature: float,
+    temperature: float | None,
     timeout_s: float,
     max_retries: int,
     reasoning_effort: str | None = None,
@@ -535,15 +542,58 @@ def _create_openai(
     if not api_key:
         raise ValueError("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
 
-    return ChatOpenAI(
-        model=model,
-        api_key=api_key,
-        temperature=temperature,
-        reasoning_effort=reasoning_effort,
-        request_timeout=timeout_s,
-        max_retries=max_retries,
-        callbacks=[_TELEMETRY_CALLBACK],
-    )
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "api_key": api_key,
+        "request_timeout": timeout_s,
+        "max_retries": max_retries,
+        "callbacks": [_TELEMETRY_CALLBACK],
+    }
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    if reasoning_effort is not None:
+        kwargs["model_kwargs"] = {"reasoning": {"effort": reasoning_effort}}
+
+    return ChatOpenAI(**kwargs)
+
+
+def _build_openai_reasoning_fallback_builder(
+    model: str,
+    timeout_s: float,
+    max_retries: int,
+):
+    if model != "gpt-5.4-nano":
+        return None
+
+    def _builder():
+        stage_name = get_current_stage_name()
+        fallback_temperature = resolve_openai_reasoning_fallback_temperature(
+            model,
+            stage_name,
+        )
+        if fallback_temperature is None:
+            return None
+
+        current_settings = dict(get_current_llm_request_settings() or {})
+        current_settings.update(
+            {
+                "requested_temperature": fallback_temperature,
+                "effective_temperature": fallback_temperature,
+                "sampling_mode": "reasoning_fallback_temperature_only",
+                "effective_reasoning_effort": None,
+                "reasoning_fallback_applied": True,
+            }
+        )
+        set_current_llm_request_settings(current_settings)
+        return _create_openai(
+            model,
+            fallback_temperature,
+            timeout_s,
+            max_retries,
+            reasoning_effort=None,
+        )
+
+    return _builder
 
 
 def _create_openrouter(
