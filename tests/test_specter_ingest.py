@@ -1686,6 +1686,8 @@ def test_schedule_idle_restart_when_enabled(monkeypatch) -> None:
         "db",
         type("DbStub", (), {"is_configured": staticmethod(lambda: True)})(),
     )
+    monkeypatch.setattr(web_app, "_has_active_analysis_jobs", lambda: False)
+    monkeypatch.setattr(web_app, "_has_active_person_jobs", lambda: False)
     monkeypatch.setattr(web_app.threading, "Timer", FakeTimer)
     web_app._restart_timer = None
 
@@ -1914,6 +1916,10 @@ def test_list_jobs_for_ui_prefers_persisted_terminal_state_over_live_running(mon
             "input_mode": "specter",
             "use_web_search": True,
             "run_name": None,
+            "started_by_user_id": None,
+            "started_by_email": None,
+            "started_by_display_name": None,
+            "started_by_label": None,
             "results": None,
             "has_results": True,
             "can_open_results": True,
@@ -1956,6 +1962,10 @@ def test_list_jobs_for_ui_marks_persisted_running_without_live_job_as_interrupte
         "input_mode": "specter",
         "use_web_search": True,
         "run_name": None,
+        "started_by_user_id": None,
+        "started_by_email": None,
+        "started_by_display_name": None,
+        "started_by_label": None,
         "results": None,
         "has_results": False,
         "can_open_results": False,
@@ -1997,6 +2007,10 @@ def test_list_jobs_for_ui_keeps_partial_worker_backed_results_non_terminal(monke
         "input_mode": "specter",
         "use_web_search": True,
         "run_name": None,
+        "started_by_user_id": None,
+        "started_by_email": None,
+        "started_by_display_name": None,
+        "started_by_label": None,
         "results": None,
         "has_results": True,
         "can_open_results": False,

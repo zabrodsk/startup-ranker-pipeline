@@ -23,7 +23,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 import tiktoken
 
-from agent.llm_catalog import normalize_provider
+from agent.llm_catalog import normalize_creativity, normalize_provider, supports_selection_creativity_control
 from agent.llm_policy import (
     resolve_openai_phase_sampling,
     resolve_openai_reasoning_fallback_temperature,
@@ -427,29 +427,34 @@ def create_llm(
     selection = get_current_llm_selection() or {}
     provider = normalize_provider(selection.get("provider") or os.getenv("LLM_PROVIDER", _DEFAULT_PROVIDER))
     model = selection.get("model") or os.getenv("MODEL_NAME", _DEFAULT_MODEL)
+    selection_creativity = None
+    if supports_selection_creativity_control(provider, model):
+        selection_creativity = normalize_creativity(selection.get("creativity"))
+    requested_temperature = selection_creativity if selection_creativity is not None else temperature
     runtime = get_llm_runtime_settings()
     timeout_s = runtime["request_timeout_seconds"]
     max_retries = runtime["max_retries"]
 
     request_settings = {
-        "requested_temperature": temperature,
-        "effective_temperature": temperature,
-        "sampling_mode": "requested",
+        "requested_temperature": requested_temperature,
+        "effective_temperature": requested_temperature,
+        "sampling_mode": "selection_creativity" if selection_creativity is not None else "requested",
         "requested_reasoning_effort": reasoning_effort,
         "effective_reasoning_effort": reasoning_effort,
         "reasoning_fallback_applied": False,
         "provider": provider,
         "model": model,
+        "selection_creativity": selection_creativity,
     }
     if provider == "openai":
         request_settings.update(
-            _resolve_openai_request_settings(model, temperature, reasoning_effort)
+            _resolve_openai_request_settings(model, requested_temperature, reasoning_effort)
         )
     set_current_llm_request_settings(request_settings)
     effective_temperature = request_settings["effective_temperature"]
 
     if provider == "gemini":
-        return wrap_llm(_create_gemini(model, temperature, timeout_s, max_retries))
+        return wrap_llm(_create_gemini(model, requested_temperature, timeout_s, max_retries))
     elif provider == "openai":
         fallback_builder = _build_openai_reasoning_fallback_builder(
             model,
@@ -467,9 +472,9 @@ def create_llm(
             fallback_builder=fallback_builder,
         )
     elif provider == "openrouter":
-        return wrap_llm(_create_openrouter(model, temperature, timeout_s, max_retries))
+        return wrap_llm(_create_openrouter(model, requested_temperature, timeout_s, max_retries))
     elif provider == "anthropic":
-        return wrap_llm(_create_anthropic(model, temperature, timeout_s, max_retries))
+        return wrap_llm(_create_anthropic(model, requested_temperature, timeout_s, max_retries))
     else:
         raise ValueError(
             f"Unknown LLM_PROVIDER '{provider}'. "

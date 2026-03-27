@@ -31,6 +31,7 @@ Provide:
 - raw_score: 0-100
 - confidence: 0-1 (based on evidence quantity, recency, source quality, cross-source consistency)
 - evidence_count: number of Q&A pairs that contributed
+- top_qa_indices: 1-3 global Q&A indices from the labels above that most influenced the score, ordered by impact
 - evidence_snippets: 2-3 short quotes that support the score (max 100 chars each)
 - critical_gaps: list of high-impact facts that are missing (e.g. "no stage info", "geography unclear")
 """
@@ -59,6 +60,7 @@ Provide:
 - raw_score: 0-100
 - confidence: 0-1
 - evidence_count: number of Q&A pairs that contributed
+- top_qa_indices: 1-3 global Q&A indices from the labels above that most influenced the score, ordered by impact
 - evidence_snippets: 2-3 short quotes that support the score (max 100 chars each)
 - critical_gaps: list of high-impact facts that are missing
 """
@@ -66,15 +68,19 @@ Provide:
 RANKING_UPSIDE_SYSTEM = """\
 You are a VC investment analyst scoring companies on problem size and upside potential.
 
-Score the company 0-100 based on these sub-factors (equal weight unless one is clearly dominant or absent):
+Score the company 0-100 based on the best credible upside case, assuming strong execution and favorable market adoption.
+
+Use these sub-factors (equal weight unless one is clearly dominant or absent):
 - Problem severity and urgency: How acute is the problem? Is it urgent?
 - Customer willingness-to-pay evidence: Do we see WTP signals (pricing, traction)?
 - Addressable market magnitude: Is TAM/SAM realistic and substantial?
 - Expansion potential: Adjacent markets, product surface, upsell?
-- Niche penalty: If the opportunity is narrow or constrained, reduce the score.
+- Breakout potential: If the company executes exceptionally well, how large could the outcome become?
 
-Consider evidence quantity, source quality, and consistency when setting confidence.
-Downweight when market claims are unsupported or answers are "Unknown".
+Do not reduce the numeric score because of execution risk, narrow hit probability, or what might go wrong.
+Instead, capture those downside concerns explicitly in critical_gaps so they surface later as red flags.
+
+Use confidence only to reflect evidence quality, source quality, and consistency.
 """
 
 RANKING_UPSIDE_USER = """\
@@ -87,8 +93,9 @@ Provide:
 - raw_score: 0-100
 - confidence: 0-1
 - evidence_count: number of Q&A pairs that contributed
+- top_qa_indices: 1-3 global Q&A indices from the labels above that most influenced the score, ordered by impact
 - evidence_snippets: 2-3 short quotes that support the score (max 100 chars each)
-- critical_gaps: list of high-impact facts that are missing (e.g. "no TAM data", "WTP unclear")
+- critical_gaps: list of downside risks, fragility points, or high-impact missing facts that could prevent the upside case from happening (e.g. "no TAM data", "WTP unclear", "distribution risk")
 """
 
 EXECUTIVE_SUMMARY_SYSTEM = """\

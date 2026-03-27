@@ -422,6 +422,35 @@
       line-height: 1.6;
       color: var(--text-dim);
     }
+    .password-form-stage {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .password-form-stage[hidden] {
+      display: none !important;
+    }
+    .password-secondary-action {
+      margin-top: 0;
+    }
+    .login-status {
+      min-height: 20px;
+      font-size: 13px;
+      margin-top: 12px;
+      color: var(--text-dim);
+    }
+    .login-status.is-error {
+      color: var(--red);
+    }
+    .login-status.is-success {
+      color: var(--green);
+    }
+    .login-stage-note {
+      font-size: 13px;
+      color: var(--text-dim);
+      line-height: 1.5;
+      margin-top: 10px;
+    }
 
     /* ── Upload Screen ── */
     .main-content {
@@ -795,6 +824,10 @@
       display: flex;
       flex-direction: column;
       gap: 8px;
+      padding: 14px;
+      border-radius: var(--radius-lg);
+      border: 1px solid rgba(255,255,255,0.05);
+      background: rgba(255,255,255,0.02);
     }
     .premium-phase-label {
       font-size: 12px;
@@ -814,6 +847,64 @@
       font: 14px var(--font-body);
       outline: none;
       min-height: 44px;
+    }
+    .phase-creativity-block {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .phase-creativity-header,
+    .phase-creativity-control {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .phase-creativity-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-mid);
+    }
+    .phase-creativity-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 4px 10px;
+      border-radius: var(--radius-full);
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03);
+      color: var(--text-light);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .phase-creativity-badge.is-auto {
+      color: var(--green);
+      border-color: var(--green-border-strong);
+      background: var(--green-surface-subtle);
+    }
+    .phase-creativity-slider {
+      flex: 1 1 auto;
+      accent-color: var(--green);
+      cursor: pointer;
+    }
+    .phase-creativity-value {
+      min-width: 74px;
+      text-align: right;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-light);
+    }
+    .phase-creativity-note {
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-gray);
+    }
+    .phase-creativity-note.is-unsupported {
+      color: var(--text-mid);
     }
     .advanced-llm-section {
       margin-top: 16px;
@@ -4144,29 +4235,25 @@
       </div>
     </section>
     <div class="password-card">
-      <div class="logo">
-        <div class="logo-icon">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <rect x="3" y="12" width="4" height="8" rx="1.2"></rect>
-            <rect x="10" y="7" width="4" height="13" rx="1.2"></rect>
-            <rect x="17" y="3" width="4" height="17" rx="1.2"></rect>
-          </svg>
-        </div>
-        <div class="logo-lockup">
-          <div class="logo-name">Rockaway</div>
-          <div class="logo-subtitle">Deal Intelligence</div>
-        </div>
-      </div>
       <div class="password-meta">
         <span class="password-kicker">Secure access</span>
         <h2>Enter workspace</h2>
         <p>Protected internal interface for reviewing pipelines, company runs, and portfolio screening output.</p>
       </div>
       <form id="login-form">
-        <label class="password-field-label" for="password-input">Password</label>
-        <input type="password" class="password-input" id="password-input" placeholder="Enter password" maxlength="20" autofocus>
-        <div class="password-error" id="password-error"></div>
-        <button type="submit" class="btn-green">Unlock</button>
+        <div class="password-form-stage" id="login-email-stage">
+          <label class="password-field-label" for="login-email-input">Email</label>
+          <input type="email" class="password-input" id="login-email-input" placeholder="name@rockaway.vc" maxlength="200" autocomplete="email" autofocus>
+          <button type="button" class="btn-green password-secondary-action" id="login-request-code">Request verification link</button>
+        </div>
+        <div class="login-status" id="login-status"></div>
+        <div class="password-form-stage" id="login-unlock-stage" hidden>
+          <div class="login-stage-note" id="login-stage-note">Click the verification link in your email, then enter your workspace password.</div>
+          <label class="password-field-label" for="password-input">Password</label>
+          <input type="password" class="password-input" id="password-input" placeholder="Enter password" maxlength="40" autocomplete="current-password">
+          <div class="password-error" id="password-error"></div>
+          <button type="submit" class="btn-green" id="login-unlock-button">Unlock</button>
+        </div>
       </form>
       <div class="password-footnote">This session stays local to your browser and is validated against the server before any analysis routes are opened.</div>
     </div>
@@ -4630,10 +4717,30 @@ const USER_PHASE_LABELS = {
   evaluation: 'Evaluation',
   ranking: 'Ranking',
 };
-let selectedPhaseModelKeys = {};
+const PHASE_AUTO_CREATIVITY = {
+  decomposition: 0.5,
+  answering: 0.0,
+  generation: 0.5,
+  evaluation: 0.0,
+  ranking: 0.3,
+};
+const CREATIVITY_MIN = 0;
+const CREATIVITY_MAX = 2;
+const CREATIVITY_STEP = 0.1;
+let selectedPhaseModelSettings = {};
 let analysisConfigLoadState = 'idle';
 let analysisFocusJobId = null;
 let analysisFocusClearTimer = null;
+let supabaseClient = null;
+let supabaseClientPromise = null;
+let supabaseIdentity = null;
+let supabaseAuthState = 'idle';
+let supabaseMagicLinkEmail = '';
+let supabaseAuthListenerBound = false;
+let supabaseAuthError = '';
+let publicAuthConfig = null;
+let loginVerificationStage = 'email';
+let supabasePasswordReentryRequired = false;
 
 function migrateClientState() {
   try {
@@ -5046,6 +5153,51 @@ function getModelByKey(key) {
   return (analysisConfig?.available_models || []).find((item) => `${item.provider}:${item.model}` === key) || null;
 }
 
+function normalizeCreativityValue(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  const bounded = Math.min(CREATIVITY_MAX, Math.max(CREATIVITY_MIN, numeric));
+  return Math.round(bounded * 10) / 10;
+}
+
+function supportsPhaseCreativity(model) {
+  return !!model?.supports_creativity_control;
+}
+
+function getPhaseModelSetting(phase) {
+  const raw = selectedPhaseModelSettings[phase];
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    return {
+      key: typeof raw.key === 'string' ? raw.key : '',
+      creativity: normalizeCreativityValue(raw.creativity),
+    };
+  }
+  if (typeof raw === 'string') {
+    return { key: raw, creativity: null };
+  }
+  return { key: '', creativity: null };
+}
+
+function setPhaseModelSetting(phase, nextSetting) {
+  selectedPhaseModelSettings[phase] = {
+    key: String(nextSetting?.key || ''),
+    creativity: normalizeCreativityValue(nextSetting?.creativity),
+  };
+}
+
+function getPhaseSliderValue(phase, model) {
+  const setting = getPhaseModelSetting(phase);
+  if (setting.creativity !== null) return setting.creativity;
+  return normalizeCreativityValue(model?.default_creativity) ?? PHASE_AUTO_CREATIVITY[phase] ?? 0.5;
+}
+
+function formatCreativityValue(value) {
+  const numeric = normalizeCreativityValue(value);
+  if (numeric === null) return 'Auto';
+  return numeric.toFixed(1);
+}
+
 function getPipelineSelectableModels() {
   return (analysisConfig?.available_models || []).filter((item) => item.selectable && item.provider !== 'openrouter');
 }
@@ -5056,7 +5208,10 @@ function getPhaseModelDefaults() {
     return Object.fromEntries(
       USER_PHASES
         .filter((phase) => serverDefaults[phase]?.provider && serverDefaults[phase]?.model)
-        .map((phase) => [phase, `${serverDefaults[phase].provider}:${serverDefaults[phase].model}`])
+        .map((phase) => [phase, {
+          key: `${serverDefaults[phase].provider}:${serverDefaults[phase].model}`,
+          creativity: normalizeCreativityValue(serverDefaults[phase].creativity),
+        }])
     );
   }
 
@@ -5097,11 +5252,11 @@ function getPhaseModelDefaults() {
     || answeringKey;
 
   return {
-    decomposition: decompositionKey || generationKey || answeringKey,
-    answering: answeringKey,
-    generation: generationKey,
-    evaluation: evaluationKey,
-    ranking: rankingKey,
+    decomposition: { key: decompositionKey || generationKey || answeringKey, creativity: null },
+    answering: { key: answeringKey, creativity: null },
+    generation: { key: generationKey, creativity: null },
+    evaluation: { key: evaluationKey, creativity: null },
+    ranking: { key: rankingKey, creativity: null },
   };
 }
 
@@ -5111,16 +5266,17 @@ function ensurePhaseModelSelections() {
   const firstKey = available[0] ? `${available[0].provider}:${available[0].model}` : null;
 
   USER_PHASES.forEach((phase) => {
-    const current = selectedPhaseModelKeys[phase];
-    if (current && available.some((item) => `${item.provider}:${item.model}` === current)) return;
-    selectedPhaseModelKeys[phase] = defaults[phase] || firstKey || '';
+    const current = getPhaseModelSetting(phase);
+    if (current.key && available.some((item) => `${item.provider}:${item.model}` === current.key)) return;
+    const defaultSetting = defaults[phase];
+    setPhaseModelSetting(phase, defaultSetting || { key: firstKey || '', creativity: null });
   });
 }
 
 function getPhaseSelectionSummaryLabel() {
   ensurePhaseModelSelections();
   const parts = USER_PHASES.map((phase) => {
-    const model = getModelByKey(selectedPhaseModelKeys[phase]);
+    const model = getModelByKey(getPhaseModelSetting(phase).key);
     return `${USER_PHASE_LABELS[phase]} ${model?.label || 'Unknown'}`;
   });
   return `Per-phase · ${parts.join(' · ')}`;
@@ -5132,11 +5288,13 @@ function getAnalysisSelectionPayload() {
     ensurePhaseModelSelections();
     const phaseModels = {};
     USER_PHASES.forEach((phase) => {
-      const model = getModelByKey(selectedPhaseModelKeys[phase]);
+      const setting = getPhaseModelSetting(phase);
+      const model = getModelByKey(setting.key);
       if (!model) return;
       phaseModels[phase] = {
         provider: model.provider,
         model: model.model,
+        ...(supportsPhaseCreativity(model) && setting.creativity !== null ? { creativity: setting.creativity } : {}),
       };
     });
     return {
@@ -5186,7 +5344,44 @@ function renderPhaseModelSelector() {
   config.innerHTML = `
     <div class="premium-phase-grid">
       ${USER_PHASES.map((phase) => {
-        const selected = selectedPhaseModelKeys[phase] || '';
+        const setting = getPhaseModelSetting(phase);
+        const selected = setting.key || '';
+        const selectedModel = getModelByKey(selected);
+        const sliderValue = getPhaseSliderValue(phase, selectedModel);
+        const isAuto = setting.creativity === null;
+        const creativityHtml = supportsPhaseCreativity(selectedModel)
+          ? `
+            <div class="phase-creativity-block">
+              <div class="phase-creativity-header">
+                <span class="phase-creativity-title">Creativity</span>
+                <button type="button" class="phase-creativity-badge ${isAuto ? 'is-auto' : ''}" data-phase-creativity-reset="${escapeHtml(phase)}">
+                  ${isAuto ? 'Auto' : 'Reset'}
+                </button>
+              </div>
+              <div class="phase-creativity-control">
+                <input
+                  class="phase-creativity-slider"
+                  type="range"
+                  min="${CREATIVITY_MIN}"
+                  max="${CREATIVITY_MAX}"
+                  step="${CREATIVITY_STEP}"
+                  value="${sliderValue}"
+                  data-phase-creativity="${escapeHtml(phase)}"
+                >
+                <span class="phase-creativity-value" data-phase-creativity-value="${escapeHtml(phase)}">
+                  ${isAuto ? `Auto · ${formatCreativityValue(sliderValue)}` : formatCreativityValue(sliderValue)}
+                </span>
+              </div>
+              <div class="phase-creativity-note">
+                ${isAuto ? 'Uses the built-in stage default until you move the slider.' : 'Overrides the default stage sampling for this phase.'}
+              </div>
+            </div>
+          `
+          : `
+            <div class="phase-creativity-note is-unsupported">
+              This model uses fixed sampling for this stage.
+            </div>
+          `;
         return `
           <label class="premium-phase-field">
             <span class="premium-phase-label">${escapeHtml(USER_PHASE_LABELS[phase])}</span>
@@ -5196,6 +5391,7 @@ function renderPhaseModelSelector() {
                 return `<option value="${escapeHtml(key)}" ${selected === key ? 'selected' : ''}>${escapeHtml(item.label)}</option>`;
               }).join('')}
             </select>
+            ${creativityHtml}
           </label>
         `;
       }).join('')}
@@ -5204,14 +5400,43 @@ function renderPhaseModelSelector() {
 
   config.querySelectorAll('[data-phase-model]').forEach((select) => {
     select.addEventListener('change', (event) => {
-      selectedPhaseModelKeys[event.target.getAttribute('data-phase-model')] = event.target.value || '';
+      const phase = event.target.getAttribute('data-phase-model');
+      const current = getPhaseModelSetting(phase);
+      setPhaseModelSetting(phase, { key: event.target.value || '', creativity: current.creativity });
       selectedLlmKey = null;
       renderPhaseModelSelector();
       renderLlmSelector();
     });
   });
 
-  const answeringModel = getModelByKey(selectedPhaseModelKeys.answering);
+  config.querySelectorAll('[data-phase-creativity]').forEach((slider) => {
+    slider.addEventListener('input', (event) => {
+      const phase = event.target.getAttribute('data-phase-creativity');
+      const current = getPhaseModelSetting(phase);
+      const nextValue = normalizeCreativityValue(event.target.value);
+      setPhaseModelSetting(phase, { key: current.key, creativity: nextValue });
+      const valueEl = config.querySelector(`[data-phase-creativity-value="${phase}"]`);
+      if (valueEl) valueEl.textContent = formatCreativityValue(nextValue);
+    });
+    slider.addEventListener('change', () => {
+      selectedLlmKey = null;
+      renderPhaseModelSelector();
+      renderLlmSelector();
+    });
+  });
+
+  config.querySelectorAll('[data-phase-creativity-reset]').forEach((button) => {
+    button.addEventListener('click', (event) => {
+      const phase = event.currentTarget.getAttribute('data-phase-creativity-reset');
+      const current = getPhaseModelSetting(phase);
+      setPhaseModelSetting(phase, { key: current.key, creativity: null });
+      selectedLlmKey = null;
+      renderPhaseModelSelector();
+      renderLlmSelector();
+    });
+  });
+
+  const answeringModel = getModelByKey(getPhaseModelSetting('answering').key);
   const advancedSelection = getAdvancedLlmSelection();
   if (advancedSelection) {
     hint.textContent = `${advancedSelection.label || 'Advanced selection'} currently overrides the whole pipeline. Change any phase above to switch back to per-phase routing.`;
@@ -5342,14 +5567,274 @@ async function loadAnalysisConfig() {
     analysisConfigLoadState = 'ready';
     renderPhaseModelSelector();
     renderLlmSelector();
+    await initializeSupabaseAuth();
+    renderLoginIdentity();
+    renderAnalysisIdentity();
+    updateAnalyzeButtonState();
     return analysisConfig;
   } catch (_) {
     analysisConfig = null;
     analysisConfigLoadState = 'error';
     renderPhaseModelSelector();
     renderLlmSelector();
+    renderLoginIdentity();
+    renderAnalysisIdentity();
+    updateAnalyzeButtonState();
     return null;
   }
+}
+
+function clearSupabaseAuthCallbackParams() {
+  const url = new URL(window.location.href);
+  let changed = false;
+  ['code', 'type', 'access_token', 'refresh_token', 'token_type', 'expires_in', 'expires_at'].forEach((key) => {
+    if (url.searchParams.has(key)) {
+      url.searchParams.delete(key);
+      changed = true;
+    }
+  });
+  if (url.hash) {
+    url.hash = '';
+    changed = true;
+  }
+  if (changed) {
+    window.history.replaceState({}, document.title, `${url.pathname}${url.search}`);
+  }
+}
+
+function hasSupabaseAuthCallbackParams() {
+  const url = new URL(window.location.href);
+  if (url.hash) return true;
+  return ['code', 'type', 'access_token', 'refresh_token', 'token_type', 'expires_in', 'expires_at']
+    .some((key) => url.searchParams.has(key));
+}
+
+function clearLocalWorkspaceSession() {
+  sessionId = null;
+  try {
+    localStorage.removeItem('session_id');
+  } catch (_) {
+    // Ignore local storage failures.
+  }
+  document.cookie = 'session_id=; Path=/; Max-Age=0; SameSite=Lax';
+}
+
+function getSupabaseAuthConfig() {
+  return analysisConfig?.supabase_auth || publicAuthConfig || null;
+}
+
+function isSupabaseAuthRequired() {
+  return getSupabaseAuthConfig()?.required === true;
+}
+
+function getSupabaseAccessToken() {
+  return supabaseIdentity?.access_token || null;
+}
+
+async function ensureSupabaseClient() {
+  const config = getSupabaseAuthConfig();
+  if (!config?.configured) return null;
+  if (supabaseClient) return supabaseClient;
+  if (!supabaseClientPromise) {
+    supabaseClientPromise = import('https://esm.sh/@supabase/supabase-js@2')
+      .then((mod) => {
+        supabaseClient = mod.createClient(config.url, config.anon_key, {
+          auth: {
+            persistSession: true,
+            autoRefreshToken: true,
+            detectSessionInUrl: true,
+          },
+        });
+        return supabaseClient;
+      })
+      .catch((err) => {
+        supabaseClientPromise = null;
+        throw err;
+      });
+  }
+  return supabaseClientPromise;
+}
+
+async function loadPublicAuthConfig() {
+  try {
+    const data = await api('/api/public-auth-config', { timeoutMs: 5000, retries: 0 });
+    publicAuthConfig = data?.supabase_auth || null;
+  } catch (_) {
+    publicAuthConfig = null;
+  }
+  return publicAuthConfig;
+}
+
+function setSupabaseIdentityFromSession(session) {
+  const user = session?.user || null;
+  const metadata = user?.user_metadata || {};
+  const displayName = String(
+    metadata?.full_name || metadata?.name || metadata?.display_name || metadata?.user_name || ''
+  ).trim();
+  const email = String(user?.email || '').trim();
+  supabaseIdentity = session && user ? {
+    user_id: user.id || null,
+    email: email || null,
+    display_name: displayName || null,
+    label: displayName || email || null,
+    access_token: session.access_token || null,
+  } : null;
+}
+
+async function initializeSupabaseAuth() {
+  const config = getSupabaseAuthConfig();
+  const authCallbackPresent = hasSupabaseAuthCallbackParams();
+  if (authCallbackPresent) {
+    supabasePasswordReentryRequired = true;
+    clearLocalWorkspaceSession();
+  }
+  if (!config?.configured) {
+    supabaseIdentity = null;
+    supabaseAuthState = 'idle';
+    supabaseAuthError = '';
+    renderLoginIdentity();
+    return null;
+  }
+  const client = await ensureSupabaseClient();
+  if (!client) return null;
+  if (!supabaseAuthListenerBound) {
+    client.auth.onAuthStateChange((_event, session) => {
+      setSupabaseIdentityFromSession(session);
+      if (session?.access_token) {
+        supabaseAuthState = 'signed_in';
+        supabaseAuthError = '';
+        loginVerificationStage = 'unlock';
+        if (supabasePasswordReentryRequired) clearLocalWorkspaceSession();
+        clearSupabaseAuthCallbackParams();
+      } else if (supabaseAuthState !== 'pending') {
+        supabaseAuthState = 'signed_out';
+      }
+      renderLoginIdentity();
+      renderAnalysisIdentity();
+      updateAnalyzeButtonState();
+    });
+    supabaseAuthListenerBound = true;
+  }
+  try {
+    const { data } = await client.auth.getSession();
+    setSupabaseIdentityFromSession(data?.session || null);
+    supabaseAuthState = supabaseIdentity ? 'signed_in' : (supabaseMagicLinkEmail ? 'pending' : 'signed_out');
+    if (supabaseIdentity || supabaseMagicLinkEmail) loginVerificationStage = 'unlock';
+    if (supabaseIdentity?.access_token && authCallbackPresent) {
+      supabasePasswordReentryRequired = true;
+      clearLocalWorkspaceSession();
+    }
+    if (supabaseIdentity) supabaseAuthError = '';
+    if (supabaseIdentity?.access_token) clearSupabaseAuthCallbackParams();
+  } catch (_) {
+    supabaseAuthState = 'signed_out';
+    supabaseIdentity = null;
+  }
+  renderLoginIdentity();
+  return supabaseIdentity;
+}
+
+function renderLoginIdentity() {
+  const emailStage = $('#login-email-stage');
+  const unlockStage = $('#login-unlock-stage');
+  const emailInput = $('#login-email-input');
+  const requestBtn = $('#login-request-code');
+  const unlockBtn = $('#login-unlock-button');
+  const status = $('#login-status');
+  const note = $('#login-stage-note');
+  if (!emailStage || !unlockStage || !emailInput || !requestBtn || !unlockBtn || !status || !note) return;
+
+  const config = getSupabaseAuthConfig();
+  const authReady = !!getSupabaseAccessToken();
+  const showUnlockStage = authReady;
+
+  emailStage.hidden = authReady;
+  unlockStage.hidden = !showUnlockStage;
+  requestBtn.disabled = supabaseAuthState === 'sending';
+  unlockBtn.disabled = false;
+  emailInput.disabled = authReady;
+
+  if (authReady) {
+    const label = supabaseIdentity?.label || supabaseIdentity?.email || 'Verified user';
+    status.textContent = `Email verified as ${label}. Enter your workspace password to continue.`;
+    status.className = 'login-status is-success';
+    note.textContent = 'Verification complete. Your identity will be attached to any analysis you start.';
+  } else if (!config?.configured) {
+    status.textContent = 'Email verification is not configured yet in this local environment.';
+    status.className = 'login-status is-error';
+    note.textContent = 'Click the verification link in your email, then enter your workspace password.';
+  } else if (supabaseAuthState === 'sending') {
+    status.textContent = 'Requesting verification link…';
+    status.className = 'login-status';
+    note.textContent = 'Click the verification link in your email, then enter your workspace password.';
+  } else if (supabaseAuthState === 'pending') {
+    status.textContent = supabaseMagicLinkEmail
+      ? `Verification link sent to ${supabaseMagicLinkEmail}.`
+      : 'Check your inbox for the verification link.';
+    status.className = 'login-status is-success';
+    note.textContent = 'Click the verification link in your email, then enter your workspace password.';
+  } else if (supabaseAuthState === 'error' && supabaseAuthError) {
+    status.textContent = supabaseAuthError;
+    status.className = 'login-status is-error';
+    note.textContent = 'Click the verification link in your email, then enter your workspace password.';
+  } else {
+    status.textContent = '';
+    status.className = 'login-status';
+    note.textContent = 'Click the verification link in your email, then enter your workspace password.';
+  }
+}
+
+function renderAnalysisIdentity() {
+  const section = $('#analysis-identity-section');
+  const status = $('#analysis-identity-status');
+  const signedOut = $('#analysis-identity-signed-out');
+  const signedIn = $('#analysis-identity-signed-in');
+  const userEl = $('#analysis-identity-user');
+  const pendingEl = $('#analysis-identity-pending');
+  const sendBtn = $('#analysis-identity-send');
+  const emailInput = $('#analysis-identity-email');
+  if (!section || !status || !signedOut || !signedIn || !userEl || !pendingEl || !sendBtn || !emailInput) return;
+
+  const config = getSupabaseAuthConfig();
+  if (!config?.configured) {
+    section.style.display = 'none';
+    return;
+  }
+
+  section.style.display = 'block';
+  const label = supabaseIdentity?.label || 'Unknown';
+  const email = supabaseIdentity?.email || '';
+  const authReady = !!getSupabaseAccessToken();
+  signedOut.style.display = authReady ? 'none' : 'block';
+  signedIn.style.display = authReady ? 'block' : 'none';
+  pendingEl.style.display = supabaseAuthState === 'pending' && supabaseMagicLinkEmail ? 'block' : 'none';
+  pendingEl.textContent = supabaseMagicLinkEmail ? `Magic link sent to ${supabaseMagicLinkEmail}.` : '';
+  sendBtn.disabled = supabaseAuthState === 'sending';
+
+  if (authReady) {
+    status.textContent = config.required
+      ? 'Signed in. New runs will be stamped with this identity.'
+      : 'Signed in. This identity will be attached to any new run you start.';
+    userEl.textContent = email && label !== email ? `${label} · ${email}` : label;
+  } else if (supabaseAuthState === 'error' && supabaseAuthError) {
+    status.textContent = supabaseAuthError;
+  } else if (supabaseAuthState === 'sending') {
+    status.textContent = 'Sending magic link…';
+  } else if (supabaseAuthState === 'pending') {
+    status.textContent = 'Check your inbox to finish signing in.';
+  } else {
+    status.textContent = config.required
+      ? 'Sign in with Supabase before starting a new analysis.'
+      : 'Optional: sign in with Supabase so new runs show who started them.';
+  }
+}
+
+function updateAnalyzeButtonState() {
+  const button = $('#analyze-btn');
+  if (!button) return;
+  const identityReady = !isSupabaseAuthRequired() || !!getSupabaseAccessToken();
+  button.disabled = uploadedFiles.length === 0 || !identityReady;
+  button.title = identityReady ? '' : 'Sign in with Supabase before starting an analysis.';
 }
 
 async function backfillRecentRunsWithLlm() {
@@ -5536,6 +6021,10 @@ function buildCompaniesFromJobs(runs) {
           mode: sourceMode,
           input_order: null,
           created_at: createdAt,
+          started_by_user_id: run.started_by_user_id || null,
+          started_by_email: run.started_by_email || null,
+          started_by_display_name: run.started_by_display_name || null,
+          started_by_label: run.started_by_label || null,
           results,
         },
       });
@@ -5556,6 +6045,10 @@ function buildCompaniesFromJobs(runs) {
             mode: sourceMode,
             input_order: summaryRow.specter_input_order ?? null,
             created_at: createdAt,
+            started_by_user_id: run.started_by_user_id || null,
+            started_by_email: run.started_by_email || null,
+            started_by_display_name: run.started_by_display_name || null,
+            started_by_label: run.started_by_label || null,
             results: {
               mode: 'single',
               source_mode: payloadMode || 'batch',
@@ -5662,6 +6155,7 @@ function renderSavedJobCards(
     const metaBits = [
       createdLine ? `Saved ${createdLine}` : '',
       modeLabel,
+      run.started_by_label ? `Started by ${run.started_by_label}` : 'Legacy run',
       run.useWebSearch === true ? 'Web search on' : '',
       run.jobId ? `Job ${run.jobId}` : '',
     ].filter(Boolean);
@@ -5936,7 +6430,7 @@ function renderAnalysisHistoryScreen() {
 }
 
 function getSavedCompanySortLabel(mode) {
-  if (mode === 'alphabetical') return 'Alphabetical';
+  if (mode === 'latest') return 'Latest';
   if (mode === 'strategy_fit') return 'Strategy Fit';
   if (mode === 'team') return 'Team';
   if (mode === 'upside') return 'Potential';
@@ -5977,8 +6471,12 @@ function filterSavedCompanies(companies) {
 
 function sortSavedCompanies(companies) {
   const list = [...companies];
-  if (savedCompanySortMode === 'alphabetical') {
-    list.sort((a, b) => String(a.company_name || '').localeCompare(String(b.company_name || '')));
+  if (savedCompanySortMode === 'latest') {
+    list.sort((a, b) => {
+      const aTs = new Date(a.latest_run_at || 0).getTime();
+      const bTs = new Date(b.latest_run_at || 0).getTime();
+      return bTs - aTs;
+    });
     return list;
   }
   if (savedCompanySortMode === 'strategy_fit' || savedCompanySortMode === 'team' || savedCompanySortMode === 'upside') {
@@ -6638,6 +7136,7 @@ function renderSavedCompaniesWindow() {
           const runBits = [
             formatRunTimestamp(run.created_at),
             run.mode ? getRunModeLabel({ input_mode: run.mode }) : '',
+            run.started_by_label ? `Started by ${run.started_by_label}` : 'Legacy run',
             run.job_id ? `Job ${run.job_id}` : '',
             getLlmLabel(run?.results, run?.llm),
           ].filter(Boolean);
@@ -6701,7 +7200,7 @@ function renderSavedCompaniesWindow() {
               <span class="companies-sidebar-sort-icon">⇅</span>
               <select id="companies-sort-select" class="companies-sidebar-sort-select">
                 <option value="top_scored">TOP SCORED</option>
-                <option value="alphabetical">ALPHABETICAL</option>
+                <option value="latest">LATEST</option>
                 <option value="strategy_fit">STRATEGY FIT</option>
                 <option value="team">TEAM</option>
                 <option value="upside">POTENTIAL</option>
@@ -6913,6 +7412,10 @@ async function fetchSavedJobs({ silent = true } = {}) {
       createdAt: job.created_at || null,
       input_mode: job.input_mode || null,
       runName: job.run_name || null,
+      started_by_user_id: job.started_by_user_id || null,
+      started_by_email: job.started_by_email || null,
+      started_by_display_name: job.started_by_display_name || null,
+      started_by_label: job.started_by_label || null,
       useWebSearch: job.use_web_search === true,
       results: job.results || null,
       hasResults: job.has_results === true || !!job.results,
@@ -6965,6 +7468,10 @@ async function fetchSavedCompanies({ silent = true } = {}) {
         progress: job.progress || '',
         createdAt: job.created_at || null,
         input_mode: job.input_mode || null,
+        started_by_user_id: job.started_by_user_id || null,
+        started_by_email: job.started_by_email || null,
+        started_by_display_name: job.started_by_display_name || null,
+        started_by_label: job.started_by_label || null,
         useWebSearch: job.use_web_search === true,
         results: job.results || null,
         llm: job.llm || null,
@@ -7033,7 +7540,7 @@ function closeInfoPage() {
 }
 
 function syncRoute() {
-  if (!sessionId) {
+  if (!sessionId || supabasePasswordReentryRequired || (isSupabaseAuthRequired() && !getSupabaseAccessToken())) {
     showScreen('password-screen');
     return;
   }
@@ -7643,15 +8150,56 @@ async function controlJob(jobId, action) {
 }
 
 // ── Password ──
+$('#login-request-code').addEventListener('click', async () => {
+  const email = ($('#login-email-input')?.value || '').trim();
+  const status = $('#login-status');
+  if (!email) {
+    supabaseAuthState = 'error';
+    supabaseAuthError = 'Please enter your email address to verify your identity.';
+    renderLoginIdentity();
+    $('#login-email-input')?.focus();
+    return;
+  }
+  try {
+    supabaseAuthState = 'sending';
+    supabaseMagicLinkEmail = email;
+    supabaseAuthError = '';
+    renderLoginIdentity();
+    const client = await ensureSupabaseClient();
+    if (!client) {
+      throw new Error('Email verification is not configured yet in this local environment.');
+    }
+    const redirectTo = getSupabaseAuthConfig()?.redirect_url || window.location.href;
+    const { error } = await client.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: redirectTo },
+    });
+    if (error) throw error;
+    supabaseAuthState = 'pending';
+    renderLoginIdentity();
+    $('#login-email-input')?.focus();
+  } catch (err) {
+    supabaseAuthState = 'error';
+    supabaseAuthError = err?.message || 'Failed to request verification code.';
+    renderLoginIdentity();
+    status?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+});
+
 $('#login-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const pw = $('#password-input').value;
+  $('#password-error').textContent = '';
   try {
+    if (isSupabaseAuthRequired() && !getSupabaseAccessToken()) {
+      throw new Error('Verify your email from the link we sent before unlocking the workspace.');
+    }
     const data = await api('/api/login', {
       method: 'POST',
       body: JSON.stringify({ password: pw }),
     });
     sessionId = data.session_id;
+    supabasePasswordReentryRequired = false;
     localStorage.setItem('session_id', sessionId);
     setCookie('session_id', sessionId);
     syncRoute();
@@ -7664,9 +8212,16 @@ $('#login-form').addEventListener('submit', async (e) => {
   } catch (err) {
     const msg = err.message === 'Wrong password' ? 'Wrong password. Try again.'
       : err.message || 'Connection error. Is the server running?';
-    $('#password-error').textContent = msg;
-    $('#password-input').value = '';
-    $('#password-input').focus();
+    if (msg.toLowerCase().includes('verify') || msg.toLowerCase().includes('email')) {
+      supabaseAuthState = 'error';
+      supabaseAuthError = msg;
+      renderLoginIdentity();
+      $('#login-email-input')?.focus();
+    } else {
+      $('#password-error').textContent = msg;
+      $('#password-input').value = '';
+      $('#password-input').focus();
+    }
   }
 });
 
@@ -7682,6 +8237,23 @@ async function checkWebSearchAvailable() {
     }
   } catch {}
 }
+
+$('#analysis-identity-signout')?.addEventListener('click', async () => {
+  try {
+    const client = await ensureSupabaseClient();
+    await client?.auth.signOut();
+  } catch (_) {
+    // Ignore sign-out failures and clear local UI state regardless.
+  }
+  supabaseIdentity = null;
+  supabaseAuthState = 'signed_out';
+  supabaseMagicLinkEmail = '';
+  supabaseAuthError = '';
+  loginVerificationStage = 'email';
+  renderLoginIdentity();
+  renderAnalysisIdentity();
+  updateAnalyzeButtonState();
+});
 
 async function resumeActiveJob() {
   const savedJobId = getPersistedActiveJob();
@@ -7808,11 +8380,18 @@ async function loadConfirmedTerminalResults(jobId, fallbackResults = null) {
 
 // Check existing session on load
 (async () => {
+  await loadPublicAuthConfig();
+  try {
+    await initializeSupabaseAuth();
+  } catch (_) {
+    // Keep the login page usable even if the browser auth client fails to initialize.
+  }
+  renderLoginIdentity();
   if (sessionId) {
     setCookie('session_id', sessionId);
     try {
       const data = await api('/api/check-session');
-      if (data.authenticated) {
+      if (data.authenticated && (!isSupabaseAuthRequired() || !!getSupabaseAccessToken())) {
         checkWebSearchAvailable();
         await loadAnalysisConfig();
         renderRecentRuns();
@@ -7856,6 +8435,7 @@ function renderFiles() {
   const list = $('#files-list');
   if (uploadedFiles.length === 0) {
     section.style.display = 'none';
+    updateAnalyzeButtonState();
     return;
   }
   section.style.display = 'block';
@@ -7875,6 +8455,7 @@ function renderFiles() {
       </div>
     </div>`;
   }).join('');
+  updateAnalyzeButtonState();
 }
 
 function isSpecterMode() {
@@ -7908,6 +8489,7 @@ $('#clear-files').addEventListener('click', () => {
   uploadedFiles = [];
   renderFiles();
   $('#specter-badge').style.display = 'none';
+  updateAnalyzeButtonState();
 });
 
 const uploadZone = $('#upload-zone');
@@ -7963,6 +8545,10 @@ $('#llm-model-select')?.addEventListener('change', (event) => {
 // ── Analyze ──
 $('#analyze-btn').addEventListener('click', async () => {
   if (uploadedFiles.length === 0) return;
+  if (isSupabaseAuthRequired() && !getSupabaseAccessToken()) {
+    window.alert('Sign in with Supabase before starting an analysis.');
+    return;
+  }
 
   // Dismiss onboarding once user starts their first analysis
   localStorage.setItem(ONBOARDING_DISMISSED_KEY, '1');
@@ -7998,6 +8584,10 @@ $('#analyze-btn').addEventListener('click', async () => {
       progress: 'Queued for worker',
       input_mode: effectiveInputMode,
       runName: requestedRunName,
+      started_by_user_id: supabaseIdentity?.user_id || null,
+      started_by_email: supabaseIdentity?.email || null,
+      started_by_display_name: supabaseIdentity?.display_name || null,
+      started_by_label: supabaseIdentity?.label || null,
       llm: analysisSelection.llmLabel || null,
       title: effectiveInputMode === 'specter' ? undefined : uploadedFiles.map((f) => f.name).join(', '),
     });
@@ -8009,7 +8599,10 @@ $('#analyze-btn').addEventListener('click', async () => {
     try {
       await api(`/api/analyze/${currentJobId}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(getSupabaseAccessToken() ? { Authorization: `Bearer ${getSupabaseAccessToken()}` } : {}),
+        },
         body: JSON.stringify({
           use_web_search: useWebSearch,
           instructions: instructions || undefined,
@@ -8034,6 +8627,10 @@ $('#analyze-btn').addEventListener('click', async () => {
         progress: 'Connection unstable while starting analysis. Tracking from Analysis overview...',
         input_mode: effectiveInputMode,
         runName: requestedRunName,
+        started_by_user_id: supabaseIdentity?.user_id || null,
+        started_by_email: supabaseIdentity?.email || null,
+        started_by_display_name: supabaseIdentity?.display_name || null,
+        started_by_label: supabaseIdentity?.label || null,
         llm: analysisSelection.llmLabel || null,
       });
     }

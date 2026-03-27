@@ -70,6 +70,17 @@ def _strip_legacy_company_key_suffix(company_key: str | None) -> str:
     return re.sub(r"--legacy-\d+$", "", (company_key or "").strip().lower())
 
 
+def _extract_started_by_fields(payload: dict[str, Any] | None) -> dict[str, Any]:
+    source = payload if isinstance(payload, dict) else {}
+    started_by = {
+        "started_by_user_id": source.get("started_by_user_id"),
+        "started_by_email": source.get("started_by_email"),
+        "started_by_display_name": source.get("started_by_display_name"),
+        "started_by_label": source.get("started_by_label"),
+    }
+    return {key: value for key, value in started_by.items() if value not in (None, "")}
+
+
 def _company_history_group_key(row: dict[str, Any]) -> str:
     result_payload = _serialize(row.get("result_payload") or {})
     summary_row = ((result_payload.get("summary_rows") or [{}]) or [{}])[0]
@@ -564,6 +575,7 @@ def _persist_company_analysis_row(
             "mode": run_config.get("input_mode", "pitchdeck"),
             "run_created_at": datetime.now(timezone.utc).isoformat(),
             "result_payload": _serialize(company_payload),
+            **_extract_started_by_fields(run_config),
         },
         on_conflict="job_id_legacy,company_key",
     ).execute()
@@ -774,6 +786,7 @@ def upsert_job(
 
     rc = _merge_worker_state(run_config or {}, worker_state)
     vv = versions or {}
+    started_by = _extract_started_by_fields(rc)
     payload = {
         "job_id_legacy": job_id_legacy,
         "input_mode": rc.get("input_mode", "pitchdeck"),
@@ -785,6 +798,7 @@ def upsert_job(
         "prompt_version": vv.get("prompt_version"),
         "pipeline_version": vv.get("pipeline_version"),
         "schema_version": vv.get("schema_version"),
+        **started_by,
     }
 
     try:
@@ -822,6 +836,24 @@ def ensure_source_files_bucket() -> None:
         )
     except Exception as exc:
         _log_supabase_error("ensure_source_files_bucket", "storage", exc)
+
+
+def get_authenticated_supabase_user(jwt: str) -> dict[str, Any] | None:
+    client = _get_client()
+    if not client or not jwt:
+        return None
+    try:
+        response = client.auth.get_user(jwt)
+        user = getattr(response, "user", None)
+        if user is None:
+            return None
+        if hasattr(user, "model_dump"):
+            return user.model_dump()
+        if isinstance(user, dict):
+            return user
+    except Exception as exc:
+        _log_supabase_error("get_authenticated_supabase_user", "auth", exc)
+    return None
 
 
 def upload_source_file(
@@ -2103,7 +2135,10 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
     try:
         jobs_resp = (
             client.table("jobs")
-            .select("job_id_legacy, input_mode, use_web_search, created_at, run_config")
+            .select(
+                "job_id_legacy, input_mode, use_web_search, created_at, run_config, "
+                "started_by_user_id, started_by_email, started_by_display_name, started_by_label"
+            )
             .order("created_at", desc=True)
             .limit(limit)
             .execute()
@@ -2261,6 +2296,10 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
                     "input_mode": row.get("input_mode"),
                     "use_web_search": row.get("use_web_search"),
                     "run_name": run_config.get("run_name") if isinstance(run_config, dict) else None,
+                    "started_by_user_id": row.get("started_by_user_id") or run_config.get("started_by_user_id"),
+                    "started_by_email": row.get("started_by_email") or run_config.get("started_by_email"),
+                    "started_by_display_name": row.get("started_by_display_name") or run_config.get("started_by_display_name"),
+                    "started_by_label": row.get("started_by_label") or run_config.get("started_by_label"),
                     "run_config": run_config,
                     "results": None,
                     "has_results": has_results,
@@ -2277,7 +2316,8 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
 def _fetch_company_run_rows(client: Client, limit_runs: int) -> list[dict[str, Any]]:
     select_clause = (
         "company_key, company_name, startup_slug, job_id_legacy, decision, total_score, "
-        "composite_score, bucket, mode, input_order, run_created_at, created_at, result_payload"
+        "composite_score, bucket, mode, input_order, run_created_at, created_at, result_payload, "
+        "started_by_user_id, started_by_email, started_by_display_name, started_by_label"
     )
     limits_to_try: list[int] = []
     for candidate in (limit_runs, min(limit_runs, 250), min(limit_runs, 100), 50):
@@ -2394,12 +2434,19 @@ def _reconcile_missing_company_runs(
         missing_job_ids = [row.get("job_id_legacy") for row in missing_analyses if row.get("job_id_legacy")]
         jobs = (
             client.table("jobs")
-            .select("job_id_legacy, input_mode")
+            .select(
+                "job_id_legacy, input_mode, started_by_user_id, started_by_email, "
+                "started_by_display_name, started_by_label"
+            )
             .in_("job_id_legacy", missing_job_ids)
             .limit(len(missing_job_ids))
             .execute()
         )
-        mode_by_job = {row.get("job_id_legacy"): row.get("input_mode") for row in (jobs.data or [])}
+        job_meta_by_job_id = {
+            row.get("job_id_legacy"): row
+            for row in (jobs.data or [])
+            if row.get("job_id_legacy")
+        }
 
         for row in missing_analyses:
             job_id_legacy = row.get("job_id_legacy")
@@ -2410,7 +2457,8 @@ def _reconcile_missing_company_runs(
                 job_id_legacy,
                 payload,
                 created_at=row.get("created_at"),
-                mode=mode_by_job.get(job_id_legacy),
+                mode=(job_meta_by_job_id.get(job_id_legacy) or {}).get("input_mode"),
+                started_by=job_meta_by_job_id.get(job_id_legacy),
             ):
                 try:
                     client.table("company_runs").upsert(
@@ -2474,6 +2522,10 @@ def list_company_histories(
                 "mode": row.get("mode"),
                 "input_order": row.get("input_order"),
                 "created_at": row.get("run_created_at") or row.get("created_at"),
+                "started_by_user_id": row.get("started_by_user_id"),
+                "started_by_email": row.get("started_by_email"),
+                "started_by_display_name": row.get("started_by_display_name"),
+                "started_by_label": row.get("started_by_label"),
                 "results": _compact_company_run_payload(row.get("result_payload")),
             }
             entry = grouped.setdefault(
@@ -2809,9 +2861,11 @@ def _extract_company_runs_from_payload(
     *,
     created_at: str | None,
     mode: str | None,
+    started_by: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     serialized = _serialize(payload or {})
     payload_mode = serialized.get("mode")
+    started_by_fields = _extract_started_by_fields(started_by)
     if payload_mode == "single":
         company_name = serialized.get("company_name") or serialized.get("startup_slug") or job_id_legacy
         company_key = _normalize_company_key(company_name, None, serialized.get("startup_slug"))
@@ -2829,6 +2883,7 @@ def _extract_company_runs_from_payload(
             "mode": mode or payload_mode,
             "run_created_at": created_at,
             "result_payload": _compact_company_run_payload(serialized),
+            **started_by_fields,
         }]
 
     rows: list[dict[str, Any]] = []
@@ -2878,6 +2933,7 @@ def _extract_company_runs_from_payload(
             "mode": mode or payload_mode,
             "run_created_at": created_at,
             "result_payload": row_payload,
+            **started_by_fields,
         })
     return rows
 
@@ -2911,11 +2967,18 @@ def backfill_company_runs_from_analyses(limit_jobs: int = 500) -> int:
         )
         jobs = (
             client.table("jobs")
-            .select("job_id_legacy, input_mode")
+            .select(
+                "job_id_legacy, input_mode, started_by_user_id, started_by_email, "
+                "started_by_display_name, started_by_label"
+            )
             .limit(limit_jobs)
             .execute()
         )
-        mode_by_job = {row.get("job_id_legacy"): row.get("input_mode") for row in (jobs.data or [])}
+        job_meta_by_job_id = {
+            row.get("job_id_legacy"): row
+            for row in (jobs.data or [])
+            if row.get("job_id_legacy")
+        }
         seen_jobs: set[str] = set()
         for row in analyses.data or []:
             job_id_legacy = row.get("job_id_legacy")
@@ -2927,7 +2990,8 @@ def backfill_company_runs_from_analyses(limit_jobs: int = 500) -> int:
                 job_id_legacy,
                 payload,
                 created_at=row.get("created_at"),
-                mode=mode_by_job.get(job_id_legacy),
+                mode=(job_meta_by_job_id.get(job_id_legacy) or {}).get("input_mode"),
+                started_by=job_meta_by_job_id.get(job_id_legacy),
             ):
                 try:
                     client.table("company_runs").upsert(
@@ -2966,11 +3030,18 @@ def backfill_all_company_runs_from_analyses(limit_jobs: int = 500) -> int:
         )
         jobs = (
             client.table("jobs")
-            .select("job_id_legacy, input_mode")
+            .select(
+                "job_id_legacy, input_mode, started_by_user_id, started_by_email, "
+                "started_by_display_name, started_by_label"
+            )
             .limit(limit_jobs)
             .execute()
         )
-        mode_by_job = {row.get("job_id_legacy"): row.get("input_mode") for row in (jobs.data or [])}
+        job_meta_by_job_id = {
+            row.get("job_id_legacy"): row
+            for row in (jobs.data or [])
+            if row.get("job_id_legacy")
+        }
         seen_jobs: set[str] = set()
         for row in analyses.data or []:
             job_id_legacy = row.get("job_id_legacy")
@@ -2982,7 +3053,8 @@ def backfill_all_company_runs_from_analyses(limit_jobs: int = 500) -> int:
                 job_id_legacy,
                 payload,
                 created_at=row.get("created_at"),
-                mode=mode_by_job.get(job_id_legacy),
+                mode=(job_meta_by_job_id.get(job_id_legacy) or {}).get("input_mode"),
+                started_by=job_meta_by_job_id.get(job_id_legacy),
             ):
                 try:
                     client.table("company_runs").upsert(

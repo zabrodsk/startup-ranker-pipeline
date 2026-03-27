@@ -29,6 +29,7 @@ Rockaway Deal Intelligence helps investment teams evaluate and prioritize deal f
 - **Selectable answer model** for company Q&A
 - **Visible cost tracking** for each answer, web-search usage, and total session cost
 - **Expandable Companies workspace** with collapsible sidebar and assessment panel for more room while reviewing chat
+- **Per-phase model routing** with a creativity slider for supported models, so each analysis stage can use its own sampling behavior
 
 ---
 
@@ -126,6 +127,7 @@ Current UI defaults:
 - Landing screen is **New Analysis**
 - Default input mode is **Specter**
 - The **Advanced: choose one model for the whole pipeline** selector excludes OpenRouter options
+- Per-phase routing shows a creativity slider only for models that actually support temperature-style control
 
 ### Local run
 
@@ -300,6 +302,8 @@ Copy `.env.example` to `.env` and set:
 | `LLM_MAX_RETRIES` | optional | Max retries on transient LLM failures (default: `2`) |
 | `SUPABASE_URL` | optional | Supabase project URL for persistent storage |
 | `SUPABASE_SERVICE_ROLE_KEY` | optional | Supabase service-role key |
+| `SUPABASE_ANON_KEY` | optional | Public browser auth key for email-link verification on the login page |
+| `SUPABASE_AUTH_REDIRECT_URL` | optional | Browser auth callback URL, e.g. `http://localhost:8005/` or your deployed app URL |
 | `COMPANY_CHAT_DB_TIMEOUT_SEC` | optional | Fail-fast timeout for shared company-chat persistence calls (default: `3`) |
 | `ENABLE_SPECTER_WORKER_SERVICE` | optional | Queue Specter runs for the dedicated worker service instead of executing them in the web process |
 | `SPECTER_WORKER_POLL_SECONDS` | optional | Poll interval for the dedicated Specter worker (code default: `5`; current Railway production override: `10`) |
@@ -366,8 +370,19 @@ Available OpenRouter models in the UI: `openrouter/hunter-alpha`
 When configured, the app persists completed analyses to Supabase so results survive restarts and Excel files can be downloaded even after the temp directory is cleaned up.
 
 1. Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in `.env`
-2. Apply migrations from `supabase/migrations/` in order, including `20260316000000_company_chat_sessions.sql` for shared company chat history
-3. The app auto-creates the `analysis-exports` storage bucket on first use
+2. For the email-verification login flow, also set `SUPABASE_ANON_KEY` and `SUPABASE_AUTH_REDIRECT_URL`
+3. Apply migrations from `supabase/migrations/` in order, including:
+   - `20260316000000_company_chat_sessions.sql` for shared company chat history
+   - `20260317000000_app_settings.sql` for shared VC strategy settings
+   - `20260318000000_run_starter_attribution.sql` for `started_by_*` run attribution
+4. The app auto-creates the `analysis-exports` storage bucket on first use
+
+When browser auth is configured, the login flow becomes:
+
+1. Enter an email address and request a verification link
+2. Click the emailed verification link
+3. Return to the app and enter the workspace password
+4. New runs are saved with `started_by_user_id`, `started_by_email`, `started_by_display_name`, and `started_by_label`
 
 See [`supabase/README.md`](./supabase/README.md) for full setup details.
 

@@ -7,8 +7,10 @@ from typing import Any, Literal
 
 from agent.llm_catalog import (
     ModelCatalogEntry,
+    normalize_creativity,
     get_tier_default,
     serialize_selection,
+    supports_selection_creativity_control,
     validate_requested_selection,
 )
 
@@ -40,6 +42,7 @@ OpenAIReasoningPhase = Literal[
     "evaluation",
     "refinement",
     "ranking_dimension_score",
+    "ranking_upside_score",
     "ranking_executive_summary",
 ]
 
@@ -81,19 +84,19 @@ PHASE_SHORT_LABELS: dict[UserSelectablePhase, str] = {
 
 @dataclass(frozen=True)
 class PipelineModelPolicy:
-    decomposition: dict[str, str]
-    answering: dict[str, str]
-    generation: dict[str, str]
-    critique: dict[str, str]
-    evaluation: dict[str, str]
-    refinement: dict[str, str]
-    ranking: dict[str, str]
+    decomposition: dict[str, Any]
+    answering: dict[str, Any]
+    generation: dict[str, Any]
+    critique: dict[str, Any]
+    evaluation: dict[str, Any]
+    refinement: dict[str, Any]
+    ranking: dict[str, Any]
 
-    def as_dict(self) -> dict[str, dict[str, str]]:
+    def as_dict(self) -> dict[str, dict[str, Any]]:
         return asdict(self)
 
 
-def _serialize_entry(entry: ModelCatalogEntry) -> dict[str, str]:
+def _serialize_entry(entry: ModelCatalogEntry) -> dict[str, Any]:
     return serialize_selection(entry.provider, entry.model)
 
 
@@ -128,11 +131,11 @@ def normalize_premium_phase_models(
 
 def normalize_phase_models(
     payload: dict[str, Any] | None,
-) -> dict[UserSelectablePhase, dict[str, str]]:
+) -> dict[UserSelectablePhase, dict[str, Any]]:
     if not isinstance(payload, dict):
         return default_phase_model_selections()
 
-    normalized: dict[UserSelectablePhase, dict[str, str]] = {}
+    normalized: dict[UserSelectablePhase, dict[str, Any]] = {}
 
     for phase in _USER_SELECTABLE_PHASES:
         raw = payload.get(phase)
@@ -141,7 +144,12 @@ def normalize_phase_models(
         provider = str(raw.get("provider") or "").strip()
         model = str(raw.get("model") or "").strip()
         if provider and model:
-            normalized[phase] = {"provider": provider, "model": model}
+            selection = serialize_selection(provider, model, raw.get("creativity"))
+            normalized[phase] = {
+                "provider": selection["provider"],
+                "model": selection["model"],
+                **({"creativity": selection["creativity"]} if selection.get("creativity") is not None else {}),
+            }
     if len(normalized) == len(_USER_SELECTABLE_PHASES):
         return normalized
 
@@ -154,7 +162,7 @@ def coerce_phase_models_payload(
     payload: dict[str, Any] | None,
     *,
     require_all: bool = False,
-) -> dict[UserSelectablePhase, dict[str, str]]:
+) -> dict[UserSelectablePhase, dict[str, Any]]:
     if not isinstance(payload, dict):
         if require_all:
             raise ValueError("phase_models must be an object.")
@@ -164,7 +172,7 @@ def coerce_phase_models_payload(
     if invalid_keys:
         raise ValueError("phase_models contains unsupported phases.")
 
-    normalized: dict[UserSelectablePhase, dict[str, str]] = {}
+    normalized: dict[UserSelectablePhase, dict[str, Any]] = {}
     missing: list[str] = []
     for phase in _USER_SELECTABLE_PHASES:
         raw = payload.get(phase)
@@ -176,7 +184,12 @@ def coerce_phase_models_payload(
         model = str(raw.get("model") or "").strip()
         if not provider or not model:
             raise ValueError(f"phase_models.{phase} must include provider and model.")
-        normalized[phase] = {"provider": provider, "model": model}
+        creativity = normalize_creativity(raw.get("creativity"))
+        normalized[phase] = {
+            "provider": provider,
+            "model": model,
+            **({"creativity": creativity} if creativity is not None else {}),
+        }
 
     if require_all and missing:
         missing_list = ", ".join(missing)
@@ -249,7 +262,7 @@ def _first_available_entry(
     return None
 
 
-def default_phase_model_selections() -> dict[UserSelectablePhase, dict[str, str]]:
+def default_phase_model_selections() -> dict[UserSelectablePhase, dict[str, Any]]:
     decomposition = _first_available_entry(
         ("openai", "gpt-5.4-mini"),
         ("gemini", "gemini-3.1-pro-preview"),
@@ -308,11 +321,16 @@ def build_phase_model_policy(
     phase_models: dict[str, Any] | None = None,
 ) -> PipelineModelPolicy:
     selections = coerce_phase_models_payload(phase_models, require_all=True)
-    resolved: dict[UserSelectablePhase, dict[str, str]] = {}
+    resolved: dict[UserSelectablePhase, dict[str, Any]] = {}
     for phase in _USER_SELECTABLE_PHASES:
         selection = selections[phase]
         entry = _required_model_entry(selection["provider"], selection["model"])
-        resolved[phase] = _serialize_entry(entry)
+        resolved_selection = _serialize_entry(entry)
+        if supports_selection_creativity_control(entry.provider, entry.model):
+            creativity = normalize_creativity(selection.get("creativity"))
+            if creativity is not None:
+                resolved_selection["creativity"] = creativity
+        resolved[phase] = resolved_selection
 
     answering_selection = dict(resolved["answering"])
     return PipelineModelPolicy(
@@ -353,7 +371,7 @@ def build_pipeline_policy(
         raise ValueError("Premium tier requires a Gemini model for answering.")
 
     choices = normalize_premium_phase_models(premium_phase_models)
-    resolved: dict[str, dict[str, str]] = {}
+    resolved: dict[str, dict[str, Any]] = {}
     for phase in _CRITICAL_PHASES:
         entry = _resolve_premium_choice(choices[phase])
         if entry is None:
@@ -388,7 +406,7 @@ def resolve_effective_phase_choices(
 
 def resolve_effective_phase_models(
     policy: PipelineModelPolicy,
-) -> dict[PipelinePhase, dict[str, str]]:
+) -> dict[PipelinePhase, dict[str, Any]]:
     return policy.as_dict()
 
 
@@ -435,7 +453,7 @@ def build_phase_policy_display_label(
 def build_tier_display_label(
     quality_tier: PublicQualityTier,
     *,
-    effective_phase_models: dict[str, str] | None = None,
+    effective_phase_models: dict[str, Any] | None = None,
 ) -> str:
     if quality_tier == "cheap":
         return "Cheap tier · Gemini"
@@ -451,8 +469,8 @@ def build_tier_display_label(
 
 
 def get_alternate_premium_selection(
-    selection: dict[str, str] | None,
-) -> dict[str, str] | None:
+    selection: dict[str, Any] | None,
+) -> dict[str, Any] | None:
     provider = (selection or {}).get("provider")
     family = _label_family(selection or {})
     if provider == "anthropic" or family == "claude":
@@ -521,7 +539,7 @@ def premium_phase_options_payload() -> dict[str, dict[str, Any]]:
     }
 
 
-def phase_model_defaults_payload() -> dict[UserSelectablePhase, dict[str, str]]:
+def phase_model_defaults_payload() -> dict[UserSelectablePhase, dict[str, Any]]:
     try:
         return default_phase_model_selections()
     except ValueError:
@@ -546,6 +564,7 @@ def resolve_openai_phase_sampling(
             "evaluation": {"temperature": None, "reasoning_effort": "medium"},
             "refinement": {"temperature": 0.7, "reasoning_effort": "none"},
             "ranking_dimension_score": {"temperature": None, "reasoning_effort": "high"},
+            "ranking_upside_score": {"temperature": 0.7, "reasoning_effort": "none"},
             "ranking_executive_summary": {"temperature": None, "reasoning_effort": "high"},
         }
         return stage_map.get(
@@ -567,6 +586,7 @@ def resolve_openai_phase_sampling(
             "evaluation": {"temperature": None, "reasoning_effort": "high"},
             "refinement": {"temperature": None, "reasoning_effort": "medium"},
             "ranking_dimension_score": {"temperature": None, "reasoning_effort": ranking_effort},
+            "ranking_upside_score": {"temperature": 0.7, "reasoning_effort": "none"},
             "ranking_executive_summary": {"temperature": None, "reasoning_effort": ranking_effort},
         }
         if stage in stage_map:
@@ -596,6 +616,7 @@ def resolve_openai_reasoning_fallback_temperature(
         "refinement": 0.7,
         "evaluation": 0.0,
         "ranking_dimension_score": 0.0,
+        "ranking_upside_score": 0.7,
         "ranking_executive_summary": 0.3,
     }
     return fallback_map.get(stage)

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 PERPLEXITY_SEARCH_PRICE_PER_REQUEST_USD = 0.005
 
-_llm_selection_var: ContextVar[dict[str, str] | None] = ContextVar("llm_selection", default=None)
+_llm_selection_var: ContextVar[dict[str, Any] | None] = ContextVar("llm_selection", default=None)
 _telemetry_collector_var: ContextVar["RunTelemetryCollector | None"] = ContextVar(
     "telemetry_collector",
     default=None,
@@ -33,7 +33,7 @@ _pipeline_policy_var: ContextVar["PipelineModelPolicy | None"] = ContextVar(
 )
 
 
-def get_current_llm_selection() -> dict[str, str] | None:
+def get_current_llm_selection() -> dict[str, Any] | None:
     return _llm_selection_var.get()
 
 
@@ -58,12 +58,16 @@ def get_current_pipeline_policy() -> "PipelineModelPolicy | None":
 
 
 @contextmanager
-def use_phase_llm(selection: dict[str, str] | None) -> Iterator[None]:
+def use_phase_llm(selection: dict[str, Any] | None) -> Iterator[None]:
     if selection is None:
         yield
         return
     token = _llm_selection_var.set(
-        serialize_selection(selection.get("provider"), selection.get("model"))
+        serialize_selection(
+            selection.get("provider"),
+            selection.get("model"),
+            selection.get("creativity"),
+        )
     )
     try:
         yield
@@ -74,16 +78,22 @@ def use_phase_llm(selection: dict[str, str] | None) -> Iterator[None]:
 @contextmanager
 def use_run_context(
     *,
-    llm_selection: dict[str, str] | None = None,
+    llm_selection: dict[str, Any] | None = None,
     telemetry_collector: "RunTelemetryCollector | None" = None,
     pipeline_policy: "PipelineModelPolicy | None" = None,
 ) -> Iterator[None]:
-    llm_token: Token[dict[str, str] | None] | None = None
+    llm_token: Token[dict[str, Any] | None] | None = None
     telemetry_token: Token[RunTelemetryCollector | None] | None = None
     policy_token: Token["PipelineModelPolicy | None"] | None = None
     request_settings_token = _llm_request_settings_var.set(None)
     if llm_selection is not None:
-        llm_token = _llm_selection_var.set(serialize_selection(llm_selection.get("provider"), llm_selection.get("model")))
+        llm_token = _llm_selection_var.set(
+            serialize_selection(
+                llm_selection.get("provider"),
+                llm_selection.get("model"),
+                llm_selection.get("creativity"),
+            )
+        )
     if telemetry_collector is not None:
         telemetry_token = _telemetry_collector_var.set(telemetry_collector)
     if pipeline_policy is not None:
@@ -131,7 +141,7 @@ class RunTelemetryCollector:
 
     model_executions: list[dict[str, Any]] = field(default_factory=list)
     missing_llm_usage: bool = False
-    selected_llm: dict[str, str] | None = None
+    selected_llm: dict[str, Any] | None = None
 
     def record_llm_usage(
         self,

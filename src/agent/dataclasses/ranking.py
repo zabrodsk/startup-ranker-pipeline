@@ -17,6 +17,7 @@ class DimensionScore(BaseModel):
     raw_score: float = Field(ge=0, le=100)
     confidence: float = Field(ge=0, le=1)
     evidence_count: int = Field(ge=0)
+    top_qa_indices: list[int] = Field(default_factory=list)
     evidence_snippets: list[str] = Field(default_factory=list)
     critical_gaps: list[str] = Field(default_factory=list)
 

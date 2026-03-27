@@ -1202,6 +1202,7 @@ def build_ranking_rows(results: List[Dict[str, Any]]) -> List[Dict]:
                 "adjusted_score": dim_score.adjusted_score,
                 "confidence": dim_score.confidence,
                 "evidence_count": dim_score.evidence_count,
+                "top_qa_indices": ",".join(str(i) for i in dim_score.top_qa_indices),
                 "evidence_snippets": " | ".join(dim_score.evidence_snippets),
                 "critical_gaps": "; ".join(dim_score.critical_gaps),
             })

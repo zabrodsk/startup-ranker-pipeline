@@ -45,14 +45,16 @@ def _group_qa_by_dimension(
         "team": [],
         "upside": [],
     }
-    for qa in all_qa_pairs:
+    for index, qa in enumerate(all_qa_pairs):
         aspect = qa.get("aspect") or ""
+        qa_with_index = dict(qa)
+        qa_with_index.setdefault("qa_index", index)
         if aspect in DIMENSION_ASPECTS["strategy_fit"]:
-            grouped["strategy_fit"].append(qa)
+            grouped["strategy_fit"].append(qa_with_index)
         elif aspect in DIMENSION_ASPECTS["team"]:
-            grouped["team"].append(qa)
+            grouped["team"].append(qa_with_index)
         elif aspect in DIMENSION_ASPECTS["upside"]:
-            grouped["upside"].append(qa)
+            grouped["upside"].append(qa_with_index)
     return grouped
 
 
@@ -64,8 +66,34 @@ def _format_qa_block(qa_pairs: list[dict[str, Any]]) -> str:
     for i, qa in enumerate(qa_pairs):
         q = qa.get("question", "")
         a = qa.get("answer", "")
-        lines.append(f"Q{i+1}: {q}\nA{i+1}: {a}")
+        qa_index = qa.get("qa_index", i)
+        lines.append(f"Q{qa_index}: {q}\nA{qa_index}: {a}")
     return "\n---\n".join(lines)
+
+
+def _sanitize_top_qa_indices(
+    candidate_indices: list[int] | None,
+    qa_pairs: list[dict[str, Any]],
+) -> list[int]:
+    """Keep only valid, unique global Q&A indices for the current dimension."""
+    if not candidate_indices:
+        return []
+
+    valid_indices = {
+        int(qa.get("qa_index"))
+        for qa in qa_pairs
+        if qa.get("qa_index") is not None
+    }
+    sanitized: list[int] = []
+    for index in candidate_indices:
+        try:
+            normalized = int(index)
+        except (TypeError, ValueError):
+            continue
+        if normalized not in valid_indices or normalized in sanitized:
+            continue
+        sanitized.append(normalized)
+    return sanitized[:3]
 
 
 def _score_dimension(
@@ -106,8 +134,11 @@ def _score_dimension(
 
     try:
         def _invoke() -> DimensionScoreOutput:
-            with use_stage_context("ranking_dimension_score"):
-                llm = get_llm(temperature=0.0)
+            stage_name = "ranking_upside_score" if dimension == "upside" else "ranking_dimension_score"
+            temperature = 0.7 if dimension == "upside" else 0.0
+            reasoning_effort = "none" if dimension == "upside" else None
+            with use_stage_context(stage_name):
+                llm = get_llm(temperature=temperature, reasoning_effort=reasoning_effort)
                 llm_structured = llm.with_structured_output(DimensionScoreOutput)
                 return llm_structured.invoke(
                     [
@@ -125,6 +156,7 @@ def _score_dimension(
             raw_score=0.0,
             confidence=0.0,
             evidence_count=len(qa_pairs),
+            top_qa_indices=[],
             evidence_snippets=[],
             critical_gaps=["Scoring failed due to LLM error"],
         )
@@ -134,9 +166,17 @@ def _score_dimension(
         raw_score=output.raw_score,
         confidence=output.confidence,
         evidence_count=output.evidence_count,
+        top_qa_indices=_sanitize_top_qa_indices(output.top_qa_indices, qa_pairs),
         evidence_snippets=output.evidence_snippets[:3],
         critical_gaps=output.critical_gaps,
     )
+
+
+def _dimension_display_score(score: DimensionScore) -> float:
+    """Return the user-facing score for a dimension."""
+    if score.dimension == "upside":
+        return round(score.raw_score, 2)
+    return score.adjusted_score
 
 
 def score_company_dimensions(
@@ -145,7 +185,8 @@ def score_company_dimensions(
     """Score the company on Strategy Fit, Team Quality, and Upside.
 
     Groups Q&A pairs by dimension, calls LLM for each, and builds
-    DimensionScore objects with confidence-adjusted scores.
+    DimensionScore objects. Potential intentionally uses raw best-case upside
+    for user-facing scoring while Strategy Fit and Team stay adjusted.
     """
     company_summary = state.company.get_company_summary()
     grouped = _group_qa_by_dimension(state.all_qa_pairs)
@@ -163,9 +204,9 @@ def score_company_dimensions(
         )
         dimension_scores.append(score)
 
-    strategy_adj = next((s.adjusted_score for s in dimension_scores if s.dimension == "strategy_fit"), 0.0)
-    team_adj = next((s.adjusted_score for s in dimension_scores if s.dimension == "team"), 0.0)
-    upside_adj = next((s.adjusted_score for s in dimension_scores if s.dimension == "upside"), 0.0)
+    strategy_adj = next((_dimension_display_score(s) for s in dimension_scores if s.dimension == "strategy_fit"), 0.0)
+    team_adj = next((_dimension_display_score(s) for s in dimension_scores if s.dimension == "team"), 0.0)
+    upside_adj = next((_dimension_display_score(s) for s in dimension_scores if s.dimension == "upside"), 0.0)
 
     result = CompanyRankingResult(
         company_name=state.company.name,
@@ -226,7 +267,7 @@ def _format_dimension_block(dimension_scores: list[DimensionScore]) -> str:
     labels = {"strategy_fit": "Strategy Fit", "team": "Team", "upside": "Potential"}
     for d in dimension_scores:
         label = labels.get(d.dimension, d.dimension)
-        lines.append(f"{label} (score {d.adjusted_score}):")
+        lines.append(f"{label} (score {_dimension_display_score(d)}):")
         if d.evidence_snippets:
             lines.append("  Evidence: " + " | ".join(d.evidence_snippets[:3]))
         if d.critical_gaps:

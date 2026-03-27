@@ -68,6 +68,10 @@ class DimensionScoreOutput(BaseModel):
     raw_score: float = Field(ge=0, le=100, description="Score 0-100")
     confidence: float = Field(ge=0, le=1, description="Evidence confidence 0-1")
     evidence_count: int = Field(ge=0, description="Number of Q&A pairs that contributed")
+    top_qa_indices: list[int] = Field(
+        default_factory=list,
+        description="Global Q&A indices that most influenced the score, ordered by impact",
+    )
     evidence_snippets: list[str] = Field(
         default_factory=list,
         description="2-3 short supporting quotes",

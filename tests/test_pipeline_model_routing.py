@@ -91,6 +91,62 @@ class _StageTrackingRunnable:
         return self._result
 
 
+class _RankingSelectionRunnable:
+    def __init__(self, sink):
+        self._sink = sink
+
+    def with_structured_output(self, _schema):
+        return self
+
+    def invoke(self, _messages):
+        selection = get_current_llm_selection() or {}
+        self._sink.append((selection.get("provider"), selection.get("model")))
+        if get_current_stage_name() == "ranking_executive_summary":
+            return ExecutiveSummaryOutput(
+                strategy_fit_summary="fit",
+                team_summary="team",
+                potential_summary="potential",
+                key_points=["k1"],
+                red_flags=["r1"],
+            )
+        return DimensionScoreOutput(
+            raw_score=80,
+            confidence=0.8,
+            evidence_count=1,
+            top_qa_indices=[0],
+            evidence_snippets=["evidence"],
+            critical_gaps=[],
+        )
+
+
+class _RankingRunnable:
+    def __init__(self, sink):
+        self._sink = sink
+
+    def with_structured_output(self, _schema):
+        return self
+
+    def invoke(self, _messages):
+        stage = get_current_stage_name()
+        self._sink.append(stage)
+        if stage == "ranking_executive_summary":
+            return ExecutiveSummaryOutput(
+                strategy_fit_summary="fit",
+                team_summary="team",
+                potential_summary="potential",
+                key_points=["k1"],
+                red_flags=["r1"],
+            )
+        return DimensionScoreOutput(
+            raw_score=80,
+            confidence=0.8,
+            evidence_count=1,
+            top_qa_indices=[0],
+            evidence_snippets=["evidence"],
+            critical_gaps=[],
+        )
+
+
 def test_pipeline_stages_use_phase_policy(monkeypatch):
     monkeypatch.setenv("GOOGLE_API_KEY", "google")
     monkeypatch.setenv("OPENAI_API_KEY", "openai")
@@ -173,22 +229,7 @@ def test_pipeline_stages_use_phase_policy(monkeypatch):
     monkeypatch.setattr(
         ranking,
         "get_llm",
-        lambda temperature=0.0: _FakeRunnable(
-            DimensionScoreOutput(
-                raw_score=80,
-                confidence=0.8,
-                evidence_count=1,
-                evidence_snippets=["evidence"],
-                critical_gaps=[],
-            ) if temperature == 0.0 else ExecutiveSummaryOutput(
-                strategy_fit_summary="fit",
-                team_summary="team",
-                potential_summary="potential",
-                key_points=["k1"],
-                red_flags=["r1"],
-            ),
-            seen["ranking"],
-        ),
+        lambda temperature=0.0, reasoning_effort=None: _RankingSelectionRunnable(seen["ranking"]),
     )
 
     with use_run_context(llm_selection=policy.answering, pipeline_policy=policy):
@@ -286,22 +327,7 @@ def test_pipeline_stages_set_stage_context_for_critical_llm_calls(monkeypatch):
     monkeypatch.setattr(
         ranking,
         "get_llm",
-        lambda temperature=0.0: _StageTrackingRunnable(
-            DimensionScoreOutput(
-                raw_score=80,
-                confidence=0.8,
-                evidence_count=1,
-                evidence_snippets=["evidence"],
-                critical_gaps=[],
-            ) if temperature == 0.0 else ExecutiveSummaryOutput(
-                strategy_fit_summary="fit",
-                team_summary="team",
-                potential_summary="potential",
-                key_points=["k1"],
-                red_flags=["r1"],
-            ),
-            seen["ranking"],
-        ),
+        lambda temperature=0.0, reasoning_effort=None: _RankingRunnable(seen["ranking"]),
     )
 
     with use_run_context(llm_selection=policy.answering, pipeline_policy=policy):
@@ -329,7 +355,7 @@ def test_pipeline_stages_set_stage_context_for_critical_llm_calls(monkeypatch):
     assert seen["ranking"] == [
         "ranking_dimension_score",
         "ranking_dimension_score",
-        "ranking_dimension_score",
+        "ranking_upside_score",
         "ranking_executive_summary",
     ]
 
@@ -383,11 +409,12 @@ def test_ranking_falls_back_from_claude_to_gpt5_on_auth_error(monkeypatch):
     monkeypatch.setattr(
         ranking,
         "get_llm",
-        lambda temperature=0.0: _AuthFallbackRunnable(
+        lambda temperature=0.0, reasoning_effort=None: _AuthFallbackRunnable(
             DimensionScoreOutput(
                 raw_score=82,
                 confidence=0.9,
                 evidence_count=1,
+                top_qa_indices=[0],
                 evidence_snippets=["evidence"],
                 critical_gaps=[],
             ),
@@ -412,6 +439,7 @@ def test_ranking_falls_back_from_claude_to_gpt5_on_auth_error(monkeypatch):
         result = ranking.score_company_dimensions(state)["ranking_result"]
 
     assert result.strategy_fit_score > 0
+    assert result.dimension_scores[0].top_qa_indices == [0]
     assert seen == [
         ("anthropic", "claude-haiku-4-5-20251001"),
         ("openai", "gpt-5"),
@@ -455,6 +483,129 @@ def test_evaluation_falls_back_from_gpt5_to_claude_on_auth_error(monkeypatch):
     assert seen == [
         ("openai", "gpt-5"),
         ("anthropic", "claude-haiku-4-5-20251001"),
+    ]
+
+
+def test_ranking_keeps_only_valid_top_qa_indices_for_dimension(monkeypatch):
+    monkeypatch.setenv("GOOGLE_API_KEY", "google")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic")
+    policy = build_pipeline_policy("premium", {"ranking": "gpt5"})
+
+    monkeypatch.setattr(
+        ranking,
+        "get_llm",
+        lambda temperature=0.0, reasoning_effort=None: _FakeRunnable(
+            DimensionScoreOutput(
+                raw_score=82,
+                confidence=0.9,
+                evidence_count=2,
+                top_qa_indices=[2, 99, 2, 0],
+                evidence_snippets=["evidence"],
+                critical_gaps=[],
+            ),
+            [],
+        ),
+    )
+
+    company = Company(name="Acme", industry="Fintech")
+    state = IterativeInvestmentStoryState(
+        company=company,
+        config=Config(
+            n_pro_arguments=1,
+            n_contra_arguments=1,
+            k_best_arguments_per_iteration=[1],
+            max_iterations=1,
+        ),
+        all_qa_pairs=[
+            {"question": "Stage?", "answer": "Seed", "aspect": "general_company"},
+            {"question": "Founder?", "answer": "Repeat founder", "aspect": "team"},
+            {"question": "TAM?", "answer": "$2B", "aspect": "market"},
+        ],
+    )
+
+    with use_run_context(llm_selection=policy.answering, pipeline_policy=policy):
+        result = ranking.score_company_dimensions(state)["ranking_result"]
+
+    by_dimension = {score.dimension: score for score in result.dimension_scores}
+    assert by_dimension["strategy_fit"].top_qa_indices == [0]
+    assert by_dimension["team"].top_qa_indices == []
+    assert by_dimension["upside"].top_qa_indices == [2]
+
+
+def test_ranking_uses_raw_upside_score_and_potential_specific_stage(monkeypatch):
+    monkeypatch.setenv("GOOGLE_API_KEY", "google")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic")
+    policy = build_pipeline_policy("premium", {"ranking": "gpt5"})
+
+    seen_stages: list[str] = []
+    seen_temperatures: list[tuple[str | None, float | None]] = []
+
+    class _PerDimensionRunnable:
+        def with_structured_output(self, _schema):
+            return self
+
+        def invoke(self, _messages):
+            stage = get_current_stage_name()
+            seen_stages.append(stage)
+            if stage == "ranking_upside_score":
+                seen_temperatures.append((stage, 0.7))
+                return DimensionScoreOutput(
+                    raw_score=95,
+                    confidence=0.1,
+                    evidence_count=1,
+                    top_qa_indices=[0],
+                    evidence_snippets=["huge upside"],
+                    critical_gaps=["execution risk"],
+                )
+            seen_temperatures.append((stage, 0.0))
+            return DimensionScoreOutput(
+                raw_score=80,
+                confidence=0.5,
+                evidence_count=1,
+                top_qa_indices=[0],
+                evidence_snippets=["evidence"],
+                critical_gaps=[],
+            )
+
+    monkeypatch.setattr(
+        ranking,
+        "get_llm",
+        lambda temperature=0.0, reasoning_effort=None: _PerDimensionRunnable(),
+    )
+
+    company = Company(name="Acme", industry="Fintech")
+    state = IterativeInvestmentStoryState(
+        company=company,
+        config=Config(
+            n_pro_arguments=1,
+            n_contra_arguments=1,
+            k_best_arguments_per_iteration=[1],
+            max_iterations=1,
+        ),
+        all_qa_pairs=[
+            {"question": "Stage?", "answer": "Seed", "aspect": "general_company"},
+            {"question": "Founder?", "answer": "Repeat founder", "aspect": "team"},
+            {"question": "TAM?", "answer": "$5B", "aspect": "market"},
+        ],
+    )
+
+    with use_run_context(llm_selection=policy.answering, pipeline_policy=policy):
+        result = ranking.score_company_dimensions(state)["ranking_result"]
+
+    assert result.strategy_fit_score == 68.0
+    assert result.team_score == 68.0
+    assert result.upside_score == 95
+    assert seen_stages == [
+        "ranking_dimension_score",
+        "ranking_dimension_score",
+        "ranking_upside_score",
+    ]
+    assert seen_temperatures == [
+        ("ranking_dimension_score", 0.0),
+        ("ranking_dimension_score", 0.0),
+        ("ranking_upside_score", 0.7),
     ]
 
 

@@ -16,6 +16,8 @@ Persistent storage for Rockaway Deal Intelligence analyses.
    ```
    SUPABASE_URL=https://ykxtuqcfhpauddnbxqyq.supabase.co
    SUPABASE_SERVICE_ROLE_KEY=<your_service_role_key>
+   SUPABASE_ANON_KEY=<your_publishable_or_anon_key>
+   SUPABASE_AUTH_REDIRECT_URL=http://localhost:8005/
    ```
 3. Migrations to apply:
    - `20250304000000_init_schema.sql`
@@ -24,7 +26,9 @@ Persistent storage for Rockaway Deal Intelligence analyses.
    - `20260313000000_enable_rls_phase1_internal_tables.sql`
    - `20260313000001_enable_rls_phase2_app_tables.sql`
    - `20260316000000_company_chat_sessions.sql`
-   Tables include companies, jobs, pitch_decks, chunks, analyses, analysis_events, job_controls, job_status_history, analysis_errors, source_files, model_executions, person_profile_jobs, company_runs, company_chat_sessions.
+   - `20260317000000_app_settings.sql`
+   - `20260318000000_run_starter_attribution.sql`
+   Tables include companies, jobs, pitch_decks, chunks, analyses, analysis_events, job_controls, job_status_history, analysis_errors, source_files, model_executions, person_profile_jobs, company_runs, company_chat_sessions, app_settings.
 4. The app auto-creates the `analysis-exports` bucket on first persist. Or create it manually in [Storage](https://supabase.com/dashboard/project/ykxtuqcfhpauddnbxqyq/storage/buckets).
 
 ## Behavior
@@ -37,13 +41,15 @@ When configured, the app will:
 - Serve Excel downloads from Storage when local file is missing (e.g. after restart)
 - Fall back to Supabase for `/api/status/{job_id}` when job not in memory
 - Persist shared company chat history, selected answer model, citations, and web-search cost metadata per company
+- Support browser-side email-link verification on the login page when `SUPABASE_ANON_KEY` is present
+- Store starter attribution fields on runs so the UI can show who launched each analysis
 
 ## Security model
 
 - RLS is enabled on all application tables in `public`.
 - No `anon` or `authenticated` policies are created by default.
 - The app is expected to access Supabase through the backend using `SUPABASE_SERVICE_ROLE_KEY`.
-- Browser clients should keep using the password-protected API instead of querying Supabase tables directly.
+- Browser clients use the public `SUPABASE_ANON_KEY` only for email verification; application data still stays behind the password-protected backend API.
 
 ## Preflight and rollback
 

@@ -23,6 +23,8 @@ class ModelCatalogEntry:
     pricing: ModelPricing | None
     required_env: tuple[str, ...]
     supports_structured_output: bool = True
+    supports_creativity_control: bool = False
+    default_creativity: float | None = None
 
 
 MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
@@ -85,6 +87,8 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
             output_per_million_tokens_usd=10.00,
         ),
         required_env=("OPENAI_API_KEY",),
+        supports_creativity_control=True,
+        default_creativity=0.5,
     ),
     ModelCatalogEntry(
         provider="openai",
@@ -97,6 +101,8 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
             output_per_million_tokens_usd=3.20,
         ),
         required_env=("OPENAI_API_KEY",),
+        supports_creativity_control=True,
+        default_creativity=0.5,
     ),
     ModelCatalogEntry(
         provider="gemini",
@@ -145,6 +151,8 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
             output_per_million_tokens_usd=4.40,
         ),
         required_env=("OPENAI_API_KEY",),
+        supports_creativity_control=True,
+        default_creativity=0.5,
     ),
     ModelCatalogEntry(
         provider="openai",
@@ -250,6 +258,9 @@ _PROVIDER_ALIASES = {
     "openrouter": "openrouter",
 }
 
+_CREATIVITY_MIN = 0.0
+_CREATIVITY_MAX = 2.0
+
 
 def normalize_provider(provider: str | None) -> str:
     raw = (provider or "").strip().lower()
@@ -309,17 +320,47 @@ def model_label(provider: str | None, model: str | None) -> str:
     return f"{provider_norm} · {model_norm}"
 
 
-def serialize_selection(provider: str | None, model: str | None) -> dict[str, str]:
+def normalize_creativity(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Creativity must be a number between 0.0 and 2.0.") from exc
+    if not (_CREATIVITY_MIN <= normalized <= _CREATIVITY_MAX):
+        raise ValueError("Creativity must be between 0.0 and 2.0.")
+    return round(normalized, 2)
+
+
+def supports_selection_creativity_control(provider: str | None, model: str | None) -> bool:
+    entry = find_compatible_model_entry(provider, model)
+    return bool(entry and entry.supports_creativity_control)
+
+
+def default_selection_creativity(provider: str | None, model: str | None) -> float | None:
+    entry = find_compatible_model_entry(provider, model)
+    return entry.default_creativity if entry else None
+
+
+def serialize_selection(
+    provider: str | None,
+    model: str | None,
+    creativity: Any = None,
+) -> dict[str, Any]:
     provider_norm = normalize_provider(provider or _DEFAULT_PROVIDER)
     model_norm = (model or _DEFAULT_MODEL).strip()
-    return {
+    selection: dict[str, Any] = {
         "provider": provider_norm,
         "model": model_norm,
         "label": model_label(provider_norm, model_norm),
     }
+    normalized_creativity = normalize_creativity(creativity)
+    if normalized_creativity is not None and supports_selection_creativity_control(provider_norm, model_norm):
+        selection["creativity"] = normalized_creativity
+    return selection
 
 
-def current_default_selection() -> dict[str, str]:
+def current_default_selection() -> dict[str, Any]:
     provider = normalize_provider(os.getenv("LLM_PROVIDER", _DEFAULT_PROVIDER))
     model = os.getenv("MODEL_NAME", _DEFAULT_MODEL).strip()
     return serialize_selection(provider, model)
@@ -347,6 +388,8 @@ def available_models_payload() -> list[dict[str, Any]]:
                 "selectable": selectable,
                 "pricing_available": entry.pricing is not None,
                 "supports_structured_output": entry.supports_structured_output,
+                "supports_creativity_control": entry.supports_creativity_control,
+                "default_creativity": entry.default_creativity,
                 "unavailable_reason": unavailable_reason,
             }
         )
@@ -368,6 +411,8 @@ def available_chat_models_payload() -> list[dict[str, Any]]:
                 "selectable": env_available,
                 "pricing_available": entry.pricing is not None,
                 "supports_structured_output": entry.supports_structured_output,
+                "supports_creativity_control": entry.supports_creativity_control,
+                "default_creativity": entry.default_creativity,
                 "unavailable_reason": "" if env_available else "Missing provider credentials.",
             }
         )
@@ -398,7 +443,7 @@ def validate_chat_requested_selection(
 ) -> ModelCatalogEntry | None:
     if not provider and not model:
         return None
-    entry = find_model_entry(provider, model)
+    entry = find_compatible_model_entry(provider, model)
     if not entry:
         raise ValueError("Unknown chat LLM model selection.")
     if not _has_required_env(entry):
