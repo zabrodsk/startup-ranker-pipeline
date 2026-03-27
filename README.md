@@ -29,6 +29,7 @@ Rockaway Deal Intelligence helps investment teams evaluate and prioritize deal f
 - **Selectable answer model** for company Q&A
 - **Visible cost tracking** for each answer, web-search usage, and total session cost
 - **Expandable Companies workspace** with collapsible sidebar and assessment panel for more room while reviewing chat
+- **Per-phase model routing** with a creativity slider for supported models, so each analysis stage can use its own sampling behavior
 
 ---
 
@@ -126,6 +127,7 @@ Current UI defaults:
 - Landing screen is **New Analysis**
 - Default input mode is **Specter**
 - The **Advanced: choose one model for the whole pipeline** selector excludes OpenRouter options
+- Per-phase routing shows a creativity slider only for models that actually support temperature-style control
 
 ### Local run
 

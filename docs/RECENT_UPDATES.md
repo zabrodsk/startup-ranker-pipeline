@@ -8,6 +8,8 @@
 
 This document summarizes the main improvements in **v0.0.6**. Key additions: **company-centric history** with `company_runs` table and grouped UI, **stop finalization** (partial results when stopping mid-run), improved **Specter detection** via header sniffing, and **Rockaway Deal Intelligence** branding.
 
+The current branch also adds per-phase model routing creativity controls in New Analysis. Supported models show a `Creativity` slider, while models with fixed sampling keep the selector but hide the slider.
+
 ---
 
 ## Company-Centric History (New)
@@ -57,6 +59,17 @@ Improved detection of Specter company + people CSV/Excel pairs:
 - **Pause/resume** — Only transitions to `running` when status is actually `paused`
 - **Sample data** — `deals/sample_startup/` replaced with `deals/sample_company/`
 - **Railway** — `.railwayignore` added for deployment exclusions
+
+---
+
+## Per-Phase Creativity Controls
+
+The analysis setup screen now lets you tune sampling per stage.
+
+- **Per-stage routing** — decomposition, answering, generation, evaluation, and ranking each keep their own model selection
+- **Creativity slider** — shown only for models that support temperature-style control
+- **Auto behavior** — slider defaults preserve the existing stage sampling until the user changes it
+- **Unsupported models** — the slider stays hidden and the UI explains that the model uses fixed sampling for that stage
 
 ---
 
