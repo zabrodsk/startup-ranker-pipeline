@@ -25,6 +25,10 @@ class ModelCatalogEntry:
     supports_structured_output: bool = True
     supports_creativity_control: bool = False
     default_creativity: float | None = None
+    supports_temperature_control: bool = True
+    supports_reasoning_effort_control: bool = False
+    reasoning_effort_options: tuple[str, ...] = ()
+    temperature_requires_reasoning_none: bool = False
 
 
 MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
@@ -63,6 +67,9 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
             output_per_million_tokens_usd=1.25,
         ),
         required_env=("OPENAI_API_KEY",),
+        supports_reasoning_effort_control=True,
+        reasoning_effort_options=("none", "low", "medium", "high", "xhigh"),
+        temperature_requires_reasoning_none=True,
     ),
     ModelCatalogEntry(
         provider="openai",
@@ -75,6 +82,9 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
             output_per_million_tokens_usd=4.50,
         ),
         required_env=("OPENAI_API_KEY",),
+        supports_reasoning_effort_control=True,
+        reasoning_effort_options=("none", "low", "medium", "high", "xhigh"),
+        temperature_requires_reasoning_none=True,
     ),
     ModelCatalogEntry(
         provider="openai",
@@ -151,6 +161,7 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
             output_per_million_tokens_usd=4.40,
         ),
         required_env=("OPENAI_API_KEY",),
+        supports_temperature_control=False,
     ),
     ModelCatalogEntry(
         provider="openai",
@@ -163,6 +174,9 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
             output_per_million_tokens_usd=14.00,
         ),
         required_env=("OPENAI_API_KEY",),
+        supports_temperature_control=False,
+        supports_reasoning_effort_control=True,
+        reasoning_effort_options=("none", "low", "medium", "high"),
     ),
     ModelCatalogEntry(
         provider="openai",
@@ -175,10 +189,13 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
             output_per_million_tokens_usd=15.00,
         ),
         required_env=("OPENAI_API_KEY",),
+        supports_temperature_control=False,
+        supports_reasoning_effort_control=True,
+        reasoning_effort_options=("none", "low", "medium", "high", "xhigh"),
     ),
     ModelCatalogEntry(
         provider="openrouter",
-    model="openrouter/hunter-alpha",
+        model="openrouter/hunter-alpha",
         label="Hunter Alpha",
         summary="Experimental reasoning",
         tier="premium",
@@ -188,6 +205,7 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         ),
         required_env=("OPENROUTER_API_KEY",),
         supports_structured_output=False,
+        supports_temperature_control=False,
     ),
     ModelCatalogEntry(
         provider="openrouter",
@@ -388,6 +406,10 @@ def available_models_payload() -> list[dict[str, Any]]:
                 "supports_structured_output": entry.supports_structured_output,
                 "supports_creativity_control": entry.supports_creativity_control,
                 "default_creativity": entry.default_creativity,
+                "supports_temperature_control": entry.supports_temperature_control,
+                "supports_reasoning_effort_control": entry.supports_reasoning_effort_control,
+                "reasoning_effort_options": list(entry.reasoning_effort_options),
+                "temperature_requires_reasoning_none": entry.temperature_requires_reasoning_none,
                 "unavailable_reason": unavailable_reason,
             }
         )
@@ -411,6 +433,10 @@ def available_chat_models_payload() -> list[dict[str, Any]]:
                 "supports_structured_output": entry.supports_structured_output,
                 "supports_creativity_control": entry.supports_creativity_control,
                 "default_creativity": entry.default_creativity,
+                "supports_temperature_control": entry.supports_temperature_control,
+                "supports_reasoning_effort_control": entry.supports_reasoning_effort_control,
+                "reasoning_effort_options": list(entry.reasoning_effort_options),
+                "temperature_requires_reasoning_none": entry.temperature_requires_reasoning_none,
                 "unavailable_reason": "" if env_available else "Missing provider credentials.",
             }
         )

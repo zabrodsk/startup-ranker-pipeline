@@ -363,12 +363,18 @@ def _resolve_openai_request_settings(
     model: str,
     requested_temperature: float | None,
     requested_reasoning_effort: str | None,
+    *,
+    selected_temperature: float | None = None,
+    selected_reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     if _is_reasoning_effort_model(model):
         resolved = resolve_openai_phase_sampling(
             model,
             get_current_stage_name(),
             requested_temperature,
+            requested_reasoning_effort=requested_reasoning_effort,
+            selected_temperature=selected_temperature,
+            selected_reasoning_effort=selected_reasoning_effort,
         )
         resolved_temperature = requested_temperature
         resolved_reasoning_effort = requested_reasoning_effort
@@ -430,7 +436,14 @@ def create_llm(
     selection_creativity = None
     if supports_selection_creativity_control(provider, model):
         selection_creativity = normalize_creativity(selection.get("creativity"))
-    requested_temperature = selection_creativity if selection_creativity is not None else temperature
+    selection_temperature = selection.get("temperature")
+    selection_reasoning_effort = selection.get("reasoning_effort")
+    requested_temperature = selection_creativity if selection_creativity is not None else (
+        selection_temperature if selection_temperature is not None else temperature
+    )
+    requested_reasoning_effort = (
+        selection_reasoning_effort if selection_reasoning_effort is not None else reasoning_effort
+    )
     runtime = get_llm_runtime_settings()
     timeout_s = runtime["request_timeout_seconds"]
     max_retries = runtime["max_retries"]
@@ -439,8 +452,8 @@ def create_llm(
         "requested_temperature": requested_temperature,
         "effective_temperature": requested_temperature,
         "sampling_mode": "selection_creativity" if selection_creativity is not None else "requested",
-        "requested_reasoning_effort": reasoning_effort,
-        "effective_reasoning_effort": reasoning_effort,
+        "requested_reasoning_effort": requested_reasoning_effort,
+        "effective_reasoning_effort": requested_reasoning_effort,
         "reasoning_fallback_applied": False,
         "provider": provider,
         "model": model,
@@ -448,13 +461,19 @@ def create_llm(
     }
     if provider == "openai":
         request_settings.update(
-            _resolve_openai_request_settings(model, requested_temperature, reasoning_effort)
+            _resolve_openai_request_settings(
+                model,
+                requested_temperature,
+                requested_reasoning_effort,
+                selected_temperature=selection_temperature,
+                selected_reasoning_effort=selection_reasoning_effort,
+            )
         )
     set_current_llm_request_settings(request_settings)
     effective_temperature = request_settings["effective_temperature"]
 
     if provider == "gemini":
-        return wrap_llm(_create_gemini(model, requested_temperature, timeout_s, max_retries))
+        return wrap_llm(_create_gemini(model, requested_temperature or 0.0, timeout_s, max_retries))
     elif provider == "openai":
         fallback_builder = _build_openai_reasoning_fallback_builder(
             model,
@@ -472,9 +491,9 @@ def create_llm(
             fallback_builder=fallback_builder,
         )
     elif provider == "openrouter":
-        return wrap_llm(_create_openrouter(model, requested_temperature, timeout_s, max_retries))
+        return wrap_llm(_create_openrouter(model, requested_temperature or 0.0, timeout_s, max_retries))
     elif provider == "anthropic":
-        return wrap_llm(_create_anthropic(model, requested_temperature, timeout_s, max_retries))
+        return wrap_llm(_create_anthropic(model, requested_temperature or 0.0, timeout_s, max_retries))
     else:
         raise ValueError(
             f"Unknown LLM_PROVIDER '{provider}'. "

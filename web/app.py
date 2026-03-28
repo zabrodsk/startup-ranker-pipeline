@@ -812,10 +812,14 @@ class AnalyzeRequest(BaseModel):
         phase_models: dict[str, dict[str, Any]] = {}
         for phase, selection in normalized.items():
             creativity = normalize_creativity(selection.get("creativity"))
+            temperature = selection.get("temperature")
+            reasoning_effort = selection.get("reasoning_effort")
             phase_models[phase] = {
                 "provider": selection["provider"],
                 "model": selection["model"],
                 **({"creativity": creativity} if creativity is not None else {}),
+                **({"temperature": temperature} if temperature is not None else {}),
+                **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
             }
         return phase_models
 

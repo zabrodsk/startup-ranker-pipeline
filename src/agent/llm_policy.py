@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from agent.llm_catalog import (
     ModelCatalogEntry,
+    find_model_entry,
     normalize_creativity,
     get_tier_default,
     serialize_selection,
@@ -104,6 +105,71 @@ def _selection_without_creativity(selection: dict[str, Any]) -> dict[str, Any]:
     return serialize_selection(selection.get("provider"), selection.get("model"))
 
 
+def _normalize_temperature_value(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Temperature must be a number between 0.0 and 2.0.") from exc
+    if not (0.0 <= normalized <= 2.0):
+        raise ValueError("Temperature must be between 0.0 and 2.0.")
+    return round(normalized, 2)
+
+
+def _normalize_reasoning_effort_value(
+    entry: ModelCatalogEntry | None,
+    value: Any,
+) -> str | None:
+    if value is None or value == "":
+        return None
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return None
+    if entry is None or not entry.supports_reasoning_effort_control:
+        raise ValueError("Reasoning effort is not supported for this model.")
+    if normalized not in entry.reasoning_effort_options:
+        raise ValueError(
+            f"Reasoning effort must be one of: {', '.join(entry.reasoning_effort_options)}."
+        )
+    return normalized
+
+
+def _phase_selection_with_overrides(
+    entry: ModelCatalogEntry,
+    selection: dict[str, Any],
+) -> dict[str, Any]:
+    resolved_selection = _serialize_entry(entry)
+
+    if supports_selection_creativity_control(entry.provider, entry.model):
+        creativity = normalize_creativity(selection.get("creativity"))
+        if creativity is not None:
+            resolved_selection["creativity"] = creativity
+
+    temperature = _normalize_temperature_value(selection.get("temperature"))
+    if temperature is not None and entry.supports_temperature_control:
+        resolved_selection["temperature"] = temperature
+
+    reasoning_effort = _normalize_reasoning_effort_value(entry, selection.get("reasoning_effort"))
+    if reasoning_effort is not None:
+        resolved_selection["reasoning_effort"] = reasoning_effort
+
+    return resolved_selection
+
+
+def _strip_sampling_overrides(selection: dict[str, Any]) -> dict[str, Any]:
+    cleaned = {
+        key: value
+        for key, value in selection.items()
+        if key not in {"creativity", "temperature", "reasoning_effort"}
+    }
+    cleaned["label"] = selection.get("label") or serialize_selection(
+        cleaned.get("provider"),
+        cleaned.get("model"),
+    )["label"]
+    return cleaned
+
+
 def normalize_quality_tier(value: str | None) -> PublicQualityTier | None:
     tier = (value or "").strip().lower()
     if tier in {"cheap", "premium"}:
@@ -148,12 +214,28 @@ def normalize_phase_models(
         provider = str(raw.get("provider") or "").strip()
         model = str(raw.get("model") or "").strip()
         if provider and model:
+            entry = find_model_entry(provider, model)
             selection = serialize_selection(provider, model, raw.get("creativity"))
-            normalized[phase] = {
+            normalized_selection: dict[str, Any] = {
                 "provider": selection["provider"],
                 "model": selection["model"],
-                **({"creativity": selection["creativity"]} if selection.get("creativity") is not None else {}),
             }
+            if selection.get("creativity") is not None:
+                normalized_selection["creativity"] = selection["creativity"]
+            try:
+                temperature = _normalize_temperature_value(raw.get("temperature"))
+            except ValueError:
+                temperature = None
+            try:
+                reasoning_effort = _normalize_reasoning_effort_value(entry, raw.get("reasoning_effort"))
+            except ValueError:
+                reasoning_effort = None
+            if temperature is not None and entry and entry.supports_temperature_control:
+                if not (entry.temperature_requires_reasoning_none and reasoning_effort not in {None, "none"}):
+                    normalized_selection["temperature"] = temperature
+            if reasoning_effort is not None:
+                normalized_selection["reasoning_effort"] = reasoning_effort
+            normalized[phase] = normalized_selection
     if len(normalized) == len(_USER_SELECTABLE_PHASES):
         return normalized
 
@@ -188,12 +270,36 @@ def coerce_phase_models_payload(
         model = str(raw.get("model") or "").strip()
         if not provider or not model:
             raise ValueError(f"phase_models.{phase} must include provider and model.")
+        entry = find_model_entry(provider, model)
+        if entry is None:
+            raise ValueError("Unknown LLM model selection.")
         creativity = normalize_creativity(raw.get("creativity"))
-        normalized[phase] = {
+        temperature = _normalize_temperature_value(raw.get("temperature"))
+        reasoning_effort = _normalize_reasoning_effort_value(entry, raw.get("reasoning_effort"))
+
+        if temperature is not None and not entry.supports_temperature_control:
+            raise ValueError(f"{entry.label} does not support temperature overrides.")
+        if reasoning_effort is not None and not entry.supports_reasoning_effort_control:
+            raise ValueError(f"{entry.label} does not support reasoning effort overrides.")
+        if (
+            entry.temperature_requires_reasoning_none
+            and temperature is not None
+            and reasoning_effort not in {None, "none"}
+        ):
+            raise ValueError(
+                f"{entry.label} only supports temperature when reasoning_effort is 'none'."
+            )
+
+        normalized_selection: dict[str, Any] = {
             "provider": provider,
             "model": model,
             **({"creativity": creativity} if creativity is not None else {}),
         }
+        if temperature is not None:
+            normalized_selection["temperature"] = temperature
+        if reasoning_effort is not None:
+            normalized_selection["reasoning_effort"] = reasoning_effort
+        normalized[phase] = normalized_selection
 
     if require_all and missing:
         missing_list = ", ".join(missing)
@@ -329,21 +435,16 @@ def build_phase_model_policy(
     for phase in _USER_SELECTABLE_PHASES:
         selection = selections[phase]
         entry = _required_model_entry(selection["provider"], selection["model"])
-        resolved_selection = _serialize_entry(entry)
-        if supports_selection_creativity_control(entry.provider, entry.model):
-            creativity = normalize_creativity(selection.get("creativity"))
-            if creativity is not None:
-                resolved_selection["creativity"] = creativity
-        resolved[phase] = resolved_selection
+        resolved[phase] = _phase_selection_with_overrides(entry, selection)
 
     answering_selection = dict(resolved["answering"])
     return PipelineModelPolicy(
         decomposition=dict(resolved["decomposition"]),
         answering=answering_selection,
         generation=dict(resolved["generation"]),
-        critique=_selection_without_creativity(answering_selection),
+        critique=_strip_sampling_overrides(answering_selection),
         evaluation=dict(resolved["evaluation"]),
-        refinement=_selection_without_creativity(answering_selection),
+        refinement=_strip_sampling_overrides(answering_selection),
         ranking=dict(resolved["ranking"]),
     )
 
@@ -554,6 +655,10 @@ def resolve_openai_phase_sampling(
     model: str | None,
     stage_name: str | None,
     requested_temperature: float | None,
+    *,
+    requested_reasoning_effort: str | None = None,
+    selected_temperature: float | None = None,
+    selected_reasoning_effort: str | None = None,
 ) -> dict[str, float | str | None] | None:
     model_norm = (model or "").strip()
     stage = (stage_name or "").strip().lower()
@@ -561,7 +666,7 @@ def resolve_openai_phase_sampling(
     if model_norm in {"gpt-5.4-mini", "gpt-5.4-nano"}:
         stage_map: dict[str, dict[str, float | str | None]] = {
             "decomposition": {"temperature": 0.5, "reasoning_effort": "none"},
-            "answering": {"temperature": 0.0, "reasoning_effort": "none"},
+            "answering": {"temperature": None, "reasoning_effort": "low"},
             "generation_pro": {"temperature": 0.7, "reasoning_effort": "none"},
             "generation_contra": {"temperature": 0.7, "reasoning_effort": "none"},
             "critique": {"temperature": 0.5, "reasoning_effort": "none"},
@@ -571,13 +676,33 @@ def resolve_openai_phase_sampling(
             "ranking_upside_score": {"temperature": 0.7, "reasoning_effort": "none"},
             "ranking_executive_summary": {"temperature": None, "reasoning_effort": "high"},
         }
-        return stage_map.get(
-            stage,
-            {
-                "temperature": requested_temperature,
-                "reasoning_effort": "none",
-            },
+        resolved = dict(
+            stage_map.get(
+                stage,
+                {
+                    "temperature": requested_temperature,
+                    "reasoning_effort": "none",
+                },
+            )
         )
+        effective_reasoning_effort = (
+            selected_reasoning_effort
+            if selected_reasoning_effort is not None
+            else requested_reasoning_effort
+        )
+        if effective_reasoning_effort is None:
+            effective_reasoning_effort = resolved.get("reasoning_effort")
+        effective_temperature = (
+            selected_temperature if selected_temperature is not None else resolved.get("temperature")
+        )
+        if effective_reasoning_effort != "none":
+            effective_temperature = None
+        elif effective_temperature is None:
+            effective_temperature = requested_temperature
+        return {
+            "temperature": effective_temperature,
+            "reasoning_effort": effective_reasoning_effort,
+        }
 
     if model_norm in {"gpt-5.2", "gpt-5.4"}:
         ranking_effort = "xhigh" if model_norm == "gpt-5.4" else "high"
@@ -594,10 +719,25 @@ def resolve_openai_phase_sampling(
             "ranking_executive_summary": {"temperature": None, "reasoning_effort": ranking_effort},
         }
         if stage in stage_map:
-            return stage_map[stage]
+            resolved = dict(stage_map[stage])
+            effective_reasoning_effort = (
+                selected_reasoning_effort
+                if selected_reasoning_effort is not None
+                else requested_reasoning_effort
+            )
+            if effective_reasoning_effort is None:
+                effective_reasoning_effort = resolved.get("reasoning_effort")
+            return {
+                "temperature": None,
+                "reasoning_effort": effective_reasoning_effort,
+            }
         return {
             "temperature": None,
-            "reasoning_effort": "low" if requested_temperature is not None and requested_temperature <= 0.0 else "medium",
+            "reasoning_effort": (
+                selected_reasoning_effort
+                or requested_reasoning_effort
+                or ("low" if requested_temperature is not None and requested_temperature <= 0.0 else "medium")
+            ),
         }
 
     return None

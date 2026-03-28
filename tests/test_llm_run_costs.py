@@ -26,6 +26,7 @@ from agent.llm_policy import (
     phase_model_defaults_payload,
     premium_phase_options_payload,
     quality_tiers_payload,
+    resolve_openai_phase_sampling,
 )
 from agent.run_context import (
     RunTelemetryCollector,
@@ -121,6 +122,8 @@ def test_available_models_payload_marks_availability(monkeypatch) -> None:
     assert gemini["pricing_available"] is True
     assert gemini["summary"] == "Budget speed"
     assert gemini["supports_creativity_control"] is False
+    assert gemini["supports_temperature_control"] is True
+    assert gemini["supports_reasoning_effort_control"] is False
     assert all(
         item["available"] is False
         for item in models
@@ -134,6 +137,11 @@ def test_available_models_payload_marks_availability(monkeypatch) -> None:
     assert gemini["tier"] == "budget"
     assert next(item for item in models if item["model"] == "gpt-5")["supports_creativity_control"] is True
     assert next(item for item in models if item["model"] == "o4-mini")["supports_creativity_control"] is False
+    gpt54_mini = next(item for item in models if item["model"] == "gpt-5.4-mini")
+    assert gpt54_mini["supports_temperature_control"] is True
+    assert gpt54_mini["supports_reasoning_effort_control"] is True
+    assert gpt54_mini["temperature_requires_reasoning_none"] is True
+    assert gpt54_mini["reasoning_effort_options"] == ["none", "low", "medium", "high", "xhigh"]
 
 
 def test_validate_requested_selection_accepts_new_catalog_models(monkeypatch) -> None:
@@ -204,6 +212,54 @@ def test_build_phase_model_policy_preserves_supported_creativity_and_drops_unsup
     assert policy.refinement["model"] == "gpt-4.1-mini"
 
 
+def test_build_phase_model_policy_preserves_temperature_and_reasoning_overrides(monkeypatch) -> None:
+    monkeypatch.setenv("GOOGLE_API_KEY", "google")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic")
+
+    policy = build_phase_model_policy(
+        {
+            "decomposition": {
+                "provider": "openai",
+                "model": "gpt-5.4-mini",
+                "temperature": 0.4,
+                "reasoning_effort": "none",
+            },
+            "answering": {
+                "provider": "openai",
+                "model": "gpt-5.4-nano",
+                "reasoning_effort": "low",
+            },
+            "generation": {
+                "provider": "openai",
+                "model": "gpt-5.4-mini",
+                "temperature": 0.9,
+                "reasoning_effort": "none",
+            },
+            "evaluation": {
+                "provider": "openai",
+                "model": "gpt-5.4-mini",
+                "reasoning_effort": "high",
+            },
+            "ranking": {
+                "provider": "openai",
+                "model": "gpt-5.2",
+                "reasoning_effort": "medium",
+            },
+        }
+    )
+
+    assert policy.decomposition["temperature"] == 0.4
+    assert policy.decomposition["reasoning_effort"] == "none"
+    assert policy.answering["reasoning_effort"] == "low"
+    assert "temperature" not in policy.critique
+    assert "reasoning_effort" not in policy.critique
+    assert "temperature" not in policy.refinement
+    assert "reasoning_effort" not in policy.refinement
+    assert policy.evaluation["reasoning_effort"] == "high"
+    assert policy.ranking["reasoning_effort"] == "medium"
+
+
 def test_build_pipeline_policy_falls_back_between_claude_and_gpt5(monkeypatch) -> None:
     monkeypatch.setenv("GOOGLE_API_KEY", "google")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -271,6 +327,35 @@ def test_phase_model_defaults_follow_new_analysis_recommendations(monkeypatch) -
         "provider": "openai",
         "model": "gpt-5.4-mini",
         "label": "GPT-5.4 mini",
+    }
+
+
+def test_resolve_openai_phase_sampling_uses_low_reasoning_for_gpt54_answering_auto() -> None:
+    resolved = resolve_openai_phase_sampling(
+        "gpt-5.4-nano",
+        "answering",
+        0.0,
+    )
+
+    assert resolved == {
+        "temperature": None,
+        "reasoning_effort": "low",
+    }
+
+
+def test_resolve_openai_phase_sampling_allows_temperature_when_reasoning_none_is_selected() -> None:
+    resolved = resolve_openai_phase_sampling(
+        "gpt-5.4-mini",
+        "answering",
+        0.0,
+        requested_reasoning_effort=None,
+        selected_temperature=0.4,
+        selected_reasoning_effort="none",
+    )
+
+    assert resolved == {
+        "temperature": 0.4,
+        "reasoning_effort": "none",
     }
 
 
@@ -557,7 +642,7 @@ def test_create_llm_ignores_selection_creativity_for_unsupported_reasoning_model
     assert called == {"model": "gpt-5.4-mini", "temperature": 0.5, "reasoning_effort": "none"}
 
 
-def test_create_llm_maps_gpt54_nano_answering_to_temperature_plus_reasoning(monkeypatch) -> None:
+def test_create_llm_maps_gpt54_nano_answering_to_low_reasoning_with_no_temperature(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
 
     called = {}
@@ -575,7 +660,35 @@ def test_create_llm_maps_gpt54_nano_answering_to_temperature_plus_reasoning(monk
         with use_stage_context("answering"):
             llm_module.create_llm(temperature=0.2)
 
-    assert called == {"model": "gpt-5.4-nano", "temperature": 0.0, "reasoning_effort": "none"}
+    assert called == {"model": "gpt-5.4-nano", "temperature": None, "reasoning_effort": "low"}
+
+
+def test_create_llm_allows_temperature_when_gpt54_nano_answering_reasoning_is_none(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    called = {}
+
+    def fake_openai(model, temperature, timeout_s, max_retries, reasoning_effort=None):
+        called["model"] = model
+        called["temperature"] = temperature
+        called["reasoning_effort"] = reasoning_effort
+        return object()
+
+    monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable, **kwargs: runnable)
+
+    with use_run_context(
+        llm_selection={
+            "provider": "openai",
+            "model": "gpt-5.4-nano",
+            "temperature": 0.2,
+            "reasoning_effort": "none",
+        }
+    ):
+        with use_stage_context("answering"):
+            llm_module.create_llm(temperature=0.0)
+
+    assert called == {"model": "gpt-5.4-nano", "temperature": 0.2, "reasoning_effort": "none"}
 
 
 def test_create_llm_maps_gpt54_mini_ranking_upside_to_temperature_plus_reasoning(monkeypatch) -> None:
@@ -599,7 +712,7 @@ def test_create_llm_maps_gpt54_mini_ranking_upside_to_temperature_plus_reasoning
     assert called == {"model": "gpt-5.4-mini", "temperature": 0.7, "reasoning_effort": "none"}
 
 
-def test_create_llm_maps_gpt52_ranking_upside_to_temperature_plus_reasoning(monkeypatch) -> None:
+def test_create_llm_maps_gpt52_ranking_upside_to_reasoning_only(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
 
     called = {}
@@ -617,7 +730,7 @@ def test_create_llm_maps_gpt52_ranking_upside_to_temperature_plus_reasoning(monk
         with use_stage_context("ranking_upside_score"):
             llm_module.create_llm(temperature=0.0)
 
-    assert called == {"model": "gpt-5.2", "temperature": 0.7, "reasoning_effort": "none"}
+    assert called == {"model": "gpt-5.2", "temperature": None, "reasoning_effort": "none"}
 
 
 def test_create_llm_maps_gpt54_mini_evaluation_to_reasoning_only(monkeypatch) -> None:
@@ -1180,10 +1293,28 @@ def test_start_analysis_persists_phase_model_selection(monkeypatch) -> None:
                 "input_mode": "pitchdeck",
                 "phase_models": {
                     "decomposition": {"provider": "anthropic", "model": "claude-haiku-4-5-20251001"},
-                    "answering": {"provider": "gemini", "model": "gemini-3.1-flash-lite-preview"},
-                    "generation": {"provider": "openai", "model": "gpt-5", "creativity": 0.8},
-                    "evaluation": {"provider": "openai", "model": "gpt-5.4-mini", "creativity": 0.9},
-                    "ranking": {"provider": "openai", "model": "gpt-4.1-mini", "creativity": 0.4},
+                    "answering": {
+                        "provider": "openai",
+                        "model": "gpt-5.4-nano",
+                        "reasoning_effort": "none",
+                        "temperature": 0.2,
+                    },
+                    "generation": {
+                        "provider": "openai",
+                        "model": "gpt-5",
+                        "creativity": 0.8,
+                    },
+                    "evaluation": {
+                        "provider": "openai",
+                        "model": "gpt-5.4-mini",
+                        "reasoning_effort": "high",
+                    },
+                    "ranking": {
+                        "provider": "openai",
+                        "model": "gpt-4.1-mini",
+                        "creativity": 0.4,
+                        "temperature": 0.1,
+                    },
                 },
             },
         )
@@ -1192,17 +1323,22 @@ def test_start_analysis_persists_phase_model_selection(monkeypatch) -> None:
 
         cache = web_app_module._results_cache[job_id]
         assert cache["phase_models"]["decomposition"]["provider"] == "anthropic"
-        assert cache["llm_selection"]["provider"] == "gemini"
+        assert cache["phase_models"]["answering"]["reasoning_effort"] == "none"
+        assert cache["phase_models"]["answering"]["temperature"] == 0.2
+        assert cache["llm_selection"]["provider"] == "openai"
         assert cache["quality_tier"] is None
-        assert cache["effective_phase_models"]["critique"]["provider"] == "gemini"
+        assert cache["effective_phase_models"]["critique"]["provider"] == "openai"
+        assert "reasoning_effort" not in cache["effective_phase_models"]["critique"]
         assert cache["effective_phase_models"]["generation"]["creativity"] == 0.8
-        assert "creativity" not in cache["effective_phase_models"]["evaluation"]
+        assert cache["effective_phase_models"]["evaluation"]["reasoning_effort"] == "high"
         assert cache["effective_phase_models"]["ranking"]["creativity"] == 0.4
+        assert cache["effective_phase_models"]["ranking"]["temperature"] == 0.1
         assert cache["effective_phase_models"]["ranking"]["model"] == "gpt-4.1-mini"
         assert cache["run_config"]["phase_models"]["generation"]["model"] == "gpt-5"
         assert cache["run_config"]["phase_models"]["generation"]["creativity"] == 0.8
+        assert cache["run_config"]["phase_models"]["answering"]["reasoning_effort"] == "none"
         assert cache["run_config"]["llm"] == (
-            "Per-phase · D Claude Haiku 4.5 · A Gemini 3.1 Flash Lite"
+            "Per-phase · D Claude Haiku 4.5 · A GPT-5.4 nano"
             " · G GPT-5 · E GPT-5.4 mini · R GPT-4.1 mini"
         )
 
@@ -1337,6 +1473,54 @@ def test_start_analysis_rejects_invalid_creativity(monkeypatch) -> None:
 
     assert analyze.status_code == 422
     assert "Creativity must be between 0.0 and 2.0." in analyze.text
+
+
+def test_start_analysis_rejects_temperature_when_reasoning_is_enabled_for_gpt54(monkeypatch) -> None:
+    from web import app as web_app_module
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "google")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic")
+
+    class FakeThread:
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+            self.daemon = daemon
+
+        def start(self):
+            raise AssertionError("analysis thread should not start for invalid temperature/reasoning combo")
+
+    monkeypatch.setattr(web_app_module.threading, "Thread", FakeThread)
+
+    with TestClient(app) as client:
+        _login(client)
+        upload = client.post(
+            "/api/upload",
+            files={"files": ("deck.txt", io.BytesIO(b"sample content"), "text/plain")},
+        )
+        job_id = upload.json()["job_id"]
+
+        analyze = client.post(
+            f"/api/analyze/{job_id}",
+            json={
+                "input_mode": "pitchdeck",
+                "phase_models": {
+                    "decomposition": {"provider": "openai", "model": "gpt-5.4-mini"},
+                    "answering": {
+                        "provider": "openai",
+                        "model": "gpt-5.4-nano",
+                        "temperature": 0.2,
+                        "reasoning_effort": "low",
+                    },
+                    "generation": {"provider": "openai", "model": "gpt-5.4-mini"},
+                    "evaluation": {"provider": "openai", "model": "gpt-5.4-mini"},
+                    "ranking": {"provider": "openai", "model": "gpt-5.4-mini"},
+                },
+            },
+        )
+
+    assert analyze.status_code == 422
+    assert "only supports temperature when reasoning_effort is 'none'" in analyze.text
 
 
 def test_start_analysis_normalizes_google_provider_alias(monkeypatch) -> None:

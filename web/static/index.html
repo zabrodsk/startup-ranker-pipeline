@@ -848,25 +848,50 @@
       outline: none;
       min-height: 44px;
     }
-    .phase-creativity-block {
+    .phase-advanced-block {
       display: flex;
       flex-direction: column;
       gap: 8px;
       margin-top: 4px;
     }
-    .phase-creativity-header,
-    .phase-creativity-control {
+    .phase-advanced-row,
+    .phase-advanced-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
     }
-    .phase-creativity-title {
+    .phase-advanced-row {
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+    .phase-advanced-label {
       font-size: 12px;
       font-weight: 600;
       color: var(--text-mid);
     }
-    .phase-creativity-badge {
+    .phase-advanced-control {
+      flex: 1 1 180px;
+      min-width: 0;
+    }
+    .phase-advanced-select {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 10px 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      color: var(--text-light);
+      font: 13px var(--font-body);
+      outline: none;
+      min-height: 40px;
+    }
+    .phase-advanced-select:disabled,
+    .phase-temperature-slider:disabled {
+      opacity: 0.65;
+      cursor: not-allowed;
+    }
+    .phase-advanced-badge {
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -881,29 +906,87 @@
       text-transform: uppercase;
       cursor: pointer;
     }
-    .phase-creativity-badge.is-auto {
+    .phase-advanced-badge.is-auto {
       color: var(--green);
       border-color: var(--green-border-strong);
       background: var(--green-surface-subtle);
     }
-    .phase-creativity-slider {
+    .phase-temperature-block {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .phase-temperature-slider-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .phase-temperature-slider-wrap {
       flex: 1 1 auto;
-      accent-color: var(--green);
+      min-width: 0;
+    }
+    .phase-temperature-slider {
+      --phase-slider-pct: 0%;
+      width: 100%;
+      height: 22px;
+      margin: 0;
+      appearance: none;
+      -webkit-appearance: none;
+      background: transparent;
       cursor: pointer;
     }
-    .phase-creativity-value {
-      min-width: 74px;
+    .phase-temperature-slider::-webkit-slider-runnable-track {
+      height: 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.18);
+      background:
+        linear-gradient(90deg, rgba(13, 209, 111, 0.82) 0%, rgba(13, 209, 111, 0.82) var(--phase-slider-pct), rgba(255,255,255,0.2) var(--phase-slider-pct), rgba(255,255,255,0.2) 100%);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+    }
+    .phase-temperature-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 28px;
+      height: 28px;
+      margin-top: -8px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.22);
+      background: #e7e9ee;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.18);
+    }
+    .phase-temperature-slider::-moz-range-track {
+      height: 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(255,255,255,0.2);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+    }
+    .phase-temperature-slider::-moz-range-progress {
+      height: 14px;
+      border-radius: 999px;
+      background: rgba(13, 209, 111, 0.82);
+    }
+    .phase-temperature-slider::-moz-range-thumb {
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.22);
+      background: #e7e9ee;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.18);
+    }
+    .phase-temperature-value {
+      min-width: 42px;
       text-align: right;
-      font-size: 12px;
-      font-weight: 600;
+      font-size: 14px;
+      font-weight: 700;
       color: var(--text-light);
     }
-    .phase-creativity-note {
+    .phase-advanced-note {
       font-size: 12px;
       line-height: 1.5;
       color: var(--text-gray);
     }
-    .phase-creativity-note.is-unsupported {
+    .phase-advanced-note.is-unsupported {
       color: var(--text-mid);
     }
     .advanced-llm-section {
@@ -2095,6 +2178,75 @@
       cursor: pointer;
     }
     .audit-modal-close:hover { border-color: var(--text-gray); }
+    .audit-search-shell {
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-dark);
+    }
+    .audit-search-icon {
+      color: var(--text-dim);
+      font-size: 13px;
+      flex-shrink: 0;
+    }
+    .audit-search-input {
+      flex: 1;
+      border: none;
+      outline: none;
+      background: transparent;
+      color: var(--text-light);
+      font-size: 13px;
+    }
+    .audit-search-input::placeholder { color: var(--text-dim); }
+    .audit-search-hint {
+      color: var(--text-dim);
+      font-size: 11px;
+      letter-spacing: 0.3px;
+      flex-shrink: 0;
+    }
+    .audit-empty-state {
+      padding: 18px 16px;
+      border: 1px dashed var(--border-subtle);
+      border-radius: var(--radius-md);
+      background: color-mix(in srgb, var(--bg-dark) 82%, transparent);
+      color: var(--text-dim);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .audit-dimension-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .audit-dimension-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 10px;
+      border-radius: var(--radius-full);
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-card);
+      color: var(--text-mid);
+      font-size: 12px;
+    }
+    .audit-dimension-pill strong { color: var(--text-light); }
+    .audit-note {
+      margin-top: 10px;
+      color: var(--text-dim);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .audit-highlight {
+      background: color-mix(in srgb, var(--green) 30%, transparent);
+      color: var(--text-light);
+      border-radius: 3px;
+      padding: 0 1px;
+    }
     .companies-page {
       height: 100%;
       display: grid;
@@ -3358,6 +3510,17 @@
       --dim-color: var(--green);
       --dim-color-bg: var(--green-bg);
     }
+    .dim-bar-row.is-clickable {
+      cursor: pointer;
+      border-radius: var(--radius-md);
+      padding: 6px 8px;
+      margin: 0 -8px 8px;
+      transition: background 0.2s ease, box-shadow 0.2s ease;
+    }
+    .dim-bar-row.is-clickable:focus-visible {
+      outline: 1px solid color-mix(in srgb, var(--dim-color) 55%, white 45%);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--dim-color-bg) 60%, transparent);
+    }
     .dim-label {
       width: 100px; color: var(--text-gray);
       text-transform: capitalize;
@@ -4049,6 +4212,9 @@
       border-color: color-mix(in srgb, var(--dim-color) 30%, rgba(255,255,255,0.06));
       background: color-mix(in srgb, var(--dim-color-bg) 55%, rgba(255,255,255,0.02));
     }
+    .dim-bar-row.is-clickable:hover {
+      background: color-mix(in srgb, var(--dim-color-bg) 30%, transparent);
+    }
 
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
@@ -4717,20 +4883,14 @@ const USER_PHASE_LABELS = {
   evaluation: 'Evaluation',
   ranking: 'Ranking',
 };
-const PHASE_AUTO_CREATIVITY = {
-  decomposition: 0.5,
-  answering: 0.0,
-  generation: 0.5,
-  evaluation: 0.0,
-  ranking: 0.3,
-};
-const CREATIVITY_MIN = 0;
-const CREATIVITY_MAX = 2;
-const CREATIVITY_STEP = 0.1;
+const TEMPERATURE_MIN = 0;
+const TEMPERATURE_MAX = 2;
+const TEMPERATURE_STEP = 0.1;
 let selectedPhaseModelSettings = {};
 let analysisConfigLoadState = 'idle';
 let analysisFocusJobId = null;
 let analysisFocusClearTimer = null;
+let auditModalState = null;
 let supabaseClient = null;
 let supabaseClientPromise = null;
 let supabaseIdentity = null;
@@ -5157,12 +5317,24 @@ function normalizeCreativityValue(value) {
   if (value === null || value === undefined || value === '') return null;
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return null;
-  const bounded = Math.min(CREATIVITY_MAX, Math.max(CREATIVITY_MIN, numeric));
+  const bounded = Math.min(TEMPERATURE_MAX, Math.max(TEMPERATURE_MIN, numeric));
   return Math.round(bounded * 10) / 10;
 }
 
 function supportsPhaseCreativity(model) {
   return !!model?.supports_creativity_control;
+}
+
+function supportsPhaseTemperature(model) {
+  return !!model?.supports_temperature_control;
+}
+
+function supportsPhaseReasoning(model) {
+  return !!model?.supports_reasoning_effort_control;
+}
+
+function getPhaseReasoningOptions(model) {
+  return Array.isArray(model?.reasoning_effort_options) ? model.reasoning_effort_options : [];
 }
 
 function getPhaseModelSetting(phase) {
@@ -5171,31 +5343,153 @@ function getPhaseModelSetting(phase) {
     return {
       key: typeof raw.key === 'string' ? raw.key : '',
       creativity: normalizeCreativityValue(raw.creativity),
+      temperature: normalizeCreativityValue(raw.temperature),
+      reasoning_effort: typeof raw.reasoning_effort === 'string' && raw.reasoning_effort ? raw.reasoning_effort : null,
     };
   }
   if (typeof raw === 'string') {
-    return { key: raw, creativity: null };
+    return { key: raw, creativity: null, temperature: null, reasoning_effort: null };
   }
-  return { key: '', creativity: null };
+  return { key: '', creativity: null, temperature: null, reasoning_effort: null };
 }
 
 function setPhaseModelSetting(phase, nextSetting) {
-  selectedPhaseModelSettings[phase] = {
+  const next = {
     key: String(nextSetting?.key || ''),
     creativity: normalizeCreativityValue(nextSetting?.creativity),
+    temperature: normalizeCreativityValue(nextSetting?.temperature),
+    reasoning_effort: typeof nextSetting?.reasoning_effort === 'string' && nextSetting.reasoning_effort ? nextSetting.reasoning_effort : null,
   };
+  const model = getModelByKey(next.key);
+  if (!supportsPhaseTemperature(model)) next.temperature = null;
+  const reasoningOptions = getPhaseReasoningOptions(model);
+  if (!supportsPhaseReasoning(model) || !reasoningOptions.includes(next.reasoning_effort || '')) {
+    next.reasoning_effort = null;
+  }
+  if (model?.temperature_requires_reasoning_none) {
+    const effectiveReasoning = getEffectivePhaseReasoningEffort(phase, model, next);
+    if (effectiveReasoning && effectiveReasoning !== 'none') {
+      next.temperature = null;
+    }
+  }
+  selectedPhaseModelSettings[phase] = next;
 }
 
-function getPhaseSliderValue(phase, model) {
-  const setting = getPhaseModelSetting(phase);
-  if (setting.creativity !== null) return setting.creativity;
-  return normalizeCreativityValue(model?.default_creativity) ?? PHASE_AUTO_CREATIVITY[phase] ?? 0.5;
+function getAutoReasoningEffort(phase, model) {
+  const modelId = model?.model || '';
+  if (modelId === 'gpt-5.4-mini' || modelId === 'gpt-5.4-nano') {
+    const defaults = {
+      decomposition: 'none',
+      answering: 'low',
+      generation: 'none',
+      evaluation: 'medium',
+      ranking: 'high',
+    };
+    return defaults[phase] || null;
+  }
+  if (modelId === 'gpt-5.2' || modelId === 'gpt-5.4') {
+    const defaults = {
+      decomposition: 'medium',
+      answering: 'low',
+      generation: 'medium',
+      evaluation: 'high',
+      ranking: modelId === 'gpt-5.4' ? 'xhigh' : 'high',
+    };
+    return defaults[phase] || null;
+  }
+  return null;
 }
 
-function formatCreativityValue(value) {
+function getEffectivePhaseReasoningEffort(phase, model, setting = getPhaseModelSetting(phase)) {
+  if (!supportsPhaseReasoning(model)) return null;
+  return setting.reasoning_effort || getAutoReasoningEffort(phase, model);
+}
+
+function formatReasoningEffortValue(value) {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!normalized) return '';
+  if (normalized === 'xhigh') return 'XHigh';
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function getAutoReasoningOptionLabel(phase, model) {
+  const autoValue = getAutoReasoningEffort(phase, model);
+  if (!autoValue) return 'Auto';
+  return `Auto (${formatReasoningEffortValue(autoValue)})`;
+}
+
+function canShowPhaseTemperatureControl(phase, model, setting = getPhaseModelSetting(phase)) {
+  if (!supportsPhaseTemperature(model)) return false;
+  if (!model?.temperature_requires_reasoning_none) return true;
+  const effectiveReasoning = getEffectivePhaseReasoningEffort(phase, model, setting);
+  return !effectiveReasoning || effectiveReasoning === 'none';
+}
+
+function getPhaseAdvancedNote(phase, model, setting) {
+  const supportsTemperature = supportsPhaseTemperature(model);
+  const supportsReasoning = supportsPhaseReasoning(model);
+  if (!supportsTemperature && !supportsReasoning) {
+    return 'This model uses fixed sampling for this stage.';
+  }
+  if (phase === 'answering' && (model?.model === 'gpt-5.4-mini' || model?.model === 'gpt-5.4-nano')) {
+    const effectiveReasoning = getEffectivePhaseReasoningEffort(phase, model, setting);
+    if (!setting.reasoning_effort && effectiveReasoning === 'low') {
+      return 'Auto uses low reasoning and omits temperature for stronger grounded answers.';
+    }
+    if (effectiveReasoning && effectiveReasoning !== 'none') {
+      return 'Temperature is omitted whenever reasoning effort is enabled for this model.';
+    }
+  }
+  if (supportsTemperature && setting.temperature === null) {
+    const autoTemperature = getAutoPhaseTemperatureValue(phase, model, setting);
+    if (autoTemperature !== null) {
+      return `Auto uses the built-in stage policy (${formatTemperatureValue(autoTemperature)}) until you set an explicit override.`;
+    }
+  }
+  return 'Auto uses the built-in stage policy until you set an explicit override.';
+}
+
+function getAutoPhaseTemperatureValue(phase, model, setting = getPhaseModelSetting(phase)) {
+  if (!supportsPhaseTemperature(model)) return null;
+  if (model?.temperature_requires_reasoning_none) {
+    const effectiveReasoning = getEffectivePhaseReasoningEffort(phase, model, setting);
+    if (effectiveReasoning && effectiveReasoning !== 'none') return null;
+  }
+  const defaults = {
+    decomposition: 0.5,
+    answering: 0.0,
+    generation: 0.7,
+    evaluation: 0.0,
+    ranking: 0.3,
+  };
+  return defaults[phase] ?? 0.0;
+}
+
+function getDisplayedPhaseTemperatureValue(phase, model, setting = getPhaseModelSetting(phase)) {
+  if (setting.temperature !== null) return setting.temperature;
+  return getAutoPhaseTemperatureValue(phase, model, setting);
+}
+
+function formatTemperatureValue(value) {
   const numeric = normalizeCreativityValue(value);
-  if (numeric === null) return 'Auto';
+  if (numeric === null) return '0.0';
   return numeric.toFixed(1);
+}
+
+function getSliderPercent(value) {
+  const numeric = normalizeCreativityValue(value) ?? TEMPERATURE_MIN;
+  const range = TEMPERATURE_MAX - TEMPERATURE_MIN;
+  if (range <= 0) return 0;
+  return ((numeric - TEMPERATURE_MIN) / range) * 100;
+}
+
+function buildTemperatureSliderStyle(value) {
+  return `--phase-slider-pct: ${getSliderPercent(value).toFixed(2)}%;`;
+}
+
+function updatePhaseTemperatureSliderUi(slider, value) {
+  if (!slider) return;
+  slider.style.setProperty('--phase-slider-pct', `${getSliderPercent(value).toFixed(2)}%`);
 }
 
 function getPipelineSelectableModels() {
@@ -5211,6 +5505,8 @@ function getPhaseModelDefaults() {
         .map((phase) => [phase, {
           key: `${serverDefaults[phase].provider}:${serverDefaults[phase].model}`,
           creativity: normalizeCreativityValue(serverDefaults[phase].creativity),
+          temperature: normalizeCreativityValue(serverDefaults[phase].temperature),
+          reasoning_effort: typeof serverDefaults[phase].reasoning_effort === 'string' ? serverDefaults[phase].reasoning_effort : null,
         }])
     );
   }
@@ -5252,11 +5548,11 @@ function getPhaseModelDefaults() {
     || answeringKey;
 
   return {
-    decomposition: { key: decompositionKey || generationKey || answeringKey, creativity: null },
-    answering: { key: answeringKey, creativity: null },
-    generation: { key: generationKey, creativity: null },
-    evaluation: { key: evaluationKey, creativity: null },
-    ranking: { key: rankingKey, creativity: null },
+    decomposition: { key: decompositionKey || generationKey || answeringKey, creativity: null, temperature: null, reasoning_effort: null },
+    answering: { key: answeringKey, creativity: null, temperature: null, reasoning_effort: null },
+    generation: { key: generationKey, creativity: null, temperature: null, reasoning_effort: null },
+    evaluation: { key: evaluationKey, creativity: null, temperature: null, reasoning_effort: null },
+    ranking: { key: rankingKey, creativity: null, temperature: null, reasoning_effort: null },
   };
 }
 
@@ -5269,7 +5565,12 @@ function ensurePhaseModelSelections() {
     const current = getPhaseModelSetting(phase);
     if (current.key && available.some((item) => `${item.provider}:${item.model}` === current.key)) return;
     const defaultSetting = defaults[phase];
-    setPhaseModelSetting(phase, defaultSetting || { key: firstKey || '', creativity: null });
+    setPhaseModelSetting(phase, defaultSetting || {
+      key: firstKey || '',
+      creativity: null,
+      temperature: null,
+      reasoning_effort: null,
+    });
   });
 }
 
@@ -5295,6 +5596,8 @@ function getAnalysisSelectionPayload() {
         provider: model.provider,
         model: model.model,
         ...(supportsPhaseCreativity(model) && setting.creativity !== null ? { creativity: setting.creativity } : {}),
+        ...(supportsPhaseTemperature(model) && setting.temperature !== null ? { temperature: setting.temperature } : {}),
+        ...(supportsPhaseReasoning(model) && setting.reasoning_effort ? { reasoning_effort: setting.reasoning_effort } : {}),
       };
     });
     return {
@@ -5347,43 +5650,72 @@ function renderPhaseModelSelector() {
         const setting = getPhaseModelSetting(phase);
         const selected = setting.key || '';
         const selectedModel = getModelByKey(selected);
-        const sliderValue = getPhaseSliderValue(phase, selectedModel);
-        const isAuto = setting.creativity === null;
-        const creativityHtml = supportsPhaseCreativity(selectedModel)
+        const supportsTemperature = supportsPhaseTemperature(selectedModel);
+        const supportsReasoning = supportsPhaseReasoning(selectedModel);
+        const showTemperature = canShowPhaseTemperatureControl(phase, selectedModel, setting);
+        const reasoningOptions = getPhaseReasoningOptions(selectedModel);
+        const displayedTemperature = getDisplayedPhaseTemperatureValue(phase, selectedModel, setting);
+        const advancedHtml = (supportsTemperature || supportsReasoning)
           ? `
-            <div class="phase-creativity-block">
-              <div class="phase-creativity-header">
-                <span class="phase-creativity-title">Creativity</span>
-                <button type="button" class="phase-creativity-badge ${isAuto ? 'is-auto' : ''}" data-phase-creativity-reset="${escapeHtml(phase)}">
-                  ${isAuto ? 'Auto' : 'Reset'}
-                </button>
-              </div>
-              <div class="phase-creativity-control">
-                <input
-                  class="phase-creativity-slider"
-                  type="range"
-                  min="${CREATIVITY_MIN}"
-                  max="${CREATIVITY_MAX}"
-                  step="${CREATIVITY_STEP}"
-                  value="${sliderValue}"
-                  data-phase-creativity="${escapeHtml(phase)}"
-                >
-                <span class="phase-creativity-value" data-phase-creativity-value="${escapeHtml(phase)}">
-                  ${isAuto ? `Auto · ${formatCreativityValue(sliderValue)}` : formatCreativityValue(sliderValue)}
-                </span>
-              </div>
-              <div class="phase-creativity-note">
-                ${isAuto ? 'Uses the built-in stage default until you move the slider.' : 'Overrides the default stage sampling for this phase.'}
+            <div class="phase-advanced-block">
+              ${supportsReasoning ? `
+                <div class="phase-advanced-row">
+                  <div class="phase-advanced-label">Reasoning effort</div>
+                  <div class="phase-advanced-control">
+                    <select class="phase-advanced-select" data-phase-reasoning="${escapeHtml(phase)}">
+                      <option value="">${escapeHtml(getAutoReasoningOptionLabel(phase, selectedModel))}</option>
+                      ${reasoningOptions.map((option) => `
+                        <option value="${escapeHtml(option)}" ${setting.reasoning_effort === option ? 'selected' : ''}>${escapeHtml(option)}</option>
+                      `).join('')}
+                    </select>
+                  </div>
+                </div>
+              ` : ''}
+              ${supportsTemperature ? `
+                <div class="phase-temperature-block">
+                  <div class="phase-advanced-header">
+                    <span class="phase-advanced-label">Temperature</span>
+                    <button
+                      type="button"
+                      class="phase-advanced-badge ${setting.temperature === null ? 'is-auto' : ''}"
+                      data-phase-temperature-reset="${escapeHtml(phase)}"
+                      ${showTemperature ? '' : 'disabled'}
+                    >
+                      RESET
+                    </button>
+                  </div>
+                  <div class="phase-temperature-slider-row">
+                    <div class="phase-temperature-slider-wrap">
+                      <input
+                        class="phase-temperature-slider"
+                        type="range"
+                        min="${TEMPERATURE_MIN}"
+                        max="${TEMPERATURE_MAX}"
+                        step="${TEMPERATURE_STEP}"
+                        value="${displayedTemperature ?? TEMPERATURE_MIN}"
+                        style="${buildTemperatureSliderStyle(displayedTemperature)}"
+                        data-phase-temperature="${escapeHtml(phase)}"
+                        ${showTemperature ? '' : 'disabled'}
+                      >
+                    </div>
+                    <span class="phase-temperature-value" data-phase-temperature-value="${escapeHtml(phase)}">
+                      ${formatTemperatureValue(displayedTemperature)}
+                    </span>
+                  </div>
+                </div>
+              ` : ''}
+              <div class="phase-advanced-note">
+                ${escapeHtml(getPhaseAdvancedNote(phase, selectedModel, setting))}
               </div>
             </div>
           `
           : `
-            <div class="phase-creativity-note is-unsupported">
-              This model uses fixed sampling for this stage.
+            <div class="phase-advanced-note is-unsupported">
+              ${escapeHtml(getPhaseAdvancedNote(phase, selectedModel, setting))}
             </div>
           `;
         return `
-          <label class="premium-phase-field">
+          <div class="premium-phase-field">
             <span class="premium-phase-label">${escapeHtml(USER_PHASE_LABELS[phase])}</span>
             <select class="premium-phase-select" data-phase-model="${escapeHtml(phase)}">
               ${models.map((item) => {
@@ -5391,8 +5723,8 @@ function renderPhaseModelSelector() {
                 return `<option value="${escapeHtml(key)}" ${selected === key ? 'selected' : ''}>${escapeHtml(item.label)}</option>`;
               }).join('')}
             </select>
-            ${creativityHtml}
-          </label>
+            ${advancedHtml}
+          </div>
         `;
       }).join('')}
     </div>
@@ -5402,34 +5734,78 @@ function renderPhaseModelSelector() {
     select.addEventListener('change', (event) => {
       const phase = event.target.getAttribute('data-phase-model');
       const current = getPhaseModelSetting(phase);
-      setPhaseModelSetting(phase, { key: event.target.value || '', creativity: current.creativity });
+      setPhaseModelSetting(phase, {
+        key: event.target.value || '',
+        creativity: current.creativity,
+        temperature: current.temperature,
+        reasoning_effort: current.reasoning_effort,
+      });
       selectedLlmKey = null;
       renderPhaseModelSelector();
       renderLlmSelector();
     });
   });
 
-  config.querySelectorAll('[data-phase-creativity]').forEach((slider) => {
-    slider.addEventListener('input', (event) => {
-      const phase = event.target.getAttribute('data-phase-creativity');
+  config.querySelectorAll('[data-phase-reasoning]').forEach((select) => {
+    select.addEventListener('change', (event) => {
+      const phase = event.target.getAttribute('data-phase-reasoning');
+      const current = getPhaseModelSetting(phase);
+      setPhaseModelSetting(phase, {
+        key: current.key,
+        creativity: current.creativity,
+        temperature: current.temperature,
+        reasoning_effort: event.target.value || null,
+      });
+      selectedLlmKey = null;
+      renderPhaseModelSelector();
+      renderLlmSelector();
+    });
+  });
+
+  config.querySelectorAll('[data-phase-temperature]').forEach((input) => {
+    input.addEventListener('input', (event) => {
+      const phase = event.target.getAttribute('data-phase-temperature');
       const current = getPhaseModelSetting(phase);
       const nextValue = normalizeCreativityValue(event.target.value);
-      setPhaseModelSetting(phase, { key: current.key, creativity: nextValue });
-      const valueEl = config.querySelector(`[data-phase-creativity-value="${phase}"]`);
-      if (valueEl) valueEl.textContent = formatCreativityValue(nextValue);
-    });
-    slider.addEventListener('change', () => {
+      setPhaseModelSetting(phase, {
+        key: current.key,
+        creativity: current.creativity,
+        temperature: nextValue,
+        reasoning_effort: current.reasoning_effort,
+      });
+      updatePhaseTemperatureSliderUi(event.target, nextValue);
+      const valueEl = config.querySelector(`[data-phase-temperature-value="${phase}"]`);
+      if (valueEl) valueEl.textContent = formatTemperatureValue(nextValue);
+      const resetEl = config.querySelector(`[data-phase-temperature-reset="${phase}"]`);
+      if (resetEl) resetEl.classList.remove('is-auto');
       selectedLlmKey = null;
-      renderPhaseModelSelector();
+    });
+    input.addEventListener('change', (event) => {
+      const phase = event.target.getAttribute('data-phase-temperature');
+      const current = getPhaseModelSetting(phase);
+      const nextValue = normalizeCreativityValue(event.target.value);
+      setPhaseModelSetting(phase, {
+        key: current.key,
+        creativity: current.creativity,
+        temperature: nextValue,
+        reasoning_effort: current.reasoning_effort,
+      });
+      updatePhaseTemperatureSliderUi(event.target, nextValue);
+      selectedLlmKey = null;
       renderLlmSelector();
     });
   });
 
-  config.querySelectorAll('[data-phase-creativity-reset]').forEach((button) => {
+  config.querySelectorAll('[data-phase-temperature-reset]').forEach((button) => {
     button.addEventListener('click', (event) => {
-      const phase = event.currentTarget.getAttribute('data-phase-creativity-reset');
+      const phase = event.currentTarget.getAttribute('data-phase-temperature-reset');
       const current = getPhaseModelSetting(phase);
-      setPhaseModelSetting(phase, { key: current.key, creativity: null });
+      setPhaseModelSetting(phase, {
+        key: current.key,
+        creativity: current.creativity,
+        temperature: null,
+        reasoning_effort: current.reasoning_effort,
+      });
       selectedLlmKey = null;
       renderPhaseModelSelector();
       renderLlmSelector();
@@ -6431,6 +6807,7 @@ function renderAnalysisHistoryScreen() {
 
 function getSavedCompanySortLabel(mode) {
   if (mode === 'latest') return 'Latest';
+  if (mode === 'alphabetical') return 'Alphabetical';
   if (mode === 'strategy_fit') return 'Strategy Fit';
   if (mode === 'team') return 'Team';
   if (mode === 'upside') return 'Potential';
@@ -6446,6 +6823,11 @@ function getCompanyDimScores(company) {
   // 1. dimension_scores array (single-mode runs with full ranking)
   if (ranking.dimension_scores?.length) {
     for (const d of ranking.dimension_scores) {
+      dimScores[d.dimension] = d.adjusted_score ?? d.score ?? null;
+    }
+  }
+  if (!Object.keys(dimScores).length && summary.dimension_scores?.length) {
+    for (const d of summary.dimension_scores) {
       dimScores[d.dimension] = d.adjusted_score ?? d.score ?? null;
     }
   }
@@ -6475,7 +6857,11 @@ function sortSavedCompanies(companies) {
     list.sort((a, b) => {
       const aTs = new Date(a.latest_run_at || 0).getTime();
       const bTs = new Date(b.latest_run_at || 0).getTime();
-      return bTs - aTs;
+      if (aTs !== bTs) return bTs - aTs;
+      const aScore = Number(a.latest_score ?? a.latest_total_score ?? -999999);
+      const bScore = Number(b.latest_score ?? b.latest_total_score ?? -999999);
+      if (aScore !== bScore) return bScore - aScore;
+      return String(a.company_name || a.company_key || '').localeCompare(String(b.company_name || b.company_key || ''), undefined, { sensitivity: 'base' });
     });
     return list;
   }
@@ -6969,15 +7355,20 @@ function renderCompanyDetail(company, run) {
   const composite = ranking.composite_score ?? run?.composite_score ?? summary.composite_score ?? result.total_score ?? run?.total_score ?? '—';
   const bucket = ranking.bucket || run?.bucket || summary.bucket || '';
   const bucketLabel = bucket === 'priority_review' ? 'Priority Review' : bucket === 'watchlist' ? 'Watchlist' : bucket ? 'Low Priority' : '';
-  const dimBars = ranking.dimension_scores?.length
-    ? buildDimensionBars(ranking.dimension_scores, typeof composite === 'number' ? composite : null)
-    : ((summary.strategy_fit_score !== undefined && summary.team_score !== undefined && summary.upside_score !== undefined)
-      ? buildDimensionBars([
-          { dimension: 'strategy_fit', adjusted_score: summary.strategy_fit_score },
-          { dimension: 'team', adjusted_score: summary.team_score },
-          { dimension: 'upside', adjusted_score: summary.upside_score },
-        ], typeof composite === 'number' ? composite : null)
-      : '');
+  const detailDimScores = ranking.dimension_scores?.length
+    ? ranking.dimension_scores
+    : (summary.dimension_scores?.length
+      ? summary.dimension_scores
+      : ((summary.strategy_fit_score !== undefined && summary.team_score !== undefined && summary.upside_score !== undefined)
+        ? [
+            { dimension: 'strategy_fit', adjusted_score: summary.strategy_fit_score },
+            { dimension: 'team', adjusted_score: summary.team_score },
+            { dimension: 'upside', adjusted_score: summary.upside_score },
+          ]
+        : []));
+  const dimBars = detailDimScores.length
+    ? buildDimensionBars(detailDimScores, typeof composite === 'number' ? composite : null, companySlug)
+    : '';
   const executiveSummaryBlock = buildExecutiveSummaryBlock(Object.keys(ranking).length ? ranking : summary);
   const proHtml = getCompanyDetailArgumentHtml(result, 'pro');
   const contraHtml = getCompanyDetailArgumentHtml(result, 'contra');
@@ -8860,8 +9251,9 @@ function sortSummaryRows(rows, mode) {
   return decorated.map((item) => item.row);
 }
 
-function buildDimensionBars(dimScores, compositeScore = null) {
+function buildDimensionBars(dimScores, compositeScore = null, auditSlug = '') {
   if (!dimScores || !dimScores.length) return '';
+  const slugAttr = escapeHtml(String(auditSlug || ''));
   let rows = '';
   if (typeof compositeScore === 'number' && Number.isFinite(compositeScore)) {
     const compositePct = Math.min(100, Math.max(0, Math.round(compositeScore)));
@@ -8871,7 +9263,11 @@ function buildDimensionBars(dimScores, compositeScore = null) {
     const pct = Math.min(100, Math.round(d.adjusted_score || 0));
     const label = getDimensionLabel(d.dimension);
     const dimClass = String(d.dimension || '').replace(/_/g, '-');
-    return `<div class="dim-bar-row ${dimClass}"><span class="dim-label">${label}</span><div class="dim-bar-bg"><div class="dim-bar-fill" style="width:${pct}%"></div></div><span class="dim-value">${pct}</span></div>`;
+    const isClickable = Boolean(slugAttr) && ['strategy_fit', 'team', 'upside'].includes(String(d.dimension || ''));
+    const interactiveAttrs = isClickable
+      ? ` tabindex="0" role="button" data-audit-dimension="${escapeHtml(String(d.dimension || ''))}" data-slug="${slugAttr}" aria-label="Open ${escapeHtml(label)} audit evidence"`
+      : '';
+    return `<div class="dim-bar-row ${dimClass}${isClickable ? ' is-clickable' : ''}"${interactiveAttrs}><span class="dim-label">${label}</span><div class="dim-bar-bg"><div class="dim-bar-fill" style="width:${pct}%"></div></div><span class="dim-value">${pct}</span></div>`;
   }).join('');
   return rows;
 }
@@ -9041,7 +9437,7 @@ function renderSingleResult(r) {
     `<div class="arg-item"><span class="arg-score contra">${a.score}</span>${a.text}</div>`
   ).join('');
 
-  const dimBars = r.ranking_result?.dimension_scores ? buildDimensionBars(r.ranking_result.dimension_scores, composite !== undefined ? composite : r.total_score) : '';
+  const dimBars = r.ranking_result?.dimension_scores ? buildDimensionBars(r.ranking_result.dimension_scores, composite !== undefined ? composite : r.total_score, r.startup_slug || r.company_name || '') : '';
   const executiveSummaryBlock = buildExecutiveSummaryBlock(r.ranking_result);
   const personIntelHtml = renderPersonIntelSection(
     (r.startup_slug || r.company_name || ''),
@@ -9119,12 +9515,17 @@ function renderBatchResults(r) {
     const bucket = row.bucket || '';
     const bucketLabel = bucket === 'priority_review' ? 'Priority Review' : bucket === 'watchlist' ? 'Watchlist' : bucket ? 'Low Priority' : '';
     const composite = typeof row.composite_score === 'number' ? row.composite_score : row.total_score;
-    const dimBars = (row.strategy_fit_score !== undefined && row.team_score !== undefined && row.upside_score !== undefined)
-      ? buildDimensionBars([
-          { dimension: 'strategy_fit', adjusted_score: row.strategy_fit_score },
-          { dimension: 'team', adjusted_score: row.team_score },
-          { dimension: 'upside', adjusted_score: row.upside_score },
-        ], composite)
+    const rowDimScores = Array.isArray(row.dimension_scores) && row.dimension_scores.length
+      ? row.dimension_scores
+      : ((row.strategy_fit_score !== undefined && row.team_score !== undefined && row.upside_score !== undefined)
+        ? [
+            { dimension: 'strategy_fit', adjusted_score: row.strategy_fit_score },
+            { dimension: 'team', adjusted_score: row.team_score },
+            { dimension: 'upside', adjusted_score: row.upside_score },
+          ]
+        : []);
+    const dimBars = rowDimScores.length
+      ? buildDimensionBars(rowDimScores, composite, row.startup_slug || row.company_name || '')
       : '';
     const executiveSummaryBlock = buildExecutiveSummaryBlock(row);
     const personIntelHtml = renderPersonIntelSection(
@@ -9201,97 +9602,356 @@ function renderBatchResults(r) {
     (cardsHtml || '<p style="color:var(--text-dim)">No companies were successfully evaluated.</p>') + failedHtml;
 }
 
-function showAuditLog(slug) {
-  if (!currentResults || !slug) return;
-  const r = currentResults;
-  const summaryRows = r.summary_rows || [];
-  const summary = r.mode === 'batch'
-    ? summaryRows.find((row) => (row.startup_slug || row.company_name) === slug)
-    : summaryRows[0] || { company_name: r.company_name, startup_slug: r.startup_slug || r.company_name, decision: r.decision, total_score: r.total_score, avg_pro: r.avg_pro, avg_contra: r.avg_contra };
-  const companyName = summary?.company_name || r.company_name || slug;
-  const argRows = (r.argument_rows || []).filter((a) => (a.startup_slug || a.company_name) === slug);
-  const qaRows = (r.qa_provenance_rows || []).filter((q) => (q.startup_slug || q.company_name) === slug);
-
-  const avgPro = summary?.avg_pro ?? r.avg_pro ?? 0;
-  const avgContra = summary?.avg_contra ?? r.avg_contra ?? 0;
-  const totalScore = summary?.total_score ?? r.total_score ?? 0;
-
-  let html = '';
-  html += `<div class="audit-section"><div class="audit-section-title">Decision</div><div class="audit-section-body">`;
-  html += SHOW_AVG_PRO_CONTRA_SCORES
-    ? `<div class="audit-decision-reason">Avg pro: ${avgPro} · Avg contra: ${avgContra} → total score ${totalScore}. Invest when pro > contra.</div>`
-    : `<div class="audit-decision-reason">Total score ${totalScore}.</div>`;
-  html += `</div></div>`;
-
-  html += `<div class="audit-section"><div class="audit-section-title">Evidence Used</div><div class="audit-section-body">`;
-  if (qaRows.length === 0) {
-    html += `<div class="audit-qa-block"><div class="audit-qa-a" style="color:var(--text-dim)">No provenance data available.</div></div>`;
-  } else {
-    qaRows.forEach((qa) => {
-      html += `<div class="audit-qa-block">`;
-      html += `<div class="audit-qa-q">Q: ${escapeHtml(qa.question || '')}</div>`;
-      html += `<div class="audit-qa-a">${escapeHtml(qa.answer || '')}</div>`;
-      if (qa.web_search_decision) {
-        const used = !!qa.web_search_used;
-        const label = used ? 'Web search used' : 'Web search skipped';
-        html += `<div class="audit-qa-a" style="font-size:12px;color:var(--text-dim)">${label}: ${escapeHtml(qa.web_search_decision)}</div>`;
-      }
-      const chunkIds = (qa.chunk_ids || '').toString().split(',').map((s) => s.trim()).filter(Boolean);
-      if (chunkIds.length > 0) {
-        html += `<div class="audit-chunk-tags">`;
-        chunkIds.forEach((id) => { html += `<span class="audit-chunk-tag">${escapeHtml(id)}</span>`; });
-        html += `</div>`;
-      }
-      if (qa.chunks_preview) {
-        html += `<div class="audit-expand-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">Show chunk preview</div>`;
-        html += `<div class="audit-expand-content" style="display:none">${escapeHtml(qa.chunks_preview)}</div>`;
-      }
-      if (qa.web_search_query && qa.web_search_results) {
-        html += `<div class="audit-expand-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">Show web search</div>`;
-        html += `<div class="audit-expand-content" style="display:none">Query: ${escapeHtml(qa.web_search_query)}\n\n${escapeHtml(qa.web_search_results)}</div>`;
-      }
-      html += `</div>`;
-    });
-  }
-  html += `</div></div>`;
-
-  html += `<div class="audit-section"><div class="audit-section-title">Arguments & Reasoning</div><div class="audit-section-body">`;
-  if (argRows.length === 0) {
-    html += `<div class="audit-arg-block"><div class="audit-arg-text" style="color:var(--text-dim)">No argument details available.</div></div>`;
-  } else {
-    argRows.forEach((arg) => {
-      html += `<div class="audit-arg-block">`;
-      html += `<div class="audit-arg-header"><span class="audit-arg-type ${arg.type}">${(arg.type || '').toUpperCase()}</span><span style="font-size:12px;color:var(--text-dim)">Score ${arg.score}</span></div>`;
-      html += `<div class="audit-arg-text">${escapeHtml(arg.refined_text || arg.argument_text || '')}</div>`;
-      if (arg.qa_pairs_used) {
-        html += `<div class="audit-expand-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">Based on Q&A</div>`;
-        html += `<div class="audit-expand-content" style="display:none">${escapeHtml(arg.qa_pairs_used)}</div>`;
-      }
-      if (arg.argument_feedback) {
-        html += `<div class="audit-expand-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">Scoring criteria</div>`;
-        html += `<div class="audit-expand-content" style="display:none">${escapeHtml(arg.argument_feedback)}</div>`;
-      }
-      if (arg.critique_text) {
-        html += `<div class="audit-expand-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">Critique</div>`;
-        html += `<div class="audit-expand-content" style="display:none">${escapeHtml(arg.critique_text)}</div>`;
-      }
-      html += `</div>`;
-    });
-  }
-  html += `</div></div>`;
-
-  $('#audit-modal-title').textContent = `Audit Log — ${companyName}`;
-  $('#audit-modal-content').innerHTML = html;
-  $('#audit-modal-overlay').classList.add('audit-modal-open');
-}
-
 function escapeHtml(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
 }
 
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function highlightAuditText(value, query) {
+  const text = String(value || '');
+  const trimmed = String(query || '').trim();
+  if (!trimmed) return escapeHtml(text);
+  const regex = new RegExp(`(${escapeRegExp(trimmed)})`, 'ig');
+  return text
+    .split(regex)
+    .map((part) => (
+      part && part.toLowerCase() === trimmed.toLowerCase()
+        ? `<mark class="audit-highlight">${escapeHtml(part)}</mark>`
+        : escapeHtml(part)
+    ))
+    .join('');
+}
+
+function matchesAuditQuery(text, query) {
+  const needle = String(query || '').trim().toLowerCase();
+  if (!needle) return true;
+  return String(text || '').toLowerCase().includes(needle);
+}
+
+function normalizeAuditDimension(value) {
+  const raw = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (!raw) return '';
+  if (raw === 'potential') return 'upside';
+  if (raw === 'market/product' || raw === 'market_product') return 'upside';
+  if (raw === 'general_company' || raw === 'strategy' || raw === 'strategyfit') return 'strategy_fit';
+  return raw;
+}
+
+function getDimensionSummaryKey(dimension) {
+  const dim = normalizeAuditDimension(dimension);
+  if (dim === 'strategy_fit') return 'strategy_fit_summary';
+  if (dim === 'team') return 'team_summary';
+  if (dim === 'upside') return 'potential_summary';
+  return '';
+}
+
+function getDimensionScoreKey(dimension) {
+  const dim = normalizeAuditDimension(dimension);
+  if (!dim) return '';
+  return `${dim}_score`;
+}
+
+function parseAuditDimensions(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeAuditDimension(item)).filter(Boolean);
+  }
+  const raw = String(value || '').trim();
+  if (!raw) return [];
+  return raw
+    .split(/[,\n|;]/)
+    .map((item) => normalizeAuditDimension(item))
+    .filter(Boolean);
+}
+
+function formatAuditNumber(value, digits = 1) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toFixed(digits) : '—';
+}
+
+function matchesAuditTarget(row, slug) {
+  return (row?.startup_slug || row?.company_name || '') === slug;
+}
+
+function getAuditContext(slug) {
+  if (!currentResults || !slug) return null;
+  const payload = currentResults;
+  const summaryRows = Array.isArray(payload.summary_rows) ? payload.summary_rows : [];
+  const summary = payload.mode === 'batch'
+    ? summaryRows.find((row) => matchesAuditTarget(row, slug))
+    : (summaryRows.find((row) => matchesAuditTarget(row, slug))
+      || summaryRows[0]
+      || {
+        company_name: payload.company_name,
+        startup_slug: payload.startup_slug || payload.company_name,
+        decision: payload.decision,
+        total_score: payload.total_score,
+        avg_pro: payload.avg_pro,
+        avg_contra: payload.avg_contra,
+      });
+  const companyName = summary?.company_name || payload.company_name || slug;
+  const qaRows = (payload.qa_provenance_rows || []).filter((row) => matchesAuditTarget(row, slug));
+  const argRows = (payload.argument_rows || []).filter((row) => matchesAuditTarget(row, slug));
+  return {
+    slug,
+    payload,
+    summary: summary || {},
+    ranking: payload.ranking_result || {},
+    companyName,
+    qaRows,
+    argRows,
+  };
+}
+
+function getAuditDimensionScores(context) {
+  if (!context) return [];
+  const rankingScores = Array.isArray(context.ranking?.dimension_scores) ? context.ranking.dimension_scores : [];
+  const summaryScores = Array.isArray(context.summary?.dimension_scores) ? context.summary.dimension_scores : [];
+  if (rankingScores.length) return rankingScores;
+  if (summaryScores.length) return summaryScores;
+  const fallback = ['strategy_fit', 'team', 'upside']
+    .map((dimension) => {
+      const value = context.summary?.[getDimensionScoreKey(dimension)] ?? context.ranking?.[getDimensionScoreKey(dimension)];
+      return value == null ? null : { dimension, adjusted_score: value };
+    })
+    .filter(Boolean);
+  return fallback;
+}
+
+function getAuditDimensionDetail(context, dimension) {
+  const dim = normalizeAuditDimension(dimension);
+  const dimScores = getAuditDimensionScores(context);
+  const scoreDetail = dimScores.find((item) => normalizeAuditDimension(item.dimension) === dim) || {};
+  const summaryKey = getDimensionSummaryKey(dim);
+  return {
+    dimension: dim,
+    label: getDimensionLabel(dim),
+    scoreDetail,
+    score: scoreDetail.adjusted_score ?? scoreDetail.score ?? context.summary?.[getDimensionScoreKey(dim)] ?? context.ranking?.[getDimensionScoreKey(dim)] ?? null,
+    summary: scoreDetail.summary || context.ranking?.[summaryKey] || context.summary?.[summaryKey] || '',
+    snippets: Array.isArray(scoreDetail.evidence_snippets) ? scoreDetail.evidence_snippets : [],
+    confidence: scoreDetail.confidence ?? null,
+    criticalGaps: Array.isArray(scoreDetail.critical_gaps)
+      ? scoreDetail.critical_gaps
+      : (scoreDetail.critical_gaps ? [scoreDetail.critical_gaps] : []),
+  };
+}
+
+function renderAuditSearch(query, placeholder) {
+  return `
+    <label class="audit-search-shell">
+      <span class="audit-search-icon">Search</span>
+      <input id="audit-search-input" class="audit-search-input" type="search" value="${escapeHtml(query || '')}" placeholder="${escapeHtml(placeholder)}" autocomplete="off">
+      <span class="audit-search-hint">Live filter</span>
+    </label>
+  `;
+}
+
+function getQaSearchText(qa) {
+  const chunkIds = (qa.chunk_ids || '').toString();
+  return [
+    qa.aspect,
+    qa.dimension,
+    qa.question,
+    qa.answer,
+    qa.web_search_decision,
+    qa.web_search_query,
+    qa.web_search_results,
+    qa.chunks_preview,
+    chunkIds,
+  ].filter(Boolean).join(' ');
+}
+
+function getArgumentSearchText(arg) {
+  return [
+    arg.type,
+    arg.score,
+    arg.dimensions,
+    (Array.isArray(arg.dimensions) ? arg.dimensions.join(' ') : ''),
+    arg.refined_text,
+    arg.argument_text,
+    arg.qa_pairs_used,
+    arg.argument_feedback,
+    arg.critique_text,
+  ].filter(Boolean).join(' ');
+}
+
+function renderAuditQaBlock(qa, query) {
+  let html = `<div class="audit-qa-block">`;
+  if (qa.aspect || qa.dimension) {
+    html += `<div class="audit-dimension-meta">`;
+    if (qa.aspect) html += `<span class="audit-dimension-pill"><strong>Aspect</strong> ${highlightAuditText(qa.aspect, query)}</span>`;
+    if (qa.dimension) html += `<span class="audit-dimension-pill"><strong>Dimension</strong> ${highlightAuditText(getDimensionLabel(normalizeAuditDimension(qa.dimension)), query)}</span>`;
+    html += `</div>`;
+  }
+  html += `<div class="audit-qa-q">Q: ${highlightAuditText(qa.question || '', query)}</div>`;
+  html += `<div class="audit-qa-a">${highlightAuditText(qa.answer || '', query)}</div>`;
+  if (qa.web_search_decision) {
+    const used = !!qa.web_search_used;
+    const label = used ? 'Web search used' : 'Web search skipped';
+    html += `<div class="audit-qa-a" style="font-size:12px;color:var(--text-dim)">${escapeHtml(label)}: ${highlightAuditText(qa.web_search_decision, query)}</div>`;
+  }
+  const chunkIds = (qa.chunk_ids || '').toString().split(',').map((s) => s.trim()).filter(Boolean);
+  if (chunkIds.length > 0) {
+    html += `<div class="audit-chunk-tags">${chunkIds.map((id) => `<span class="audit-chunk-tag">${highlightAuditText(id, query)}</span>`).join('')}</div>`;
+  }
+  if (qa.chunks_preview) {
+    html += `<div class="audit-expand-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">Show chunk preview</div>`;
+    html += `<div class="audit-expand-content" style="display:none">${highlightAuditText(qa.chunks_preview, query)}</div>`;
+  }
+  if (qa.web_search_query && qa.web_search_results) {
+    html += `<div class="audit-expand-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">Show web search</div>`;
+    html += `<div class="audit-expand-content" style="display:none">Query: ${highlightAuditText(qa.web_search_query, query)}\n\n${highlightAuditText(qa.web_search_results, query)}</div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+function renderAuditArgumentBlock(arg, query) {
+  const dims = parseAuditDimensions(arg.dimensions);
+  let html = `<div class="audit-arg-block">`;
+  html += `<div class="audit-arg-header"><span class="audit-arg-type ${escapeHtml(arg.type || '')}">${escapeHtml((arg.type || '').toUpperCase())}</span><span style="font-size:12px;color:var(--text-dim)">Score ${formatAuditNumber(arg.score, 0)}</span></div>`;
+  if (dims.length) {
+    html += `<div class="audit-dimension-meta">${dims.map((dim) => `<span class="audit-dimension-pill"><strong>Dimension</strong> ${highlightAuditText(getDimensionLabel(dim), query)}</span>`).join('')}</div>`;
+  }
+  html += `<div class="audit-arg-text">${highlightAuditText(arg.refined_text || arg.argument_text || '', query)}</div>`;
+  if (arg.qa_pairs_used) {
+    html += `<div class="audit-expand-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">Based on Q&A</div>`;
+    html += `<div class="audit-expand-content" style="display:none">${highlightAuditText(arg.qa_pairs_used, query)}</div>`;
+  }
+  if (arg.argument_feedback) {
+    html += `<div class="audit-expand-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">Scoring criteria</div>`;
+    html += `<div class="audit-expand-content" style="display:none">${highlightAuditText(arg.argument_feedback, query)}</div>`;
+  }
+  if (arg.critique_text) {
+    html += `<div class="audit-expand-toggle" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">Critique</div>`;
+    html += `<div class="audit-expand-content" style="display:none">${highlightAuditText(arg.critique_text, query)}</div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+function renderFullAuditModal(context, query) {
+  const qaRows = context.qaRows.filter((qa) => matchesAuditQuery(getQaSearchText(qa), query));
+  const argRows = context.argRows.filter((arg) => matchesAuditQuery(getArgumentSearchText(arg), query));
+  const avgPro = context.summary?.avg_pro ?? context.payload?.avg_pro ?? 0;
+  const avgContra = context.summary?.avg_contra ?? context.payload?.avg_contra ?? 0;
+  const totalScore = context.summary?.total_score ?? context.payload?.total_score ?? context.summary?.composite_score ?? context.ranking?.composite_score ?? 0;
+
+  let html = renderAuditSearch(query, `Search audit evidence for ${context.companyName}`);
+  html += `<div class="audit-section"><div class="audit-section-title">Decision</div><div class="audit-section-body">`;
+  html += SHOW_AVG_PRO_CONTRA_SCORES
+    ? `<div class="audit-decision-reason">Avg pro: ${formatAuditNumber(avgPro)} · Avg contra: ${formatAuditNumber(avgContra)} → total score ${formatAuditNumber(totalScore)}.</div>`
+    : `<div class="audit-decision-reason">Total score ${formatAuditNumber(totalScore)}.</div>`;
+  html += `</div></div>`;
+
+  html += `<div class="audit-section"><div class="audit-section-title">Evidence Used</div><div class="audit-section-body">`;
+  html += qaRows.length
+    ? qaRows.map((qa) => renderAuditQaBlock(qa, query)).join('')
+    : `<div class="audit-empty-state">No evidence rows match this search.</div>`;
+  html += `</div></div>`;
+
+  html += `<div class="audit-section"><div class="audit-section-title">Arguments & Reasoning</div><div class="audit-section-body">`;
+  html += argRows.length
+    ? argRows.map((arg) => renderAuditArgumentBlock(arg, query)).join('')
+    : `<div class="audit-empty-state">No argument rows match this search.</div>`;
+  html += `</div></div>`;
+  return html;
+}
+
+function renderDimensionAuditModal(context, query) {
+  const detail = getAuditDimensionDetail(context, auditModalState?.dimension);
+  const dim = detail.dimension;
+  const qaRows = context.qaRows.filter((qa) => normalizeAuditDimension(qa.dimension) === dim);
+  const argRows = context.argRows.filter((arg) => parseAuditDimensions(arg.dimensions).includes(dim));
+  const filteredQaRows = qaRows.filter((qa) => matchesAuditQuery(getQaSearchText(qa), query));
+  const filteredArgRows = argRows.filter((arg) => matchesAuditQuery(getArgumentSearchText(arg), query));
+  const filteredSnippets = detail.snippets.filter((snippet) => matchesAuditQuery(snippet, query));
+  const hadLegacyFallback = (context.qaRows.length > 0 || context.argRows.length > 0) && qaRows.length === 0 && argRows.length === 0;
+
+  let html = renderAuditSearch(query, `Search ${detail.label} evidence`);
+  html += `<div class="audit-section"><div class="audit-section-title">${escapeHtml(detail.label)}</div><div class="audit-section-body">`;
+  html += `<div class="audit-dimension-meta">`;
+  html += `<span class="audit-dimension-pill"><strong>Score</strong> ${formatAuditNumber(detail.score, 0)}</span>`;
+  if (detail.confidence != null) html += `<span class="audit-dimension-pill"><strong>Confidence</strong> ${formatAuditNumber(detail.confidence, 2)}</span>`;
+  html += `</div>`;
+  if (detail.summary) html += `<div class="audit-decision-reason">${highlightAuditText(detail.summary, query)}</div>`;
+  if (filteredSnippets.length) {
+    html += `<div class="audit-note"><strong>Evidence snippets:</strong> ${filteredSnippets.map((snippet) => highlightAuditText(snippet, query)).join(' | ')}</div>`;
+  } else if (detail.snippets.length && query) {
+    html += `<div class="audit-note">No evidence snippets match this search.</div>`;
+  }
+  if (detail.criticalGaps.length) {
+    html += `<div class="audit-note"><strong>Critical gaps:</strong> ${detail.criticalGaps.map((gap) => highlightAuditText(gap, query)).join(' | ')}</div>`;
+  }
+  if (hadLegacyFallback) {
+    html += `<div class="audit-note">This saved run predates dimension-tagged evidence, so only the dimension summary and snippets are available here.</div>`;
+  }
+  html += `</div></div>`;
+
+  html += `<div class="audit-section"><div class="audit-section-title">Evidence Used</div><div class="audit-section-body">`;
+  html += filteredQaRows.length
+    ? filteredQaRows.map((qa) => renderAuditQaBlock(qa, query)).join('')
+    : `<div class="audit-empty-state">${hadLegacyFallback ? 'No dimension-tagged evidence rows are available for this saved run.' : 'No evidence rows match this dimension and search.'}</div>`;
+  html += `</div></div>`;
+
+  html += `<div class="audit-section"><div class="audit-section-title">Arguments & Reasoning</div><div class="audit-section-body">`;
+  html += filteredArgRows.length
+    ? filteredArgRows.map((arg) => renderAuditArgumentBlock(arg, query)).join('')
+    : `<div class="audit-empty-state">${hadLegacyFallback ? 'No dimension-tagged reasoning rows are available for this saved run.' : 'No arguments match this dimension and search.'}</div>`;
+  html += `</div></div>`;
+  return html;
+}
+
+function renderAuditModal() {
+  if (!auditModalState?.slug) return;
+  const context = getAuditContext(auditModalState.slug);
+  if (!context) return;
+  const query = auditModalState.query || '';
+  const isDimension = auditModalState.mode === 'dimension' && auditModalState.dimension;
+  $('#audit-modal-title').textContent = isDimension
+    ? `${getDimensionLabel(auditModalState.dimension)} Audit — ${context.companyName}`
+    : `Audit Log — ${context.companyName}`;
+  $('#audit-modal-content').innerHTML = isDimension
+    ? renderDimensionAuditModal(context, query)
+    : renderFullAuditModal(context, query);
+  const searchInput = $('#audit-search-input');
+  if (searchInput) {
+    searchInput.addEventListener('input', (event) => {
+      auditModalState = { ...auditModalState, query: event.target.value || '' };
+      renderAuditModal();
+    });
+    if (query) {
+      searchInput.focus();
+      const pos = searchInput.value.length;
+      searchInput.setSelectionRange(pos, pos);
+    }
+  }
+}
+
+function showAuditLog(slug) {
+  if (!slug) return;
+  auditModalState = { mode: 'full', slug, query: '' };
+  renderAuditModal();
+  $('#audit-modal-overlay').classList.add('audit-modal-open');
+}
+
+function showDimensionAudit(slug, dimension) {
+  const normalized = normalizeAuditDimension(dimension);
+  if (!slug || !normalized) return;
+  auditModalState = { mode: 'dimension', slug, dimension: normalized, query: '' };
+  renderAuditModal();
+  $('#audit-modal-overlay').classList.add('audit-modal-open');
+}
+
 function hideAuditLog() {
+  auditModalState = null;
+  $('#audit-modal-title').textContent = 'Audit Log';
+  $('#audit-modal-content').innerHTML = '';
   $('#audit-modal-overlay').classList.remove('audit-modal-open');
 }
 
@@ -9472,6 +10132,13 @@ document.addEventListener('click', (e) => {
     if (slug && type) showArgumentsModal(slug, type);
     return;
   }
+  const dimBar = e.target.closest('.dim-bar-row.is-clickable');
+  if (dimBar) {
+    const slug = dimBar.getAttribute('data-slug');
+    const dimension = dimBar.getAttribute('data-audit-dimension');
+    if (slug && dimension) showDimensionAudit(slug, dimension);
+    return;
+  }
   const btn = e.target.closest('.btn-audit-log');
   if (btn) {
     const slug = btn.getAttribute('data-slug');
@@ -9561,6 +10228,15 @@ document.addEventListener('keydown', (e) => {
     if ($('#arguments-modal-overlay').classList.contains('audit-modal-open')) hideArgumentsModal();
     if ($('#progress-log-modal-overlay').classList.contains('audit-modal-open')) hideProgressLogModal();
   }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const dimBar = document.activeElement?.closest?.('.dim-bar-row.is-clickable');
+  if (!dimBar) return;
+  e.preventDefault();
+  const slug = dimBar.getAttribute('data-slug');
+  const dimension = dimBar.getAttribute('data-audit-dimension');
+  if (slug && dimension) showDimensionAudit(slug, dimension);
 });
 
 function showSettingsModal() {

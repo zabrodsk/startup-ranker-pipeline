@@ -9,7 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Iterator
 
-from agent.llm_catalog import estimate_llm_cost_usd, model_label, serialize_selection
+from agent.llm_catalog import estimate_llm_cost_usd, model_label
 
 if TYPE_CHECKING:
     from agent.llm_policy import PipelineModelPolicy
@@ -57,18 +57,26 @@ def get_current_pipeline_policy() -> "PipelineModelPolicy | None":
     return _pipeline_policy_var.get()
 
 
+def _normalize_selection(selection: dict[str, Any]) -> dict[str, Any]:
+    provider = selection.get("provider")
+    model = selection.get("model")
+    normalized = {
+        key: deepcopy(value)
+        for key, value in selection.items()
+        if key not in {"label"}
+    }
+    normalized["provider"] = (provider or "").strip().lower()
+    normalized["model"] = (model or "").strip()
+    normalized["label"] = model_label(normalized["provider"], normalized["model"])
+    return normalized
+
+
 @contextmanager
 def use_phase_llm(selection: dict[str, Any] | None) -> Iterator[None]:
     if selection is None:
         yield
         return
-    token = _llm_selection_var.set(
-        serialize_selection(
-            selection.get("provider"),
-            selection.get("model"),
-            selection.get("creativity"),
-        )
-    )
+    token = _llm_selection_var.set(_normalize_selection(selection))
     try:
         yield
     finally:
@@ -87,13 +95,7 @@ def use_run_context(
     policy_token: Token["PipelineModelPolicy | None"] | None = None
     request_settings_token = _llm_request_settings_var.set(None)
     if llm_selection is not None:
-        llm_token = _llm_selection_var.set(
-            serialize_selection(
-                llm_selection.get("provider"),
-                llm_selection.get("model"),
-                llm_selection.get("creativity"),
-            )
-        )
+        llm_token = _llm_selection_var.set(_normalize_selection(llm_selection))
     if telemetry_collector is not None:
         telemetry_token = _telemetry_collector_var.set(telemetry_collector)
     if pipeline_policy is not None:
