@@ -2179,12 +2179,22 @@ function VCDashboardView({ user, onSignOut, onStartDebate }) {
       .finally(() => setLoadingProfile(false));
   }
 
+  // Load matches and keep them fresh with background polling.
+  // Polls every 30 s so new matches created by the background engine appear
+  // automatically without the VC having to manually reload the page.
+  const loadMatches = React.useCallback(function loadMatchesFn(showSpinner) {
+    if (showSpinner) setLoadingMatches(true);
+    return api("GET", "/api/vc/matches")
+      .then(data => setMatches(data?.matches || []))
+      .catch(() => {})
+      .finally(() => setLoadingMatches(false));
+  }, []);
+
   useEffect(() => {
     loadProfile();
-    api("GET", "/api/vc/matches")
-      .then(data => setMatches(data?.matches || []))
-      .catch(() => setMatches([]))
-      .finally(() => setLoadingMatches(false));
+    loadMatches(true);
+    const poll = setInterval(() => loadMatches(false), 30000);
+    return () => clearInterval(poll);
   }, []);
 
   async function saveThesis() {
@@ -2337,7 +2347,18 @@ function VCDashboardView({ user, onSignOut, onStartDebate }) {
 
       {/* Matches */}
       <div className="section-card">
-        <h2>Matched startups</h2>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+          <h2 style={{margin:0}}>Matched startups</h2>
+          <button
+            className="btn btn-ghost"
+            style={{fontSize:".82rem",padding:"4px 12px"}}
+            onClick={() => loadMatches(true)}
+            disabled={loadingMatches}
+            title="Refresh matches"
+          >
+            {loadingMatches ? "Refreshing…" : "↻ Refresh"}
+          </button>
+        </div>
         {loadingMatches ? (
           <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
         ) : matches.length === 0 ? (
