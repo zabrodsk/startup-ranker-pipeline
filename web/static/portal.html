@@ -2254,6 +2254,9 @@ function VCDashboardView({ user, onSignOut, onStartDebate }) {
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
             </svg>
           </button>
+          {user?.role === "admin" && (
+            <button className="btn btn-ghost" onClick={() => navigate("/admin")} style={{fontSize:".82rem"}}>← Admin</button>
+          )}
           <button className="btn btn-ghost" onClick={() => { clearToken(); onSignOut(); }}>Sign out</button>
         </div>
       </div>
@@ -2797,6 +2800,7 @@ function AdminPortal({ user, onSignOut }) {
         <span style={{fontWeight:700,fontSize:"1.1rem",color:"var(--accent)"}}>Admin Portal</span>
         <span style={{color:"var(--text-muted)",fontSize:".85rem"}}>Deal Intelligence</span>
         <span style={{marginLeft:"auto",fontSize:".85rem",color:"var(--text-muted)"}}>{user?.email}</span>
+        <button className="btn btn-ghost" onClick={() => navigate("/vc-dashboard")} style={{fontSize:".82rem"}}>VC Portal</button>
         <button className="btn btn-ghost" onClick={onSignOut} style={{fontSize:".82rem"}}>Sign out</button>
       </header>
 
@@ -2945,7 +2949,7 @@ function App() {
   if (r === "/admin" && user && user.role === "admin") return <AdminPortal user={user} onSignOut={handleSignOut} />;
   if (r === "/dashboard" && user && user.role === "startup") return <DashboardView user={user} onSignOut={handleSignOut} />;
   if (r === "/vc-setup" && user && user.role === "vc") return <VCSetupView user={user} onComplete={handleVCSetupComplete} />;
-  if (r === "/vc-dashboard" && user && user.role === "vc") return (
+  if (r === "/vc-dashboard" && user && (user.role === "vc" || user.role === "admin")) return (
     <VCDashboardView user={user} onSignOut={handleSignOut} onStartDebate={handleStartDebate} />
   );
   if (r === "/debate" && user && activeDebateId) return (

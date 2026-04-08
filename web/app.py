@@ -2069,8 +2069,8 @@ async def _require_startup(
 async def _require_vc(
     user: CurrentUser = Depends(get_current_user),
 ) -> CurrentUser:
-    """Dependency: allow only users with role='vc'."""
-    if user.role != "vc":
+    """Dependency: allow users with role='vc' or role='admin' (admin can access VC endpoints)."""
+    if user.role not in ("vc", "admin"):
         raise HTTPException(status_code=403, detail="VC role required.")
     return user
 
