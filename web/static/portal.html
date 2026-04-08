@@ -1,0 +1,2533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rockaway Startup Portal</title>
+
+  <!-- React 18 + ReactDOM -->
+  <script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+
+  <!-- Babel (in-browser JSX transform) -->
+  <script src="https://unpkg.com/@babel/standalone@7.23.6/babel.min.js"></script>
+
+  <!-- Inter font — Rockaway Design System -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    /* ================================================================== */
+    /* CSS Custom Properties — Rockaway Deal Intelligence Design System     */
+    /* ================================================================== */
+    :root {
+      --bg-dark:              #0A0A0A;
+      --bg-deep:              #060816;
+      --bg-card:              #111111;
+      --bg-card-hover:        #161616;
+      --bg-surface:           rgba(255,255,255,0.03);
+      --border:               #1A1A1A;
+      --border-subtle:        #1F1F1F;
+      --border-card:          rgba(255,255,255,0.08);
+      --border-hover:         rgba(255,255,255,0.12);
+
+      --green:                #00D26A;
+      --green-bg:             #0A2E14;
+      --green-border:         rgba(0,210,106,0.2);
+      --green-border-strong:  color-mix(in srgb, #00D26A 25%, transparent);
+      --green-surface-subtle: color-mix(in srgb, #00D26A  8%, transparent);
+      --green-surface-muted:  color-mix(in srgb, #00D26A 12%, transparent);
+
+      --red:                  #FF6B6B;
+      --red-bg:               #2E1A0A;
+      --red-border:           rgba(255,107,107,0.2);
+
+      --text-white:           #FFFFFF;
+      --text-light:           #CCCCCC;
+      --text-mid:             #AAAAAA;
+      --text-gray:            #808080;
+      --text-dim:             #555555;
+      --text-dark:            #333333;
+
+      --font-body:            'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+
+      --shadow-sm:            0 2px 8px  rgba(0,0,0,0.18);
+      --shadow-md:            0 8px 24px rgba(0,0,0,0.20);
+      --shadow-lg:            0 16px 32px rgba(0,0,0,0.22);
+      --shadow-glow:          0 12px 40px rgba(0,210,106,0.10);
+
+      --radius-sm:            4px;
+      --radius-md:            8px;
+      --radius-lg:            12px;
+      --radius-xl:            16px;
+      --radius-full:          999px;
+
+      --ease-standard:        cubic-bezier(0.22,1,0.36,1);
+      --ease-out-expo:        cubic-bezier(0.16,1,0.3,1);
+
+      --strategy:             #5be7c4;
+      --strategy-bg:          rgba(91,231,196,0.14);
+      --team:                 #ffb347;
+      --team-bg:              rgba(255,179,71,0.16);
+      --potential:            #7c8cff;
+      --potential-bg:         rgba(124,140,255,0.16);
+
+      --color-warn:           #f6c344;
+      --color-warn-bg:        rgba(246,195,68,0.08);
+      --color-warn-border:    rgba(246,195,68,0.3);
+      --blue-accent:          #1A88FF;
+      --blue-border-accent:   rgba(26,136,255,0.24);
+      --blue-surface-subtle:  rgba(6,43,76,0.48);
+    }
+
+    /* ================================================================== */
+    /* Animations                                                           */
+    /* ================================================================== */
+    @keyframes spin      { to { transform: rotate(360deg); } }
+    @keyframes pulse     { 0%,100% { opacity:1; } 50% { opacity:.35; } }
+    @keyframes pulseGlow { 0%,100% { box-shadow:0 0 0 4px rgba(0,210,106,0); }
+                           50%     { box-shadow:0 0 12px 4px rgba(0,210,106,0.25); } }
+    @keyframes fadeUp    { from { opacity:0; transform:translateY(14px); }
+                           to   { opacity:1; transform:translateY(0);    } }
+    @keyframes fadeIn    { from { opacity:0; } to { opacity:1; } }
+    @keyframes scaleIn   { from { opacity:0; transform:scale(0.94); }
+                           to   { opacity:1; transform:scale(1);    } }
+
+    /* ================================================================== */
+    /* Reset                                                                */
+    /* ================================================================== */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ================================================================== */
+    /* Base                                                                 */
+    /* ================================================================== */
+    body {
+      font-family: var(--font-body);
+      background: linear-gradient(180deg, var(--bg-deep) 0%, var(--bg-dark) 100%);
+      background-attachment: fixed;
+      color: var(--text-white);
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ================================================================== */
+    /* Layout                                                               */
+    /* ================================================================== */
+    .page-center {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+      animation: fadeIn 0.4s var(--ease-standard) both;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border-card);
+      box-shadow: var(--shadow-md);
+      padding: 40px;
+      width: 100%;
+      max-width: 440px;
+      animation: scaleIn 0.4s var(--ease-out-expo) both;
+    }
+
+    .dashboard-layout {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 32px 24px;
+      animation: fadeUp 0.45s var(--ease-out-expo) both;
+    }
+
+    /* ================================================================== */
+    /* Typography                                                           */
+    /* ================================================================== */
+    h1 { font-size: 1.75rem; font-weight: 700; color: var(--text-white); margin-bottom: 8px; letter-spacing: -0.02em; }
+    h2 { font-size: 1.15rem; font-weight: 600; color: var(--text-white); margin-bottom: 16px; }
+    h3 { font-size: .78rem; font-weight: 700; margin-bottom: 8px; color: var(--text-gray); text-transform: uppercase; letter-spacing: .08em; }
+    p  { font-size: .95rem; color: var(--text-gray); margin-bottom: 16px; line-height: 1.55; }
+
+    .brand {
+      font-size: .75rem;
+      font-weight: 700;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--green);
+      margin-bottom: 24px;
+    }
+
+    /* ================================================================== */
+    /* Form elements                                                        */
+    /* ================================================================== */
+    .form-group { margin-bottom: 16px; }
+
+    label {
+      display: block;
+      font-size: .78rem;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--text-gray);
+      margin-bottom: 8px;
+    }
+
+    input[type="email"],
+    input[type="password"],
+    input[type="text"],
+    select {
+      width: 100%;
+      padding: 11px 14px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      color: var(--text-light);
+      font: 14px var(--font-body);
+      outline: none;
+      transition: border-color .2s, box-shadow .2s;
+      appearance: none;
+      -webkit-appearance: none;
+    }
+    input::placeholder { color: var(--text-dim); }
+    input:focus, select:focus {
+      border-color: rgba(0,210,106,.55);
+      box-shadow: 0 0 0 3px rgba(0,210,106,.08);
+    }
+
+    select {
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23808080' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 14px center;
+      background-color: var(--bg-card);
+      padding-right: 36px;
+    }
+    select option { background: #1a1a1a; color: var(--text-light); }
+
+    textarea {
+      width: 100%;
+      padding: 11px 14px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      color: var(--text-light);
+      font: 14px var(--font-body);
+      outline: none;
+      resize: vertical;
+      min-height: 120px;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    textarea::placeholder { color: var(--text-dim); }
+    textarea:focus {
+      border-color: rgba(0,210,106,.55);
+      box-shadow: 0 0 0 3px rgba(0,210,106,.08);
+    }
+
+    /* ================================================================== */
+    /* Buttons                                                              */
+    /* ================================================================== */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 20px;
+      border: none;
+      border-radius: var(--radius-md);
+      font: 600 .92rem var(--font-body);
+      cursor: pointer;
+      transition: opacity .15s, transform .15s, box-shadow .15s, background .15s;
+      white-space: nowrap;
+      text-decoration: none;
+    }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+
+    .btn-primary {
+      background: var(--green);
+      color: #072314;
+      width: 100%;
+      padding: 13px;
+      font-size: .95rem;
+      box-shadow: var(--shadow-glow);
+    }
+    .btn-primary:hover:not(:disabled) {
+      opacity: .94;
+      transform: translateY(-1px);
+      box-shadow: var(--shadow-md), var(--shadow-glow);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      border: 1px solid var(--text-dark);
+      color: var(--text-gray);
+      padding: 8px 16px;
+      font-size: .88rem;
+    }
+    .btn-ghost:hover:not(:disabled) { border-color: var(--text-gray); color: var(--text-light); }
+
+    .btn-danger {
+      background: var(--red-bg);
+      border: 1px solid var(--red-border);
+      color: var(--red);
+    }
+    .btn-danger:hover:not(:disabled) { background: rgba(255,107,107,0.18); }
+
+    .btn-sm { padding: 6px 14px; font-size: .82rem; border-radius: var(--radius-sm); }
+
+    .btn-outline-green {
+      background: transparent;
+      border: 1px solid var(--green-border);
+      color: var(--green);
+    }
+    .btn-outline-green:hover:not(:disabled) {
+      background: var(--green-surface-subtle);
+      border-color: rgba(0,210,106,.45);
+    }
+
+    .btn-outline-red {
+      background: transparent;
+      border: 1px solid var(--red-border);
+      color: var(--red);
+    }
+    .btn-outline-red:hover:not(:disabled) { background: rgba(255,107,107,.1); }
+
+    .link-btn {
+      background: none;
+      border: none;
+      color: var(--green);
+      cursor: pointer;
+      font: 500 .9rem var(--font-body);
+      padding: 0;
+      transition: opacity .15s;
+    }
+    .link-btn:hover { opacity: .8; text-decoration: underline; }
+
+    /* ================================================================== */
+    /* Alerts                                                               */
+    /* ================================================================== */
+    .alert {
+      padding: 10px 14px;
+      border-radius: var(--radius-md);
+      font-size: .88rem;
+      margin-bottom: 16px;
+      line-height: 1.5;
+      animation: fadeIn 0.25s var(--ease-standard) both;
+    }
+    .alert-error   { background: rgba(255,107,107,.09); color: var(--red);   border: 1px solid var(--red-border); }
+    .alert-success { background: var(--green-surface-subtle); color: var(--green); border: 1px solid var(--green-border); }
+    .alert-info    { background: var(--blue-surface-subtle); color: #7eb3f5; border: 1px solid var(--blue-border-accent); }
+
+    /* ================================================================== */
+    /* Dashboard widgets                                                    */
+    /* ================================================================== */
+    .section-card {
+      background: var(--bg-card);
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border-card);
+      box-shadow: var(--shadow-sm);
+      padding: 24px;
+      margin-bottom: 20px;
+      transition: box-shadow .25s, border-color .25s, transform .25s var(--ease-standard);
+      animation: fadeUp 0.5s var(--ease-out-expo) both;
+    }
+    .section-card:hover {
+      border-color: var(--border-hover);
+      box-shadow: var(--shadow-md);
+      transform: translateY(-2px);
+    }
+
+    .company-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: var(--radius-full);
+      font-size: .76rem;
+      font-weight: 600;
+      letter-spacing: .04em;
+      background: rgba(255,255,255,0.06);
+      color: var(--text-mid);
+      border: 1px solid var(--border-card);
+    }
+    .badge-blue  { background: var(--blue-surface-subtle);   color: var(--blue-accent); border-color: var(--blue-border-accent); }
+    .badge-green { background: var(--green-surface-subtle);  color: var(--green);        border-color: var(--green-border); }
+
+    /* Toggle switch */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 0;
+    }
+    .toggle-label { font-size: .95rem; font-weight: 500; color: var(--text-light); }
+    .toggle-desc  { font-size: .8rem; color: var(--text-gray); margin-top: 3px; }
+
+    .switch { position: relative; display: inline-block; width: 48px; height: 28px; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute; cursor: pointer; inset: 0;
+      background: var(--border-subtle);
+      border: 1px solid var(--border);
+      border-radius: 28px;
+      transition: background .2s;
+    }
+    .slider::before {
+      content: "";
+      position: absolute;
+      height: 20px; width: 20px;
+      left: 3px; bottom: 3px;
+      background: var(--text-dim);
+      border-radius: 50%;
+      transition: transform .22s var(--ease-standard), background .2s;
+      box-shadow: var(--shadow-sm);
+    }
+    input:checked + .slider {
+      background: var(--green-bg);
+      border-color: var(--green-border);
+      animation: pulseGlow 1.8s ease-in-out 0s 1;
+    }
+    input:checked + .slider::before {
+      background: var(--green);
+      transform: translateX(20px);
+    }
+
+    /* Score grid */
+    .score-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .score-box {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-lg);
+      padding: 18px 16px;
+      text-align: center;
+      transition: border-color .2s, transform .2s var(--ease-standard);
+    }
+    .score-box:hover { border-color: var(--border-hover); transform: translateY(-2px); }
+    .score-value { font-size: 2rem; font-weight: 700; color: var(--text-white); letter-spacing: -0.03em; line-height: 1; }
+    .score-label { font-size: .74rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text-gray); margin-top: 6px; }
+    .score-box--strategy .score-value { color: var(--strategy); }
+    .score-box--team      .score-value { color: var(--team); }
+    .score-box--potential .score-value { color: var(--potential); }
+
+    /* Bucket badges */
+    .bucket-top_tier,
+    .bucket-priority_review { background: var(--color-warn-bg);        color: var(--color-warn);  border: 1px solid var(--color-warn-border); border-radius: var(--radius-full); padding: 3px 10px; font-size:.76rem; font-weight:600; }
+    .bucket-strong,
+    .bucket-watchlist       { background: var(--green-surface-subtle);  color: var(--green);       border: 1px solid var(--green-border);      border-radius: var(--radius-full); padding: 3px 10px; font-size:.76rem; font-weight:600; }
+    .bucket-standard        { background: var(--blue-surface-subtle);   color: var(--blue-accent); border: 1px solid var(--blue-border-accent); border-radius: var(--radius-full); padding: 3px 10px; font-size:.76rem; font-weight:600; }
+    .bucket-consider        { background: rgba(255,179,71,0.12);        color: var(--team);        border: 1px solid rgba(255,179,71,0.25);    border-radius: var(--radius-full); padding: 3px 10px; font-size:.76rem; font-weight:600; }
+    .bucket-pass,
+    .bucket-low_priority    { background: rgba(255,255,255,0.04);       color: var(--text-dim);    border: 1px solid var(--border);            border-radius: var(--radius-full); padding: 3px 10px; font-size:.76rem; font-weight:600; }
+
+    /* Threshold sliders */
+    .threshold-row  { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+    .threshold-label { width: 110px; font-size: .85rem; color: var(--text-mid); flex-shrink: 0; }
+    .threshold-slider { flex: 1; accent-color: var(--green); cursor: pointer; height: 4px; background: var(--border-subtle); border: none; border-radius: var(--radius-full); outline: none; }
+    .threshold-value { width: 36px; text-align: right; font-size: .88rem; font-weight: 700; color: var(--text-white); }
+
+    /* Match cards */
+    .match-list { display: flex; flex-direction: column; gap: 10px; }
+    .match-card {
+      background: rgba(255,255,255,0.02);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-md);
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+      transition: border-color .22s, transform .22s var(--ease-standard), box-shadow .22s;
+    }
+    .match-card:hover { border-color: var(--border-hover); transform: translateY(-2px); box-shadow: var(--shadow-sm); }
+    .match-firm  { font-weight: 600; font-size: .98rem; color: var(--text-white); flex: 1; min-width: 120px; }
+    .match-scores { display: flex; gap: 8px; flex-wrap: wrap; }
+    .match-score-pill {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-full);
+      padding: 3px 10px;
+      font-size: .78rem;
+      font-weight: 500;
+      color: var(--text-mid);
+    }
+    .match-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+    /* Debate UI */
+    .debate-layout { max-width: 900px; margin: 0 auto; padding: 32px 24px; animation: fadeUp 0.45s var(--ease-out-expo) both; }
+    .debate-messages { display: flex; flex-direction: column; gap: 14px; margin: 20px 0; }
+
+    .debate-msg { display: flex; gap: 12px; align-items: flex-start; }
+    .debate-msg.vc_agent { flex-direction: row-reverse; }
+    .debate-msg.system   { justify-content: center; }
+
+    .debate-avatar {
+      width: 36px; height: 36px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: .72rem; font-weight: 700; flex-shrink: 0;
+      border: 1px solid transparent;
+    }
+    .avatar-vc      { background: rgba(26,136,255,0.2);    border-color: var(--blue-border-accent); color: var(--blue-accent); }
+    .avatar-startup { background: var(--green-surface-muted); border-color: var(--green-border);    color: var(--green); }
+    .avatar-system  { background: rgba(255,255,255,0.05); border-color: var(--border-card);         color: var(--text-gray); }
+
+    .debate-bubble {
+      max-width: 68%;
+      padding: 12px 16px;
+      border-radius: var(--radius-lg);
+      font-size: .9rem;
+      line-height: 1.6;
+      border: 1px solid transparent;
+    }
+    .bubble-vc      { background: var(--blue-surface-subtle);   color: var(--text-light); border-color: var(--blue-border-accent); border-bottom-right-radius: var(--radius-sm); }
+    .bubble-startup { background: var(--green-surface-subtle);  color: var(--text-light); border-color: var(--green-border);       border-bottom-left-radius:  var(--radius-sm); }
+    .bubble-system  { background: rgba(255,255,255,0.03); color: var(--text-gray); border-color: var(--border-card); border-radius: var(--radius-md); max-width: 90%; font-style: italic; font-size: .85rem; }
+
+    .debate-speaker { font-size: .7rem; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; margin-bottom: 5px; color: var(--text-dim); }
+    .debate-msg.vc_agent .debate-speaker { text-align: right; }
+
+    .debate-round-sep {
+      text-align: center;
+      font-size: .72rem; font-weight: 700;
+      color: var(--text-dim);
+      text-transform: uppercase; letter-spacing: .1em;
+      padding: 8px 0;
+      border-top: 1px solid var(--border);
+      margin: 8px 0;
+    }
+
+    .citation-list { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
+    .citation-chip {
+      background: rgba(0,210,106,0.08);
+      border: 1px solid var(--green-border);
+      border-radius: var(--radius-sm);
+      padding: 2px 7px;
+      font-size: .68rem; font-weight: 600;
+      cursor: pointer;
+      color: var(--green);
+      transition: background .15s;
+    }
+    .citation-chip:hover { background: rgba(0,210,106,0.16); }
+
+    .debate-status-bar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 16px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-md);
+      font-size: .85rem; color: var(--text-mid);
+      margin-bottom: 16px;
+    }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .dot-active    { background: var(--green);      animation: pulse 1.5s infinite; }
+    .dot-paused    { background: var(--color-warn); }
+    .dot-completed { background: var(--text-dim);   }
+
+    /* Evidence cards */
+    .evidence-search {
+      width: 100%;
+      padding: 10px 14px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      color: var(--text-light);
+      font: 14px var(--font-body);
+      outline: none;
+      margin-bottom: 16px;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .evidence-search::placeholder { color: var(--text-dim); }
+    .evidence-search:focus { border-color: rgba(0,210,106,.55); box-shadow: 0 0 0 3px rgba(0,210,106,.08); }
+
+    .evidence-card {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      transition: background .15s;
+    }
+    .evidence-card:last-child { border-bottom: none; }
+    .evidence-card:hover { background: rgba(255,255,255,0.02); }
+
+    .evidence-card-text {
+      font-size: .88rem;
+      color: var(--text-light);
+      line-height: 1.6;
+      margin-bottom: 10px;
+    }
+    .evidence-card-text.collapsed {
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .evidence-card-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .evidence-source-chip {
+      font-size: .72rem;
+      font-weight: 600;
+      color: var(--green);
+      background: var(--green-surface-subtle);
+      border: 1px solid var(--green-border);
+      border-radius: var(--radius-sm);
+      padding: 2px 8px;
+    }
+    .evidence-page-chip {
+      font-size: .72rem;
+      color: var(--text-gray);
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-sm);
+      padding: 2px 8px;
+    }
+    .evidence-toggle {
+      background: none; border: none; cursor: pointer;
+      font-size: .78rem; color: var(--green);
+      padding: 0; margin-left: auto;
+      transition: opacity .15s;
+    }
+    .evidence-toggle:hover { opacity: .75; }
+    .evidence-count {
+      font-size: .8rem; color: var(--text-dim); margin-bottom: 12px;
+    }
+
+    /* Markdown renderer */
+    .md-body { color: var(--text-light); line-height: 1.7; }
+    .md-h2 { font-size: 1.05rem; font-weight: 700; color: var(--text-light); margin: 18px 0 8px; }
+    .md-h3 { font-size: .98rem; font-weight: 700; color: var(--text-light); margin: 14px 0 6px; }
+    .md-h4 { font-size: .88rem; font-weight: 700; color: var(--green); margin: 12px 0 4px; text-transform: uppercase; letter-spacing: .04em; }
+    .md-p  { margin: 0 0 8px; color: #CCCCCC; font-size: .9rem; }
+    .md-list { margin: 4px 0 10px 18px; padding: 0; }
+    .md-list li { margin-bottom: 6px; color: #CCCCCC; font-size: .9rem; }
+    .md-spacer { height: 6px; }
+    .md-code { background: rgba(255,255,255,.07); border-radius: 4px; padding: 1px 5px; font-family: monospace; font-size: .85em; color: var(--green); }
+
+    /* Evidence log (audit-style) */
+    .elog-section-title {
+      font-size: .78rem; font-weight: 700; letter-spacing: .07em;
+      text-transform: uppercase; color: var(--text-dim); margin: 24px 0 12px;
+    }
+    .elog-decision {
+      background: var(--surface-raised); border-radius: var(--radius); padding: 14px 18px;
+      margin-bottom: 16px; color: var(--text-gray); font-size: .92rem;
+    }
+    .elog-qa-card {
+      border: 1px solid var(--border-subtle); border-radius: var(--radius);
+      padding: 16px 18px; margin-bottom: 12px; background: var(--surface);
+    }
+    .elog-question { color: var(--text-dim); font-size: .85rem; margin-bottom: 6px; }
+    .elog-answer   { color: var(--text-gray); font-size: .92rem; line-height: 1.5; }
+    .elog-chunk-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
+    .elog-chunk-tag {
+      display: inline-block; padding: 2px 8px; font-size: .72rem; font-weight: 500;
+      border-radius: var(--radius-sm); background: var(--green-surface-subtle);
+      color: var(--green); border: 1px solid var(--green-border);
+    }
+    .elog-preview-toggle {
+      background: none; border: none; cursor: pointer;
+      color: var(--green); font-size: .8rem; margin-top: 8px; padding: 0;
+    }
+    .elog-preview-toggle:hover { text-decoration: underline; }
+    .elog-preview {
+      background: rgba(255,255,255,.03); border-radius: var(--radius-sm);
+      padding: 10px 14px; margin-top: 8px; font-size: .82rem; color: var(--text-dim);
+      white-space: pre-wrap; line-height: 1.45; border: 1px solid var(--border-subtle);
+    }
+    .elog-web-info { font-size: .78rem; color: var(--text-dim); margin-top: 6px; font-style: italic; }
+    .elog-arg-card {
+      border: 1px solid var(--border-subtle); border-radius: var(--radius);
+      padding: 14px 18px; margin-bottom: 10px; background: var(--surface);
+    }
+    .elog-arg-badge {
+      display: inline-block; padding: 2px 10px; font-size: .72rem; font-weight: 700;
+      text-transform: uppercase; border-radius: var(--radius-sm); margin-right: 8px;
+    }
+    .elog-arg-badge--pro   { background: var(--green-surface-subtle); color: var(--green); border: 1px solid var(--green-border); }
+    .elog-arg-badge--contra { background: rgba(255,107,107,.08); color: var(--red); border: 1px solid var(--red-border); }
+    .elog-arg-text { color: var(--text-gray); font-size: .9rem; margin-top: 8px; line-height: 1.5; }
+    .elog-arg-score { color: var(--text-dim); font-size: .78rem; margin-left: 8px; }
+    .elog-tabs { display: flex; gap: 2px; margin-bottom: 16px; }
+    .elog-tab {
+      padding: 6px 16px; border-radius: var(--radius-sm); cursor: pointer;
+      font-size: .82rem; font-weight: 500; border: 1px solid var(--border-subtle);
+      background: transparent; color: var(--text-dim); transition: all .15s;
+    }
+    .elog-tab:hover { border-color: var(--green-border); color: var(--text-gray); }
+    .elog-tab--active { background: var(--green-surface-subtle); color: var(--green); border-color: var(--green-border); }
+
+    /* Upload zone */
+    .upload-zone {
+      border: 2px dashed var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 32px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      color: var(--text-gray);
+    }
+    .upload-zone:hover,
+    .upload-zone--dragging {
+      border-color: var(--green-border);
+      background: var(--green-surface-subtle);
+      color: var(--text-light);
+    }
+    .upload-zone--disabled {
+      opacity: .5;
+      cursor: not-allowed;
+    }
+
+    /* form-input alias (used in CreateCompanyForm + VCSetup) */
+    .form-label {
+      display: block;
+      font-size: .78rem;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--text-gray);
+      margin-bottom: 8px;
+    }
+    .form-input {
+      width: 100%;
+      padding: 11px 14px;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      color: var(--text-light);
+      font: 14px var(--font-body);
+      outline: none;
+      transition: border-color .2s, box-shadow .2s;
+      box-sizing: border-box;
+    }
+    .form-input:focus {
+      border-color: rgba(0,210,106,.55);
+      box-shadow: 0 0 0 3px rgba(0,210,106,.08);
+    }
+    .form-input::placeholder { color: var(--text-dim); }
+
+    /* Tags */
+    .tag-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .tag { display: inline-block; padding: 4px 10px; border-radius: var(--radius-sm); font-size: .78rem; font-weight: 500; border: 1px solid transparent; }
+    .tag-green { background: var(--green-surface-subtle); color: var(--green); border-color: var(--green-border); }
+    .tag-red   { background: rgba(255,107,107,0.08);      color: var(--red);   border-color: var(--red-border); }
+
+    /* Nav */
+    .topnav {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 0 24px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 28px;
+    }
+    .topnav-brand { font-weight: 700; font-size: 1.05rem; color: var(--text-white); letter-spacing: -0.01em; }
+    .topnav-user  { font-size: .85rem; color: var(--text-gray); display: flex; align-items: center; gap: 12px; }
+
+    /* Gear button */
+    .btn-gear {
+      background: none;
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      color: var(--text-gray);
+      cursor: pointer;
+      padding: 5px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color .15s, border-color .15s, background .15s;
+    }
+    .btn-gear:hover    { color: var(--text-white); border-color: var(--border-subtle); background: rgba(255,255,255,.05); }
+    .btn-gear--active  { color: var(--green); border-color: var(--green-border); background: var(--green-surface-subtle); }
+
+    /* Settings overlay + centered modal */
+    .settings-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.65);
+      backdrop-filter: blur(3px);
+      z-index: 200;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 32px 16px;
+      overflow: hidden;
+    }
+    .settings-drawer {
+      width: 100%;
+      max-width: 680px;
+      height: min(780px, calc(100vh - 64px));
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      animation: settingsFadeIn .18s ease;
+    }
+    @keyframes settingsFadeIn {
+      from { transform: translateY(-12px) scale(.97); opacity: 0; }
+      to   { transform: translateY(0)     scale(1);   opacity: 1; }
+    }
+    .settings-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 28px 18px;
+      border-bottom: 1px solid var(--border);
+    }
+    .settings-title  { font-weight: 700; font-size: 1.05rem; color: var(--text-white); letter-spacing: -.01em; }
+    .settings-close  {
+      background: none; border: 1px solid transparent; cursor: pointer;
+      color: var(--text-dim); font-size: 1rem; line-height: 1;
+      padding: 5px 9px; border-radius: var(--radius-sm);
+      transition: color .15s, border-color .15s;
+    }
+    .settings-close:hover { color: var(--text-white); border-color: var(--border-subtle); }
+    .settings-body { overflow-y: auto; flex: 1; min-height: 0; }
+    .settings-section { padding: 24px 28px; border-bottom: 1px solid var(--border-subtle); }
+    .settings-section:last-child { border-bottom: none; }
+    .settings-section-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .settings-section-title { font-size: .75rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 14px; }
+
+    /* Misc */
+    .divider {
+      text-align: center; color: var(--text-dim); margin: 16px 0; font-size: .8rem;
+      position: relative;
+    }
+    .divider::before, .divider::after {
+      content: ""; position: absolute; top: 50%;
+      width: 38%; height: 1px; background: var(--border);
+    }
+    .divider::before { left: 0; }
+    .divider::after  { right: 0; }
+
+    .mt8  { margin-top: 8px; }
+    .mt16 { margin-top: 16px; }
+    .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--border-subtle); border-top-color: var(--green); border-radius: 50%; animation: spin .65s linear infinite; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+// ============================================================
+// Supabase client (initialized after fetching public config)
+// ============================================================
+// ============================================================
+// Token storage — no Supabase JS SDK required
+// ============================================================
+const TOKEN_KEY = "rw_portal_token";
+
+function getToken() { return localStorage.getItem(TOKEN_KEY); }
+function setToken(t) { localStorage.setItem(TOKEN_KEY, t); }
+function clearToken() { localStorage.removeItem(TOKEN_KEY); }
+
+// ============================================================
+// API helper — always sends the stored Bearer token
+// ============================================================
+async function api(method, path, body) {
+  const headers = { "Content-Type": "application/json" };
+  const token = getToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const res = await fetch(path, {
+    method,
+    headers,
+    body: body != null ? JSON.stringify(body) : undefined,
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.detail || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+// ============================================================
+// Hash router (simple)
+// ============================================================
+function getRoute() {
+  return window.location.hash.replace("#", "") || "/login";
+}
+function navigate(path) {
+  window.location.hash = path;
+}
+
+// ============================================================
+// Components
+// ============================================================
+const { useState, useEffect, useCallback } = React;
+
+// ---------- Shared ----------
+function Alert({ type = "error", children }) {
+  return <div className={`alert alert-${type}`}>{children}</div>;
+}
+
+function Spinner() {
+  return <span className="spinner" />;
+}
+
+// ---------- Login ----------
+function LoginView({ onSuccess }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    try {
+      const { access_token } = await api("POST", "/api/portal/login", { email, password });
+      setToken(access_token);
+      const me = await api("GET", "/api/auth/me");
+      onSuccess(me);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="page-center">
+      <div className="card">
+        <div className="brand">Rockaway Ventures</div>
+        <h1>Welcome back</h1>
+        <p>Sign in to your startup portal</p>
+
+        {error && <Alert type="error">{error}</Alert>}
+
+        <form onSubmit={handleSubmit}>
+          <div className="form-group">
+            <label>Email</label>
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+              placeholder="you@company.com" required autoFocus />
+          </div>
+          <div className="form-group">
+            <label>Password</label>
+            <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+              placeholder="••••••••" required />
+          </div>
+          <button type="submit" className="btn btn-primary" disabled={loading}>
+            {loading ? <Spinner /> : "Sign in"}
+          </button>
+        </form>
+
+        <div className="divider">or</div>
+        <div style={{textAlign:"center"}}>
+          <button className="link-btn" onClick={() => navigate("/register")}>
+            Create an account
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Register ----------
+function RegisterView() {
+  const [form, setForm] = useState({
+    email: "", password: "", confirmPassword: "",
+    role: "startup", display_name: "", organization: "",
+  });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [success, setSuccess] = useState(false);
+
+  function set(field) {
+    return e => setForm(f => ({ ...f, [field]: e.target.value }));
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError(null);
+    if (form.password !== form.confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+    if (form.password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+    setLoading(true);
+    try {
+      await api("POST", "/api/auth/register", {
+        email: form.email,
+        password: form.password,
+        role: form.role,
+        display_name: form.display_name || undefined,
+        organization: form.organization || undefined,
+      });
+      setSuccess(true);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (success) {
+    return (
+      <div className="page-center">
+        <div className="card">
+          <div className="brand">Rockaway Ventures</div>
+          <Alert type="success">
+            Account created! Please check your email to confirm your address, then{" "}
+            <button className="link-btn" onClick={() => navigate("/login")}>sign in</button>.
+          </Alert>
+        </div>
+      </div>
+    );
+  }
+
+  const isVC = form.role === "vc";
+
+  return (
+    <div className="page-center">
+      <div className="card">
+        <div className="brand">Rockaway Ventures</div>
+        <h1>Create account</h1>
+        <p>{isVC ? "Register as a VC to see matched startups" : "Join the Rockaway startup network"}</p>
+
+        {error && <Alert type="error">{error}</Alert>}
+
+        <form onSubmit={handleSubmit}>
+          <div className="form-group">
+            <label>I am a</label>
+            <select value={form.role} onChange={set("role")}>
+              <option value="startup">Startup founder</option>
+              <option value="vc">VC / Investor</option>
+            </select>
+          </div>
+          <div className="form-group">
+            <label>Email <span style={{color:"#c0392b"}}>*</span></label>
+            <input type="email" value={form.email} onChange={set("email")}
+              placeholder="you@company.com" required autoFocus />
+          </div>
+          <div className="form-group">
+            <label>Password <span style={{color:"#c0392b"}}>*</span></label>
+            <input type="password" value={form.password} onChange={set("password")}
+              placeholder="Min 8 characters" required />
+          </div>
+          <div className="form-group">
+            <label>Confirm password <span style={{color:"#c0392b"}}>*</span></label>
+            <input type="password" value={form.confirmPassword} onChange={set("confirmPassword")}
+              placeholder="Repeat password" required />
+          </div>
+          <div className="form-group">
+            <label>Your name</label>
+            <input type="text" value={form.display_name} onChange={set("display_name")}
+              placeholder={isVC ? "Jane Investor" : "Jane Founder"} />
+          </div>
+          <div className="form-group">
+            <label>{isVC ? "Firm name" : "Company name"}</label>
+            <input type="text" value={form.organization} onChange={set("organization")}
+              placeholder={isVC ? "Acme Capital" : "Acme Inc"} />
+          </div>
+          <button type="submit" className="btn btn-primary" disabled={loading}>
+            {loading ? <Spinner /> : "Create account"}
+          </button>
+        </form>
+
+        <div className="divider">or</div>
+        <div style={{textAlign:"center"}}>
+          <button className="link-btn" onClick={() => navigate("/login")}>
+            Already have an account? Sign in
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Domain Verification ----------
+function VerifyDomainView({ user, onVerified }) {
+  const [companyId, setCompanyId] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [success, setSuccess] = useState(null);
+
+  async function handleVerify(e) {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    try {
+      const res = await api("POST", "/api/auth/verify-domain", {
+        email: user.email,
+        company_id: companyId.trim(),
+      });
+      if (res.verified) {
+        setSuccess(res.message);
+        setTimeout(() => onVerified(), 1500);
+      } else {
+        setError(res.message);
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="page-center">
+      <div className="card">
+        <div className="brand">Rockaway Ventures</div>
+        <h1>Claim your company</h1>
+        <p>
+          Enter your company's ID to verify you belong to that organisation.
+          Your email domain ({user.email?.split("@")[1]}) must match the company's registered domain.
+        </p>
+
+        {error && <Alert type="error">{error}</Alert>}
+        {success && <Alert type="success">{success}</Alert>}
+
+        <form onSubmit={handleVerify}>
+          <div className="form-group">
+            <label>Company ID</label>
+            <input type="text" value={companyId} onChange={e => setCompanyId(e.target.value)}
+              placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" required />
+            <p style={{fontSize:".8rem",color:"#6e6e73",marginTop:4}}>
+              Ask your Rockaway contact for your company's UUID.
+            </p>
+          </div>
+          <button type="submit" className="btn btn-primary" disabled={loading || !companyId.trim()}>
+            {loading ? <Spinner /> : "Verify & claim"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Dashboard ----------
+function ScoreBox({ value, label }) {
+  const display = value != null ? Math.round(value) : "—";
+  const labelToClass = { "Strategy Fit": "score-box--strategy", "Team": "score-box--team", "Potential": "score-box--potential" };
+  return (
+    <div className={`score-box ${labelToClass[label] || ""}`}>
+      <div className="score-value">{display}</div>
+      <div className="score-label">{label}</div>
+    </div>
+  );
+}
+
+function AnalysisSummary({ analysis }) {
+  if (!analysis) {
+    return (
+      <Alert type="info">
+        No analysis available yet. Your profile will be scored once Rockaway runs the pipeline.
+      </Alert>
+    );
+  }
+
+  const bucketClass = `badge bucket-${analysis.bucket || "pass"}`;
+  const bucketLabel = (analysis.bucket || "").replace("_", " ");
+
+  return (
+    <>
+      <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
+        <span className={bucketClass} style={{padding:"4px 14px",borderRadius:20,fontWeight:600}}>
+          {bucketLabel || "unrated"}
+        </span>
+        <span style={{color:"#6e6e73",fontSize:".9rem"}}>
+          Composite score: <strong>{analysis.composite_score != null ? Math.round(analysis.composite_score) : "—"}</strong>
+        </span>
+      </div>
+
+      <div className="score-grid">
+        <ScoreBox value={analysis.strategy_fit_score} label="Strategy Fit" />
+        <ScoreBox value={analysis.team_score} label="Team" />
+        <ScoreBox value={analysis.upside_score} label="Upside" />
+      </div>
+
+      {analysis.key_points?.length > 0 && (
+        <>
+          <h3 style={{marginTop:20}}>Key strengths</h3>
+          <div className="tag-list">
+            {analysis.key_points.map((p, i) => (
+              <span key={i} className="tag tag-green">{p}</span>
+            ))}
+          </div>
+        </>
+      )}
+
+      {analysis.red_flags?.length > 0 && (
+        <>
+          <h3 style={{marginTop:16}}>Areas to address</h3>
+          <div className="tag-list">
+            {analysis.red_flags.map((f, i) => (
+              <span key={i} className="tag tag-red">{f}</span>
+            ))}
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+// Lightweight markdown → HTML renderer (no external library).
+// Handles: ### headings, **bold**, *italic*, bullet lists, blank-line paragraphs.
+function renderMarkdown(text) {
+  if (!text) return "";
+  const lines = text.split("\n");
+  const out = [];
+  let inList = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i];
+
+    // Headings
+    const trimmed = line.trimStart();
+    const h4 = trimmed.match(/^####\s+(.*)/);
+    const h3 = trimmed.match(/^###\s+(.*)/);
+    const h2m = trimmed.match(/^##\s+(.*)/);
+    if (h4) { if (inList) { out.push("</ul>"); inList = false; } out.push(`<h4 class="md-h4">${inlineFormat(h4[1])}</h4>`); continue; }
+    if (h3) { if (inList) { out.push("</ul>"); inList = false; } out.push(`<h3 class="md-h3">${inlineFormat(h3[1])}</h3>`); continue; }
+    if (h2m) { if (inList) { out.push("</ul>"); inList = false; } out.push(`<h2 class="md-h2">${inlineFormat(h2m[1])}</h2>`); continue; }
+
+    // Bullet list items (* or -), tolerating leading whitespace
+    const bullet = line.match(/^\s*[\*\-]\s+(.*)/);
+    if (bullet) {
+      if (!inList) { out.push('<ul class="md-list">'); inList = true; }
+      out.push(`<li>${inlineFormat(bullet[1])}</li>`);
+      continue;
+    }
+
+    // End list on blank line or non-bullet
+    if (inList) { out.push("</ul>"); inList = false; }
+
+    // Blank line → paragraph break
+    if (line.trim() === "") { out.push('<div class="md-spacer"></div>'); continue; }
+
+    out.push(`<p class="md-p">${inlineFormat(line)}</p>`);
+  }
+  if (inList) out.push("</ul>");
+  return out.join("");
+}
+
+function inlineFormat(text) {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    .replace(/`(.+?)`/g, '<code class="md-code">$1</code>');
+}
+
+function Markdown({ text, className }) {
+  return (
+    <div
+      className={`md-body${className ? " " + className : ""}`}
+      dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
+    />
+  );
+}
+
+function EvidenceCard({ chunk }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const text = chunk.text || "—";
+  const long = text.length > 240;
+  const source = (chunk.source_file || "").replace(/\.csv|\.pdf|\.pptx/i, "").replace(/_/g, "-");
+  return (
+    <div className="evidence-card">
+      <div className={`evidence-card-text${expanded || !long ? "" : " collapsed"}`}>{text}</div>
+      <div className="evidence-card-meta">
+        <span className="evidence-source-chip">{source || "unknown"}</span>
+        {chunk.page_or_slide != null && (
+          <span className="evidence-page-chip">{chunk.page_or_slide}</span>
+        )}
+        {long && (
+          <button className="evidence-toggle" onClick={() => setExpanded(e => !e)}>
+            {expanded ? "Show less" : "Show more"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Analysis Evidence Log (Audit-style) ----------
+function QaPairCard({ qa }) {
+  const [showPreview, setShowPreview] = React.useState(false);
+  const chunkIds = (qa.chunk_ids || "").split(",").map(s => s.trim()).filter(Boolean);
+  return (
+    <div className="elog-qa-card">
+      <div className="elog-question">Q: {qa.question}</div>
+      <div className="elog-answer">{qa.answer}</div>
+      {chunkIds.length > 0 && (
+        <div className="elog-chunk-tags">
+          {chunkIds.map(id => <span key={id} className="elog-chunk-tag">{id}</span>)}
+        </div>
+      )}
+      {qa.web_search_used && (
+        <div className="elog-web-info">Web search: {qa.web_search_decision || "used"}</div>
+      )}
+      {qa.chunks_preview && (
+        <>
+          <button className="elog-preview-toggle" onClick={() => setShowPreview(p => !p)}>
+            {showPreview ? "Hide chunk preview" : "Show chunk preview"}
+          </button>
+          {showPreview && <div className="elog-preview">{qa.chunks_preview}</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
+function ArgumentCard({ arg }) {
+  const isPro = arg.type === "pro";
+  return (
+    <div className="elog-arg-card">
+      <span className={`elog-arg-badge elog-arg-badge--${isPro ? "pro" : "contra"}`}>
+        {arg.type}
+      </span>
+      {arg.score != null && <span className="elog-arg-score">Score: {arg.score}</span>}
+      <div className="elog-arg-text">
+        <Markdown text={arg.refined_text || arg.argument_text || ""} />
+      </div>
+    </div>
+  );
+}
+
+function AnalysisEvidenceLog({ data }) {
+  const [tab, setTab] = React.useState("evidence");
+  const [query, setQuery] = React.useState("");
+
+  if (!data || (!data.qa_pairs?.length && !data.arguments?.length)) {
+    return <Alert type="info">No analysis evidence available yet. Run an analysis or re-evaluation first.</Alert>;
+  }
+
+  const qaPairs = data.qa_pairs || [];
+  const args = data.arguments || [];
+  const scores = data.scores || {};
+
+  // Client-side search filter
+  const q = query.toLowerCase().trim();
+  const filteredQa = q
+    ? qaPairs.filter(qa =>
+        (qa.question || "").toLowerCase().includes(q) ||
+        (qa.answer || "").toLowerCase().includes(q) ||
+        (qa.chunk_ids || "").toLowerCase().includes(q))
+    : qaPairs;
+  const filteredArgs = q
+    ? args.filter(a =>
+        (a.argument_text || "").toLowerCase().includes(q) ||
+        (a.refined_text || "").toLowerCase().includes(q))
+    : args;
+
+  return (
+    <div>
+      {/* Decision summary */}
+      {scores.composite_score != null && (
+        <div className="elog-decision">
+          <strong>Decision:</strong> {data.decision || "N/A"} &mdash; Composite Score: {scores.composite_score}
+          {scores.bucket && <span> ({scores.bucket.replace("_", " ")})</span>}
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div className="elog-tabs">
+        <button className={`elog-tab${tab === "evidence" ? " elog-tab--active" : ""}`} onClick={() => setTab("evidence")}>
+          Evidence ({filteredQa.length})
+        </button>
+        <button className={`elog-tab${tab === "arguments" ? " elog-tab--active" : ""}`} onClick={() => setTab("arguments")}>
+          Arguments ({filteredArgs.length})
+        </button>
+      </div>
+
+      {/* Search */}
+      <input
+        className="evidence-search"
+        placeholder={tab === "evidence" ? "Search Q&A pairs…" : "Search arguments…"}
+        value={query}
+        onChange={e => setQuery(e.target.value)}
+        style={{marginBottom: 14}}
+      />
+
+      {/* Evidence tab */}
+      {tab === "evidence" && (
+        <>
+          {filteredQa.length === 0 && q && (
+            <div style={{padding:"20px 0",textAlign:"center",color:"var(--text-dim)",fontSize:".88rem"}}>No results for "{query}"</div>
+          )}
+          {filteredQa.map((qa, i) => <QaPairCard key={i} qa={qa} />)}
+        </>
+      )}
+
+      {/* Arguments tab */}
+      {tab === "arguments" && (
+        <>
+          {filteredArgs.length === 0 && q && (
+            <div style={{padding:"20px 0",textAlign:"center",color:"var(--text-dim)",fontSize:".88rem"}}>No results for "{query}"</div>
+          )}
+          {filteredArgs.map((arg, i) => <ArgumentCard key={i} arg={arg} />)}
+        </>
+      )}
+
+      {data.analyzed_at && (
+        <div style={{marginTop:12,fontSize:".78rem",color:"var(--text-dim)"}}>
+          Last analyzed: {new Date(data.analyzed_at).toLocaleString()}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Evidence Chunks (raw) ----------
+function EvidenceLog({ chunks }) {
+  const [query, setQuery] = React.useState("");
+  const filtered = query.trim()
+    ? chunks.filter(c => (c.text || "").toLowerCase().includes(query.toLowerCase()) ||
+                         (c.source_file || "").toLowerCase().includes(query.toLowerCase()))
+    : chunks;
+  return (
+    <div>
+      <input
+        className="evidence-search"
+        placeholder="Search evidence…"
+        value={query}
+        onChange={e => setQuery(e.target.value)}
+      />
+      <div className="evidence-count">{filtered.length} of {chunks.length} chunks</div>
+      <div style={{borderTop:"1px solid var(--border)"}}>
+        {filtered.map((c, i) => <EvidenceCard key={c.id || i} chunk={c} />)}
+        {filtered.length === 0 && (
+          <div style={{padding:"24px 0",textAlign:"center",color:"var(--text-dim)",fontSize:".88rem"}}>No results for "{query}"</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Upload Zone ----------
+function UploadZone({ onUpload, disabled }) {
+  const [dragging, setDragging] = React.useState(false);
+  const inputRef = React.useRef(null);
+
+  function handleDrop(e) {
+    e.preventDefault();
+    setDragging(false);
+    if (disabled) return;
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length) onUpload(files);
+  }
+
+  function handleChange(e) {
+    const files = Array.from(e.target.files);
+    if (files.length) onUpload(files);
+    e.target.value = "";
+  }
+
+  return (
+    <div
+      className={`upload-zone${dragging ? " upload-zone--dragging" : ""}${disabled ? " upload-zone--disabled" : ""}`}
+      onDragOver={e => { e.preventDefault(); if (!disabled) setDragging(true); }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={handleDrop}
+      onClick={() => !disabled && inputRef.current?.click()}
+    >
+      <input ref={inputRef} type="file" multiple accept=".pdf,.pptx,.docx,.xlsx,.xls,.csv,.txt,.md" style={{display:"none"}} onChange={handleChange} disabled={disabled} />
+      <div style={{fontSize:24,marginBottom:8}}>📄</div>
+      <div style={{fontWeight:600,marginBottom:4}}>Drop files here or click to browse</div>
+      <div style={{color:"#6e6e73",fontSize:".85rem"}}>PDF, PPTX, DOCX, XLSX, CSV, TXT, MD</div>
+    </div>
+  );
+}
+
+// ---------- Create Company Form ----------
+function CreateCompanyForm({ onCreated }) {
+  const [form, setForm] = React.useState({ name: "", industry: "", tagline: "", about: "", domain: "" });
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState(null);
+
+  function set(field) { return e => setForm(f => ({ ...f, [field]: e.target.value })); }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!form.name.trim()) { setError("Company name is required."); return; }
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await api("POST", "/api/startup/company", {
+        name: form.name.trim(),
+        industry: form.industry.trim() || null,
+        tagline: form.tagline.trim() || null,
+        about: form.about.trim() || null,
+        domain: form.domain.trim() || null,
+      });
+      onCreated(data.company_id, form.name.trim());
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="section-card">
+      <h2>Create your company profile</h2>
+      <p style={{color:"#6e6e73",marginBottom:20}}>You're not linked to any company yet. Fill in your details to get started.</p>
+      {error && <Alert type="error">{error}</Alert>}
+      <form onSubmit={handleSubmit}>
+        <div className="form-group">
+          <label className="form-label">Company name *</label>
+          <input className="form-input" value={form.name} onChange={set("name")} placeholder="Acme Inc." required />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Industry</label>
+          <input className="form-input" value={form.industry} onChange={set("industry")} placeholder="SaaS, Fintech, HealthTech…" />
+        </div>
+        <div className="form-group">
+          <label className="form-label">One-line tagline</label>
+          <input className="form-input" value={form.tagline} onChange={set("tagline")} placeholder="AI-powered logistics for mid-market retailers" />
+        </div>
+        <div className="form-group">
+          <label className="form-label">About</label>
+          <textarea className="form-input" value={form.about} onChange={set("about")} rows={3} placeholder="Brief description of what you do…" style={{resize:"vertical"}} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Domain</label>
+          <input className="form-input" value={form.domain} onChange={set("domain")} placeholder="acme.com" />
+        </div>
+        <button className="btn btn-primary" type="submit" disabled={loading}>
+          {loading ? <Spinner /> : "Create Company"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function DashboardView({ user, onSignOut }) {
+  const [profile, setProfile] = React.useState(null);
+  const [chunks, setChunks] = React.useState([]);
+  const [matches, setMatches] = React.useState([]);
+  const [loadingProfile, setLoadingProfile] = React.useState(true);
+  const [loadingChunks, setLoadingChunks] = React.useState(true);
+  const [loadingMatches, setLoadingMatches] = React.useState(true);
+  const [fundraising, setFundraising] = React.useState(false);
+  const [toggleLoading, setToggleLoading] = React.useState(false);
+  const [matchingTriggered, setMatchingTriggered] = React.useState(false);
+  const [error, setError] = React.useState(null);
+
+  // Upload state
+  const [uploading, setUploading] = React.useState(false);
+  const [uploadResults, setUploadResults] = React.useState([]);
+  const [reEvaluating, setReEvaluating] = React.useState(false);
+  const [reEvalMsg, setReEvalMsg] = React.useState(null);
+
+  // Full analysis state (for new companies)
+  const [analyzing, setAnalyzing] = React.useState(false);
+  const [analyzeMsg, setAnalyzeMsg] = React.useState(null);
+
+  // No company → creation flow
+  const [noCompany, setNoCompany] = React.useState(false);
+
+  // Evidence log (audit-style QA pairs + arguments)
+  const [evidenceLog, setEvidenceLog] = React.useState(null);
+  const [loadingEvidenceLog, setLoadingEvidenceLog] = React.useState(true);
+
+  function loadProfile() {
+    setLoadingProfile(true);
+    api("GET", "/api/startup/profile")
+      .then(data => {
+        setProfile(data);
+        setFundraising(data?.company?.fundraising ?? false);
+        if (!data?.company) setNoCompany(true);
+      })
+      .catch(err => setError(err.message))
+      .finally(() => setLoadingProfile(false));
+  }
+
+  function loadChunks() {
+    setLoadingChunks(true);
+    api("GET", "/api/startup/evidence")
+      .then(data => setChunks(data?.chunks || []))
+      .catch(() => setChunks([]))
+      .finally(() => setLoadingChunks(false));
+  }
+
+  function loadMatches() {
+    setLoadingMatches(true);
+    api("GET", "/api/startup/matches")
+      .then(data => setMatches(data?.matches || []))
+      .catch(() => setMatches([]))
+      .finally(() => setLoadingMatches(false));
+  }
+
+  function loadEvidenceLog() {
+    setLoadingEvidenceLog(true);
+    api("GET", "/api/startup/evidence-log")
+      .then(data => setEvidenceLog(data))
+      .catch(() => setEvidenceLog(null))
+      .finally(() => setLoadingEvidenceLog(false));
+  }
+
+  React.useEffect(() => {
+    loadProfile();
+    loadChunks();
+    loadMatches();
+    loadEvidenceLog();
+  }, []);
+
+  async function handleToggle() {
+    setToggleLoading(true);
+    setMatchingTriggered(false);
+    try {
+      const newValue = !fundraising;
+      const res = await api("PUT", "/api/startup/fundraising", { fundraising: newValue });
+      setFundraising(newValue);
+      if (res.matching_triggered) setMatchingTriggered(true);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setToggleLoading(false);
+    }
+  }
+
+  async function handleUpload(files) {
+    setUploading(true);
+    setUploadResults([]);
+    setError(null);
+    try {
+      const formData = new FormData();
+      for (const f of files) formData.append("files", f);
+      const token = getToken();
+      const resp = await fetch("/api/startup/upload", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+        throw new Error(err.detail || "Upload failed");
+      }
+      const data = await resp.json();
+      setUploadResults(data.results || []);
+      // Reload chunks to show new evidence
+      loadChunks();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleReEvaluate() {
+    setReEvaluating(true);
+    setReEvalMsg(null);
+    setError(null);
+    try {
+      await api("POST", "/api/startup/re-evaluate");
+      setReEvalMsg("Re-evaluation started in the background. Your scores will update shortly — refresh the page in a few minutes.");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setReEvaluating(false);
+    }
+  }
+
+  async function handleAnalyze() {
+    setAnalyzing(true);
+    setAnalyzeMsg(null);
+    setError(null);
+    try {
+      await api("POST", "/api/startup/analyze");
+      setAnalyzeMsg("Full analysis started. This may take a few minutes. Refresh the page to see your scores.");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
+  function handleCompanyCreated(companyId, name) {
+    setNoCompany(false);
+    // Reload profile data
+    loadProfile();
+    loadChunks();
+    loadMatches();
+  }
+
+  async function handleSignOut() {
+    clearToken();
+    onSignOut();
+  }
+
+  const company = profile?.company;
+  const analysis = profile?.analysis;
+  const hasAnalysis = !!analysis?.composite_score;
+
+  // If no company and not loading, show creation form
+  if (!loadingProfile && noCompany) {
+    return (
+      <div className="dashboard-layout">
+        <div className="topnav">
+          <div className="topnav-brand">Startup Portal</div>
+          <div className="topnav-user">
+            <span>{user.email}</span>
+            <button className="btn btn-ghost" onClick={handleSignOut}>Sign out</button>
+          </div>
+        </div>
+        {error && <Alert type="error">{error}</Alert>}
+        <CreateCompanyForm onCreated={handleCompanyCreated} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="dashboard-layout">
+      {/* Nav */}
+      <div className="topnav">
+        <div className="topnav-brand">Startup Portal</div>
+        <div className="topnav-user">
+          <span>{user.email}</span>
+          <button className="btn btn-ghost" onClick={handleSignOut}>Sign out</button>
+        </div>
+      </div>
+
+      {error && <Alert type="error">{error}</Alert>}
+
+      {/* Company profile */}
+      <div className="section-card">
+        <h2>Your company</h2>
+        {loadingProfile ? (
+          <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
+        ) : company ? (
+          <>
+            <h1 style={{fontSize:"1.5rem",marginBottom:4}}>{company.name}</h1>
+            {company.tagline && <p style={{marginBottom:8}}>{company.tagline}</p>}
+            <div className="company-meta">
+              {company.industry && <span className="badge">{company.industry}</span>}
+              {company.claimed_at && <span className="badge badge-blue">Claimed</span>}
+            </div>
+            {company.about && (
+              <p style={{marginTop:16,color:"#CCCCCC"}}>{company.about}</p>
+            )}
+          </>
+        ) : (
+          <Alert type="info">No company linked yet.</Alert>
+        )}
+      </div>
+
+      {/* Fundraising toggle */}
+      {company && (
+        <div className="section-card">
+          <h2>Fundraising status</h2>
+          <div className="toggle-row">
+            <div>
+              <div className="toggle-label">
+                {fundraising ? "Actively fundraising" : "Not fundraising"}
+              </div>
+              <div className="toggle-desc">
+                {fundraising
+                  ? "Your profile is visible to matching VCs."
+                  : "Toggle on when you're ready to meet investors."}
+              </div>
+            </div>
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={fundraising}
+                onChange={handleToggle}
+                disabled={toggleLoading}
+              />
+              <span className="slider" />
+            </label>
+          </div>
+          {fundraising_updated_at_str(profile?.company?.fundraising_updated_at)}
+          {matchingTriggered && (
+            <Alert type="info" style={{marginTop:10}}>
+              Matching engine started — we'll find compatible VCs in the background.
+            </Alert>
+          )}
+        </div>
+      )}
+
+      {/* VC Matches */}
+      {company && (
+        <div className="section-card">
+          <h2>VC matches</h2>
+          {loadingMatches ? (
+            <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
+          ) : matches.length === 0 ? (
+            <Alert type="info">
+              {fundraising
+                ? "No matching VCs yet. Matches appear once a VC's thesis and score thresholds align with your profile — this can take a few minutes after enabling fundraising."
+                : "No matches yet. Toggle fundraising on to get matched with compatible VCs."}
+            </Alert>
+          ) : (
+            <div className="match-list">
+              {matches.map(m => (
+                <div key={m.id} className="match-card">
+                  <div className="match-firm">{m.firm_name || "—"}</div>
+                  <div className="match-scores">
+                    <span className="match-score-pill">Strategy {m.strategy_fit_score != null ? Math.round(m.strategy_fit_score) : "—"}</span>
+                    <span className="match-score-pill">Team {m.team_score != null ? Math.round(m.team_score) : "—"}</span>
+                    <span className="match-score-pill">Upside {m.potential_score != null ? Math.round(m.potential_score) : "—"}</span>
+                  </div>
+                  {m.bucket && (
+                    <span className={`badge bucket-${m.bucket}`} style={{fontSize:".8rem"}}>
+                      {m.bucket.replace("_", " ")}
+                    </span>
+                  )}
+                  <span className={`badge ${m.status === "interested" ? "badge-green" : ""}`}
+                    style={{textTransform:"capitalize"}}>
+                    {m.status || "new"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Analysis */}
+      <div className="section-card">
+        <h2>Rockaway assessment</h2>
+        {loadingProfile ? (
+          <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
+        ) : (
+          <AnalysisSummary analysis={analysis} />
+        )}
+        {!hasAnalysis && company && !analyzing && (
+          <div style={{marginTop:16}}>
+            <p style={{color:"#6e6e73",fontSize:".9rem",marginBottom:12}}>
+              Upload documents below, then run a full analysis to see your investment scores.
+            </p>
+            <button className="btn btn-primary" onClick={handleAnalyze}>
+              Run full analysis
+            </button>
+          </div>
+        )}
+        {analyzing && (
+          <Alert type="info" style={{marginTop:12}}>
+            <Spinner /> Analysis running in the background…
+          </Alert>
+        )}
+        {analyzeMsg && <Alert type="info" style={{marginTop:12}}>{analyzeMsg}</Alert>}
+      </div>
+
+      {/* Evidence + Upload */}
+      <div className="section-card">
+        <h2>Your uploaded evidence</h2>
+        <p style={{color:"#6e6e73",marginBottom:16}}>
+          Documents and data used in your assessment. Sensitive internal files are never shown here.
+        </p>
+
+        {/* Upload zone */}
+        <UploadZone onUpload={handleUpload} disabled={uploading} />
+
+        {uploading && (
+          <div style={{display:"flex",alignItems:"center",gap:8,marginTop:12,color:"#6e6e73"}}>
+            <Spinner /> Uploading and processing files…
+          </div>
+        )}
+
+        {uploadResults.length > 0 && (
+          <div style={{marginTop:12}}>
+            {uploadResults.map((r, i) => (
+              <div key={i} style={{padding:"6px 0",borderBottom:"1px solid var(--border)",fontSize:".88rem",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span style={{color:"#CCCCCC"}}>{r.filename}</span>
+                {r.error
+                  ? <span style={{color:"#ff453a"}}>{r.error}</span>
+                  : <span style={{color:"var(--green)"}}>✓ {r.chunks_count} chunks</span>
+                }
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Re-evaluate button — only shown if company has prior analysis */}
+        {company && hasAnalysis && (
+          <div style={{marginTop:16,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <button
+              className="btn btn-primary"
+              onClick={handleReEvaluate}
+              disabled={reEvaluating || uploading}
+            >
+              {reEvaluating ? <><Spinner /> Re-evaluating…</> : "Re-evaluate with new evidence"}
+            </button>
+            <span style={{color:"#6e6e73",fontSize:".85rem"}}>
+              Combines all evidence and refreshes your scores.
+            </span>
+          </div>
+        )}
+        {reEvalMsg && <Alert type="info" style={{marginTop:12}}>{reEvalMsg}</Alert>}
+
+        {/* Analysis evidence log (audit-style Q&A + arguments) */}
+        <div style={{marginTop:24}}>
+          <h3 className="elog-section-title">Analysis Evidence</h3>
+          {loadingEvidenceLog ? (
+            <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
+          ) : (
+            <AnalysisEvidenceLog data={evidenceLog} />
+          )}
+        </div>
+
+        {/* Raw chunk log */}
+        <div style={{marginTop:24}}>
+          <h3 className="elog-section-title">Raw Evidence Chunks</h3>
+          {loadingChunks ? (
+            <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
+          ) : chunks.length === 0 ? (
+            <Alert type="info">No evidence chunks found. Upload documents above to get started.</Alert>
+          ) : (
+            <EvidenceLog chunks={chunks} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Debate View ----------
+function DebateView({ debateId, onBack }) {
+  const [debate, setDebate] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [actionLoading, setActionLoading] = useState(false);
+  const bottomRef = React.useRef(null);
+  const wsRef = React.useRef(null);
+
+  useEffect(() => {
+    // Load existing state
+    api("GET", `/api/debates/${debateId}`)
+      .then(data => {
+        setDebate(data);
+        setMessages(data.messages || []);
+      })
+      .catch(err => setError(err.message))
+      .finally(() => setLoading(false));
+
+    // Connect WebSocket for live updates
+    const token = getToken();
+    const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/debates/${debateId}?token=${token}`;
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        setMessages(prev => {
+          // Avoid duplicates by id
+          if (msg.id && prev.some(m => m.id === msg.id)) return prev;
+          return [...prev, msg];
+        });
+        if (msg.is_summary) {
+          setDebate(d => d ? { ...d, status: "completed", summary: msg.content } : d);
+        }
+      } catch (_) {}
+    };
+
+    ws.onopen = () => {
+      // Send periodic pings to keep connection alive
+      const pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.send("ping");
+      }, 20000);
+      ws._pingInterval = pingInterval;
+    };
+
+    ws.onclose = () => {
+      if (ws._pingInterval) clearInterval(ws._pingInterval);
+    };
+
+    return () => {
+      if (ws._pingInterval) clearInterval(ws._pingInterval);
+      ws.close();
+    };
+  }, [debateId]);
+
+  // Scroll to bottom on new messages
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  async function handlePause() {
+    setActionLoading(true);
+    try {
+      await api("POST", `/api/debates/${debateId}/pause`);
+      setDebate(d => d ? { ...d, status: "paused" } : d);
+    } catch (err) { setError(err.message); }
+    finally { setActionLoading(false); }
+  }
+
+  async function handleResume() {
+    setActionLoading(true);
+    try {
+      await api("POST", `/api/debates/${debateId}/resume`);
+      setDebate(d => d ? { ...d, status: "active" } : d);
+    } catch (err) { setError(err.message); }
+    finally { setActionLoading(false); }
+  }
+
+  if (loading) return <div className="page-center"><Spinner /></div>;
+
+  const status = debate?.status || "active";
+  const round = debate?.current_round || 1;
+  const maxRounds = debate?.max_rounds || 3;
+
+  // Group messages by round for separators
+  let lastRound = null;
+  const renderedMessages = messages.map((m, i) => {
+    const showSep = m.round != null && m.round !== lastRound && !m.is_summary;
+    if (showSep) lastRound = m.round;
+    return { msg: m, showSep };
+  });
+
+  return (
+    <div className="debate-layout">
+      <div className="topnav">
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <button className="btn btn-ghost" onClick={onBack} style={{padding:"4px 0"}}>← Back</button>
+          <div className="topnav-brand">Debate: {debate?.company_name || "Loading..."}</div>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          {status === "active" && (
+            <button className="btn btn-sm btn-outline-red" onClick={handlePause} disabled={actionLoading}>
+              Pause
+            </button>
+          )}
+          {status === "paused" && (
+            <button className="btn btn-sm btn-outline-green" onClick={handleResume} disabled={actionLoading}>
+              Resume
+            </button>
+          )}
+        </div>
+      </div>
+
+      {error && <Alert type="error">{error}</Alert>}
+
+      {/* Status bar */}
+      <div className="debate-status-bar">
+        <span className={`status-dot dot-${status}`} />
+        <span style={{textTransform:"capitalize"}}>{status}</span>
+        {status !== "completed" && (
+          <span style={{color:"#6e6e73"}}>· Round {round} of {maxRounds}</span>
+        )}
+        {status === "completed" && <span style={{color:"#6e6e73"}}>· Debate complete</span>}
+        {status === "active" && <span style={{marginLeft:"auto",color:"#6e6e73",fontSize:".8rem"}}>Agents are debating…</span>}
+      </div>
+
+      {/* Messages */}
+      <div className="debate-messages">
+        {renderedMessages.length === 0 && status === "active" && (
+          <div style={{textAlign:"center",padding:32,color:"#6e6e73"}}>
+            <Spinner />
+            <p style={{marginTop:12}}>Agents are preparing their opening arguments…</p>
+          </div>
+        )}
+
+        {renderedMessages.map(({ msg, showSep }, i) => {
+          if (msg.is_summary) {
+            return (
+              <div key={i}>
+                <div className="debate-round-sep">Debate Summary</div>
+                <div className="debate-msg system">
+                  <div className="debate-bubble bubble-system"><Markdown text={msg.content} /></div>
+                </div>
+              </div>
+            );
+          }
+
+          const isVC = msg.speaker === "vc_agent";
+          const isStartup = msg.speaker === "startup_agent";
+          const avatarClass = isVC ? "avatar-vc" : isStartup ? "avatar-startup" : "avatar-system";
+          const bubbleClass = isVC ? "bubble-vc" : isStartup ? "bubble-startup" : "bubble-system";
+          const label = isVC ? "VC Agent" : isStartup ? "Startup Agent" : "System";
+          const initial = isVC ? "VC" : isStartup ? "S" : "·";
+
+          return (
+            <div key={msg.id || i}>
+              {showSep && <div className="debate-round-sep">Round {msg.round}</div>}
+              <div className={`debate-msg ${msg.speaker}`}>
+                <div className={`debate-avatar ${avatarClass}`}>{initial}</div>
+                <div>
+                  <div className="debate-speaker">{label}</div>
+                  <div className={`debate-bubble ${bubbleClass}`}>
+                    <Markdown text={msg.content} />
+                    {msg.citations?.length > 0 && (
+                      <div className="citation-list">
+                        {msg.citations.map((c, ci) => (
+                          <span key={ci} className="citation-chip" title={c.excerpt}>
+                            [{c.chunk_id?.slice(0,8) || ci}]
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Summary panel */}
+      {status === "completed" && debate?.summary && (
+        <div className="section-card" style={{marginTop:24}}>
+          <h2>Debate Summary</h2>
+          <Markdown text={debate.summary} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- VC Setup (first login — create profile) ----------
+function VCSetupView({ user, onComplete }) {
+  const [form, setForm] = useState({ firm_name: "", investment_thesis: "" });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  function set(field) {
+    return e => setForm(f => ({ ...f, [field]: e.target.value }));
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError(null);
+    if (!form.firm_name.trim()) { setError("Firm name is required."); return; }
+    setLoading(true);
+    try {
+      await api("PUT", "/api/vc/profile", {
+        firm_name: form.firm_name.trim(),
+        investment_thesis: form.investment_thesis.trim() || undefined,
+      });
+      onComplete();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="page-center">
+      <div className="card" style={{maxWidth:520}}>
+        <div className="brand">Rockaway Ventures</div>
+        <h1>Set up your VC profile</h1>
+        <p>Tell us about your firm so we can find matching startups for you.</p>
+        {error && <Alert type="error">{error}</Alert>}
+        <form onSubmit={handleSubmit}>
+          <div className="form-group">
+            <label>Firm name <span style={{color:"#c0392b"}}>*</span></label>
+            <input type="text" value={form.firm_name} onChange={set("firm_name")}
+              placeholder="Acme Capital" required autoFocus />
+          </div>
+          <div className="form-group">
+            <label>Investment thesis <span style={{color:"#6e6e73",fontWeight:400}}>(optional — you can add this later)</span></label>
+            <textarea value={form.investment_thesis} onChange={set("investment_thesis")}
+              placeholder="We invest in B2B SaaS companies at Series A, focused on Central European markets, with strong product-led growth..." />
+          </div>
+          <button type="submit" className="btn btn-primary" disabled={loading}>
+            {loading ? <Spinner /> : "Save & continue"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ---------- VC Dashboard ----------
+function VCDashboardView({ user, onSignOut, onStartDebate }) {
+  const [vcProfile, setVCProfile] = useState(null);
+  const [matches, setMatches] = useState([]);
+  const [loadingProfile, setLoadingProfile] = useState(true);
+  const [loadingMatches, setLoadingMatches] = useState(true);
+  const [debateLoading, setDebateLoading] = useState(null); // match_id being debated
+  const [thesisEdit, setThesisEdit] = useState(false);
+  const [thesis, setThesis] = useState("");
+  const [thresholds, setThresholds] = useState({ min_strategy_fit: 0, min_team: 0, min_potential: 0 });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const [saveMsg, setSaveMsg] = useState(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  function loadProfile() {
+    return api("GET", "/api/vc/profile")
+      .then(data => {
+        setVCProfile(data);
+        setThesis(data.investment_thesis || "");
+        setThresholds({
+          min_strategy_fit: data.min_strategy_fit ?? 0,
+          min_team: data.min_team ?? 0,
+          min_potential: data.min_potential ?? 0,
+        });
+      })
+      .catch(err => setError(err.message))
+      .finally(() => setLoadingProfile(false));
+  }
+
+  useEffect(() => {
+    loadProfile();
+    api("GET", "/api/vc/matches")
+      .then(data => setMatches(data?.matches || []))
+      .catch(() => setMatches([]))
+      .finally(() => setLoadingMatches(false));
+  }, []);
+
+  async function saveThesis() {
+    setSaving(true); setSaveMsg(null);
+    try {
+      await api("PUT", "/api/vc/thesis", { investment_thesis: thesis });
+      setSaveMsg("Thesis saved.");
+      setThesisEdit(false);
+    } catch (err) { setError(err.message); }
+    finally { setSaving(false); }
+  }
+
+  async function saveThresholds() {
+    setSaving(true); setSaveMsg(null);
+    try {
+      await api("PUT", "/api/vc/thresholds", thresholds);
+      setSaveMsg("Thresholds saved.");
+    } catch (err) { setError(err.message); }
+    finally { setSaving(false); }
+  }
+
+  async function matchAction(matchId, action) {
+    try {
+      await api("POST", `/api/vc/matches/${matchId}/action`, { action });
+      setMatches(prev => prev.map(m => m.id === matchId ? { ...m, status: action } : m));
+    } catch (err) { setError(err.message); }
+  }
+
+  async function startDebate(matchId) {
+    setDebateLoading(matchId);
+    try {
+      // Mark match as in_debate, then create debate
+      await api("POST", `/api/vc/matches/${matchId}/action`, { action: "in_debate" });
+      const debate = await api("POST", `/api/debates?match_id=${matchId}`);
+      onStartDebate(debate.id);
+    } catch (err) {
+      setError(err.message);
+      setDebateLoading(null);
+    }
+  }
+
+  return (
+    <div className="dashboard-layout">
+      {/* Nav */}
+      <div className="topnav">
+        <div className="topnav-brand">Rockaway VC Portal</div>
+        <div className="topnav-user">
+          <span>{vcProfile?.firm_name || user.email}</span>
+          <button
+            className={`btn-gear${settingsOpen ? " btn-gear--active" : ""}`}
+            onClick={() => setSettingsOpen(o => !o)}
+            title="Settings"
+            aria-label="Settings"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" xmlns="http://www.w3.org/2000/svg">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+          </button>
+          <button className="btn btn-ghost" onClick={() => { clearToken(); onSignOut(); }}>Sign out</button>
+        </div>
+      </div>
+
+      {/* Settings drawer — rendered via portal directly on body to avoid CSS containment issues */}
+      {settingsOpen && ReactDOM.createPortal(
+        <div className="settings-overlay" onClick={() => setSettingsOpen(false)}>
+          <div className="settings-drawer" onClick={e => e.stopPropagation()}>
+            <div className="settings-header">
+              <span className="settings-title">Settings</span>
+              <button className="settings-close" onClick={() => setSettingsOpen(false)} aria-label="Close">✕</button>
+            </div>
+
+            <div className="settings-body">
+              {error && <div style={{padding:"0 28px"}}><Alert type="error">{error}</Alert></div>}
+              {saveMsg && <div style={{padding:"0 28px"}}><Alert type="success">{saveMsg}</Alert></div>}
+
+              {/* Investment thesis */}
+              <div className="settings-section">
+                <div className="settings-section-header">
+                  <h3 className="settings-section-title">Investment thesis</h3>
+                </div>
+                {loadingProfile ? (
+                  <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
+                ) : thesisEdit ? (
+                  <>
+                    <textarea value={thesis} onChange={e => setThesis(e.target.value)}
+                      placeholder="Describe your investment focus — sectors, stages, geographies, check size, key criteria…"
+                      style={{marginBottom:12,minHeight:200,width:"100%",boxSizing:"border-box"}} />
+                    <div style={{display:"flex",gap:8}}>
+                      <button className="btn btn-primary" style={{width:"auto",padding:"8px 20px"}}
+                        onClick={saveThesis} disabled={saving}>
+                        {saving ? <Spinner /> : "Save"}
+                      </button>
+                      <button className="btn btn-ghost" onClick={() => setThesisEdit(false)}>Cancel</button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {thesis ? (
+                      <Markdown text={thesis} />
+                    ) : (
+                      <Alert type="info">No thesis set yet. Add your investment thesis to improve match quality.</Alert>
+                    )}
+                    <button className="btn btn-ghost mt8" style={{marginTop:12}} onClick={() => setThesisEdit(true)}>
+                      {thesis ? "Edit thesis" : "Add thesis"}
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {/* Score thresholds */}
+              <div className="settings-section">
+                <h3 className="settings-section-title">Match thresholds</h3>
+                <p style={{color:"#6e6e73",fontSize:".85rem",marginBottom:16}}>
+                  Only show startups that score at or above these minimums (0 = no filter).
+                </p>
+                {loadingProfile ? (
+                  <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
+                ) : (
+                  <>
+                    {[
+                      { key: "min_strategy_fit", label: "Strategy Fit" },
+                      { key: "min_team",         label: "Team" },
+                      { key: "min_potential",    label: "Potential" },
+                    ].map(({ key, label }) => (
+                      <div key={key} className="threshold-row">
+                        <span className="threshold-label">{label}</span>
+                        <input type="range" min="0" max="100" step="5"
+                          className="threshold-slider"
+                          value={thresholds[key]}
+                          onChange={e => setThresholds(t => ({ ...t, [key]: Number(e.target.value) }))} />
+                        <span className="threshold-value">{thresholds[key]}</span>
+                      </div>
+                    ))}
+                    <button className="btn btn-primary" style={{width:"auto",padding:"8px 20px",marginTop:16}}
+                      onClick={saveThresholds} disabled={saving}>
+                      {saving ? <Spinner /> : "Save thresholds"}
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {(!settingsOpen) && error && <Alert type="error">{error}</Alert>}
+      {(!settingsOpen) && saveMsg && <Alert type="success">{saveMsg}</Alert>}
+
+      {/* Matches */}
+      <div className="section-card">
+        <h2>Matched startups</h2>
+        {loadingMatches ? (
+          <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
+        ) : matches.length === 0 ? (
+          <Alert type="info">
+            No matches yet. Startups that meet your thesis and thresholds will appear here once they toggle fundraising on.
+          </Alert>
+        ) : (
+          <div className="match-list">
+            {matches.map(m => {
+              const co = m.company || {};
+              return (
+                <div key={m.id} className="match-card" style={{flexDirection:"column",alignItems:"flex-start"}}>
+                  <div style={{display:"flex",width:"100%",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                    <div className="match-firm">{co.name || "—"}</div>
+                    {co.industry && <span className="badge">{co.industry}</span>}
+                    {m.bucket && (
+                      <span className={`badge bucket-${m.bucket}`} style={{fontSize:".8rem"}}>
+                        {m.bucket.replace("_"," ")}
+                      </span>
+                    )}
+                    <span className={`badge ${m.status === "interested" ? "badge-green" : ""}`}
+                      style={{textTransform:"capitalize",marginLeft:"auto"}}>
+                      {m.status || "new"}
+                    </span>
+                  </div>
+
+                  {co.tagline && <p style={{margin:"6px 0 4px",fontSize:".9rem",color:"#3a3a3c"}}>{co.tagline}</p>}
+
+                  <div className="match-scores" style={{marginTop:6}}>
+                    <span className="match-score-pill">Strategy Fit {m.strategy_fit_score != null ? Math.round(m.strategy_fit_score) : "—"}</span>
+                    <span className="match-score-pill">Team {m.team_score != null ? Math.round(m.team_score) : "—"}</span>
+                    <span className="match-score-pill">Potential {m.potential_score != null ? Math.round(m.potential_score) : "—"}</span>
+                    <span className="match-score-pill" style={{fontWeight:600}}>
+                      Composite {m.composite_score != null ? Math.round(m.composite_score) : "—"}
+                    </span>
+                  </div>
+
+                  <div className="match-actions" style={{marginTop:10}}>
+                    {m.status !== "interested" && m.status !== "passed" && m.status !== "in_debate" && (
+                      <>
+                        <button className="btn btn-sm btn-outline-green"
+                          onClick={() => matchAction(m.id, "interested")}>
+                          Interested
+                        </button>
+                        <button className="btn btn-sm btn-outline-red"
+                          onClick={() => matchAction(m.id, "passed")}>
+                          Pass
+                        </button>
+                      </>
+                    )}
+                    {(m.status === "interested" || m.status === "in_debate") && (
+                      <button
+                        className="btn btn-sm btn-primary"
+                        style={{width:"auto",padding:"6px 16px"}}
+                        disabled={debateLoading === m.id}
+                        onClick={() => startDebate(m.id)}>
+                        {debateLoading === m.id ? <Spinner /> : m.status === "in_debate" ? "View Debate" : "Start Debate"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function fundraising_updated_at_str(ts) {
+  if (!ts) return null;
+  try {
+    const d = new Date(ts);
+    return (
+      <div style={{fontSize:".82rem",color:"#6e6e73",marginTop:8}}>
+        Last updated: {d.toLocaleDateString()} {d.toLocaleTimeString()}
+      </div>
+    );
+  } catch (_) { return null; }
+}
+
+// ---------- Loading screen ----------
+function LoadingScreen() {
+  return (
+    <div className="page-center">
+      <div style={{textAlign:"center"}}>
+        <Spinner />
+        <p style={{marginTop:16,color:"#6e6e73"}}>Loading…</p>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Root App
+// ============================================================
+function App() {
+  const [route, setRoute] = useState(getRoute());
+  const [user, setUser] = useState(null);        // /api/auth/me payload
+  const [loading, setLoading] = useState(true);   // initial session check
+  const [vcSetupNeeded, setVCSetupNeeded] = useState(false);
+  const [activeDebateId, setActiveDebateId] = useState(null);
+
+  // Sync route from hash
+  useEffect(() => {
+    const handler = () => setRoute(getRoute());
+    window.addEventListener("hashchange", handler);
+    return () => window.removeEventListener("hashchange", handler);
+  }, []);
+
+  function _routeAfterLogin(me, vcProfileExists) {
+    if (me.role === "vc") {
+      if (!vcProfileExists) {
+        setVCSetupNeeded(true);
+        navigate("/vc-setup");
+      } else {
+        navigate("/vc-dashboard");
+      }
+    } else {
+      // startup
+      if (!me.companies?.length) navigate("/verify-domain");
+      else navigate("/dashboard");
+    }
+  }
+
+  // Restore session on load
+  useEffect(() => {
+    (async () => {
+      if (getToken()) {
+        try {
+          const me = await api("GET", "/api/auth/me");
+          setUser(me);
+          if (me.role === "vc") {
+            let vcExists = false;
+            try { await api("GET", "/api/vc/profile"); vcExists = true; } catch (_) {}
+            _routeAfterLogin(me, vcExists);
+          } else {
+            _routeAfterLogin(me, false);
+          }
+        } catch (_) { clearToken(); navigate("/login"); }
+      } else {
+        navigate("/login");
+      }
+      setLoading(false);
+    })();
+  }, []);
+
+  async function handleLoginSuccess(me) {
+    setUser(me);
+    if (me.role === "vc") {
+      let vcExists = false;
+      try { await api("GET", "/api/vc/profile"); vcExists = true; } catch (_) {}
+      _routeAfterLogin(me, vcExists);
+    } else {
+      _routeAfterLogin(me, false);
+    }
+  }
+
+  function handleSignOut() {
+    setUser(null);
+    setVCSetupNeeded(false);
+    navigate("/login");
+  }
+
+  function handleVerified() {
+    api("GET", "/api/auth/me").then(me => {
+      setUser(me);
+      navigate("/dashboard");
+    }).catch(() => navigate("/login"));
+  }
+
+  function handleVCSetupComplete() {
+    setVCSetupNeeded(false);
+    navigate("/vc-dashboard");
+  }
+
+  function handleStartDebate(debateId) {
+    setActiveDebateId(debateId);
+    navigate("/debate");
+  }
+
+  if (loading) return <LoadingScreen />;
+
+  const r = route;
+  if (r === "/register") return <RegisterView />;
+  if (r === "/verify-domain" && user) return <VerifyDomainView user={user} onVerified={handleVerified} />;
+  if (r === "/dashboard" && user && user.role === "startup") return <DashboardView user={user} onSignOut={handleSignOut} />;
+  if (r === "/vc-setup" && user && user.role === "vc") return <VCSetupView user={user} onComplete={handleVCSetupComplete} />;
+  if (r === "/vc-dashboard" && user && user.role === "vc") return (
+    <VCDashboardView user={user} onSignOut={handleSignOut} onStartDebate={handleStartDebate} />
+  );
+  if (r === "/debate" && user && activeDebateId) return (
+    <DebateView debateId={activeDebateId} onBack={() => navigate("/vc-dashboard")} />
+  );
+
+  // Default: login
+  return <LoginView onSuccess={handleLoginSuccess} />;
+}
+
+// ============================================================
+// Mount
+// ============================================================
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>

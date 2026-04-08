@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from dotenv import load_dotenv
-from fastapi import Cookie, FastAPI, File, Header, HTTPException, Response, UploadFile
+from fastapi import BackgroundTasks, Cookie, FastAPI, File, Header, HTTPException, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -764,6 +764,69 @@ def _load_persisted_company_keys(job_id: str) -> set[str]:
 class LoginRequest(BaseModel):
     password: str
 
+
+# ---------------------------------------------------------------------------
+# Sprint 1 — Request / Response schemas
+# ---------------------------------------------------------------------------
+
+class RegisterRequest(BaseModel):
+    """New user registration payload for the startup/vc portal."""
+
+    email: str
+    password: str
+    role: Literal["startup", "vc"]
+    display_name: str | None = None
+    organization: str | None = None
+
+
+class RegisterResponse(BaseModel):
+    user_id: str
+    email: str
+    role: str
+    message: str
+
+
+class VerifyDomainRequest(BaseModel):
+    email: str
+    company_id: str
+
+
+class VerifyDomainResponse(BaseModel):
+    verified: bool
+    domain: str | None = None
+    message: str
+
+
+class FundraisingToggleRequest(BaseModel):
+    fundraising: bool
+
+
+# Sprint 2 — VC portal schemas
+
+class VCProfileRequest(BaseModel):
+    """Create or update a VC profile."""
+    firm_name: str
+    investment_thesis: str | None = None
+
+
+class VCThesisRequest(BaseModel):
+    """Update only the VC's investment thesis text."""
+    investment_thesis: str
+
+
+class VCThresholdsRequest(BaseModel):
+    """Update match score thresholds (0–100 each)."""
+    min_strategy_fit: int = Field(default=0, ge=0, le=100)
+    min_team: int = Field(default=0, ge=0, le=100)
+    min_potential: int = Field(default=0, ge=0, le=100)
+
+
+class MatchActionRequest(BaseModel):
+    """VC action on a match."""
+    action: Literal["viewed", "interested", "passed", "in_debate"]
+
+
+# ---------------------------------------------------------------------------
 
 def _ensure_str(val: Any) -> str:
     """Normalize to str; handle list to avoid 'list' has no attribute 'strip'."""
@@ -1850,6 +1913,179 @@ def _build_started_by_identity(user: dict[str, Any] | None) -> dict[str, str | N
     }
 
 
+# ---------------------------------------------------------------------------
+# Sprint 1 — Domain validation helpers
+# ---------------------------------------------------------------------------
+
+_FREE_EMAIL_PROVIDERS: frozenset[str] = frozenset({
+    "gmail.com", "googlemail.com", "yahoo.com", "yahoo.co.uk", "hotmail.com",
+    "hotmail.co.uk", "outlook.com", "live.com", "msn.com", "icloud.com",
+    "me.com", "mac.com", "protonmail.com", "proton.me", "tutanota.com",
+    "zoho.com", "yandex.com", "yandex.ru", "aol.com",
+})
+
+
+def _normalize_domain(raw: str) -> str:
+    """Lowercase, strip scheme, www prefix, and trailing slashes/paths."""
+    s = (raw or "").strip().lower()
+    # Strip scheme
+    for scheme in ("https://", "http://"):
+        if s.startswith(scheme):
+            s = s[len(scheme):]
+    # Strip www.
+    if s.startswith("www."):
+        s = s[4:]
+    # Keep only the host (drop path, query, fragment)
+    s = s.split("/")[0].split("?")[0].split("#")[0]
+    return s.strip()
+
+
+def _extract_email_domain(email: str) -> str:
+    """Extract and normalise the domain part of an email address.
+
+    Raises ValueError if the email is malformed.
+    """
+    email = (email or "").strip().lower()
+    if "@" not in email:
+        raise ValueError(f"Invalid email address: {email!r}")
+    _, _, domain_part = email.partition("@")
+    domain_part = domain_part.strip()
+    if not domain_part or "." not in domain_part:
+        raise ValueError(f"Invalid email domain: {domain_part!r}")
+    return _normalize_domain(domain_part)
+
+
+def _root_domain(domain: str) -> str:
+    """Return the registrable root domain (last two labels).
+
+    e.g. mail.company.com → company.com
+    """
+    parts = domain.split(".")
+    if len(parts) <= 2:
+        return domain
+    return ".".join(parts[-2:])
+
+
+def verify_email_domain(email: str, company_domain: str | None) -> tuple[bool, str]:
+    """Check whether *email* belongs to the same domain as *company_domain*.
+
+    Returns (verified: bool, reason: str).
+    Rejects free email providers even if the domain technically matches.
+    Returns (False, reason) when company has no domain set.
+    """
+    try:
+        email_domain = _extract_email_domain(email)
+    except ValueError as exc:
+        return False, str(exc)
+
+    if email_domain in _FREE_EMAIL_PROVIDERS:
+        return False, f"{email_domain} is a free email provider and cannot be used for domain verification."
+
+    if not company_domain or not company_domain.strip():
+        return False, "This company has no domain set — an admin must approve your claim manually."
+
+    normalized_company = _normalize_domain(company_domain)
+
+    # Exact match or subdomain match (compare root domains).
+    if email_domain == normalized_company:
+        return True, f"Email domain {email_domain!r} matches company domain."
+
+    if _root_domain(email_domain) == _root_domain(normalized_company):
+        return True, f"Email domain {email_domain!r} matches company root domain {_root_domain(normalized_company)!r}."
+
+    return False, (
+        f"Email domain {email_domain!r} does not match company domain {normalized_company!r}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sprint 1 — Supabase JWT auth dependency (new endpoints only)
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass
+from fastapi import Depends
+
+
+@dataclass
+class CurrentUser:
+    """Resolved identity for requests authenticated via Supabase JWT."""
+
+    id: str
+    email: str | None
+    role: str          # 'admin' | 'vc' | 'startup'
+    approved: bool
+    display_name: str | None
+
+
+async def get_current_user(
+    authorization: str | None = Header(default=None),
+) -> CurrentUser:
+    """FastAPI dependency: validate Supabase Bearer token and resolve users_profile.
+
+    Used exclusively on new Sprint 1+ endpoints. Existing endpoints continue
+    to use _check_session() and are not affected.
+    """
+    token = _extract_bearer_token(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+
+    get_user_fn = getattr(db, "get_authenticated_supabase_user", None) if db else None
+    if not callable(get_user_fn):
+        raise HTTPException(status_code=503, detail="Auth service unavailable.")
+
+    supabase_user = await asyncio.to_thread(get_user_fn, token)
+    if not supabase_user or not supabase_user.get("id"):
+        raise HTTPException(status_code=401, detail="Invalid or expired token.")
+
+    get_profile_fn = getattr(db, "get_user_profile", None) if db else None
+    if not callable(get_profile_fn):
+        raise HTTPException(status_code=503, detail="Auth service unavailable.")
+
+    profile = await asyncio.to_thread(get_profile_fn, supabase_user["id"])
+    if not profile:
+        raise HTTPException(
+            status_code=403,
+            detail="No user profile found. Please complete registration first.",
+        )
+
+    return CurrentUser(
+        id=supabase_user["id"],
+        email=supabase_user.get("email"),
+        role=profile["role"],
+        approved=bool(profile.get("approved", False)),
+        display_name=profile.get("display_name"),
+    )
+
+
+async def _require_startup(
+    user: CurrentUser = Depends(get_current_user),
+) -> CurrentUser:
+    """Dependency: allow only users with role='startup'."""
+    if user.role != "startup":
+        raise HTTPException(status_code=403, detail="Startup role required.")
+    return user
+
+
+async def _require_vc(
+    user: CurrentUser = Depends(get_current_user),
+) -> CurrentUser:
+    """Dependency: allow only users with role='vc'."""
+    if user.role != "vc":
+        raise HTTPException(status_code=403, detail="VC role required.")
+    return user
+
+
+async def _require_admin(
+    user: CurrentUser = Depends(get_current_user),
+) -> CurrentUser:
+    """Dependency: allow only users with role='admin'."""
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required.")
+    return user
+
+
+# ---------------------------------------------------------------------------
+
 def _started_by_from_payload(payload: dict[str, Any] | None) -> dict[str, str | None]:
     if not isinstance(payload, dict):
         return {}
@@ -1912,6 +2148,67 @@ async def root():
     return (STATIC_DIR / "index.html").read_text()
 
 
+@app.get("/portal", response_class=HTMLResponse)
+async def portal():
+    """Serve the startup / VC self-service portal (separate from the internal tool)."""
+    return (STATIC_DIR / "portal.html").read_text()
+
+
+class PortalLoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+@app.post("/api/portal/login")
+async def portal_login(req: PortalLoginRequest) -> dict[str, Any]:
+    """Server-side sign-in for the portal. Returns Supabase JWT tokens.
+
+    Avoids requiring the Supabase JS SDK on the frontend — the backend holds
+    the credentials and proxies the token exchange.
+    """
+    if not db or not db.is_configured():
+        raise HTTPException(status_code=503, detail="Auth service unavailable.")
+
+    # sign_in_with_password must use the anon key, not the service role key.
+    supabase_url = (os.getenv("SUPABASE_URL") or "").strip()
+    anon_key = (os.getenv("SUPABASE_ANON_KEY") or "").strip()
+    if not supabase_url or not anon_key:
+        raise HTTPException(status_code=503, detail="Auth service unavailable.")
+
+    try:
+        from supabase import create_client as _create_client
+        anon_client = _create_client(supabase_url, anon_key)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Auth service unavailable.")
+
+    try:
+        response = await asyncio.to_thread(
+            lambda: anon_client.auth.sign_in_with_password(
+                {"email": req.email, "password": req.password}
+            )
+        )
+        session = getattr(response, "session", None)
+        user = getattr(response, "user", None)
+        if not session or not getattr(session, "access_token", None):
+            raise HTTPException(status_code=401, detail="Invalid email or password.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        err_str = str(exc).lower()
+        if "invalid" in err_str or "credentials" in err_str or "password" in err_str:
+            raise HTTPException(status_code=401, detail="Invalid email or password.")
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+
+    return {
+        "access_token": session.access_token,
+        "refresh_token": session.refresh_token,
+        "user": {
+            "id": str(user.id) if user else None,
+            "email": user.email if user else req.email,
+        },
+    }
+
+
 @app.post("/api/login")
 async def login(req: LoginRequest):
     if req.password != APP_PASSWORD:
@@ -1941,6 +2238,1600 @@ async def public_auth_config():
 async def check_session(session_id: str | None = Cookie(default=None)):
     return {"authenticated": _check_session(session_id)}
 
+
+# ---------------------------------------------------------------------------
+# Sprint 1 — Auth endpoints (portal users: startup / vc)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/auth/register", response_model=RegisterResponse, status_code=201)
+async def auth_register(req: RegisterRequest) -> RegisterResponse:
+    """Register a new startup or VC user via Supabase Auth.
+
+    Creates the Supabase auth user, then inserts a users_profile row with the
+    requested role.  The profile starts with approved=False; admin approval is
+    required before VC users gain access to matches.
+
+    If SUPABASE_BYPASS_EMAIL_CONFIRMATION=true the admin client is used so that
+    no confirmation email is sent (useful during development).
+    """
+    if not db or not db.is_configured():
+        raise HTTPException(status_code=503, detail="Auth service unavailable.")
+
+    supabase_client = getattr(db, "_get_client", None)
+    if not callable(supabase_client):
+        raise HTTPException(status_code=503, detail="Auth service unavailable.")
+
+    client = supabase_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Auth service unavailable.")
+
+    # Always use admin.create_user — the backend holds the service role key,
+    # so using admin is correct and ensures the auth row is fully committed
+    # before we insert the users_profile FK reference.
+    # email_confirm=True skips the confirmation email in all environments;
+    # set SUPABASE_REQUIRE_EMAIL_CONFIRMATION=true to enforce it in production.
+    require_confirmation = os.getenv(
+        "SUPABASE_REQUIRE_EMAIL_CONFIRMATION", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    email_confirm = not require_confirmation
+
+    try:
+        response = await asyncio.to_thread(
+            lambda: client.auth.admin.create_user(
+                {"email": req.email, "password": req.password, "email_confirm": email_confirm}
+            )
+        )
+        user = getattr(response, "user", None)
+    except Exception as exc:
+        err_str = str(exc).lower()
+        if any(kw in err_str for kw in (
+            "already registered", "already exists", "duplicate",
+            "not allowed", "user already",
+        )):
+            raise HTTPException(status_code=409, detail="An account with this email already exists.")
+        raise HTTPException(status_code=400, detail=f"Registration failed: {exc}")
+
+    if not user or not getattr(user, "id", None):
+        raise HTTPException(status_code=409, detail="An account with this email already exists.")
+
+    user_id = str(user.id)
+    profile = await asyncio.to_thread(
+        db.create_user_profile,
+        user_id,
+        req.role,
+        req.display_name,
+        req.organization,
+    )
+    if not profile:
+        # Roll back the auth user so the email can be re-registered cleanly.
+        try:
+            await asyncio.to_thread(lambda: client.auth.admin.delete_user(user_id))
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=500,
+            detail="Registration failed — please try again.",
+        )
+
+    return RegisterResponse(
+        user_id=user_id,
+        email=req.email,
+        role=req.role,
+        message=(
+            "Registration successful. Please check your email to confirm your account."
+            if require_confirmation
+            else "Registration successful."
+        ),
+    )
+
+
+@app.post("/api/auth/verify-domain", response_model=VerifyDomainResponse)
+async def auth_verify_domain(
+    req: VerifyDomainRequest,
+    user: CurrentUser = Depends(get_current_user),
+) -> VerifyDomainResponse:
+    """Verify that the user's email domain matches the claimed company's domain.
+
+    On success, creates a user_company_links row and stamps claimed_at on the
+    company (if not already claimed).
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    company = await asyncio.to_thread(db.get_company_by_id, req.company_id)
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found.")
+
+    verified, reason = verify_email_domain(req.email, company.get("domain"))
+
+    if verified:
+        await asyncio.to_thread(
+            db.create_user_company_link, user.id, req.company_id, None
+        )
+        await asyncio.to_thread(db.set_company_claimed_at, req.company_id)
+
+    return VerifyDomainResponse(
+        verified=verified,
+        domain=_normalize_domain(company.get("domain") or "") or None,
+        message=reason,
+    )
+
+
+@app.get("/api/auth/me")
+async def auth_me(user: CurrentUser = Depends(get_current_user)) -> dict[str, Any]:
+    """Return the authenticated user's profile and linked companies."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    links = await asyncio.to_thread(db.get_user_company_links, user.id)
+
+    companies = []
+    for link in links:
+        company_data = link.get("companies") or {}
+        if isinstance(company_data, dict) and company_data:
+            companies.append({
+                "id": company_data.get("id"),
+                "name": company_data.get("name"),
+                "industry": company_data.get("industry"),
+                "fundraising": company_data.get("fundraising", False),
+                "role_in_company": link.get("role_in_company"),
+            })
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        "role": user.role,
+        "approved": user.approved,
+        "display_name": user.display_name,
+        "companies": companies,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Sprint 1 — Startup portal endpoints
+# ---------------------------------------------------------------------------
+
+def _first_linked_company_id(user: CurrentUser) -> str:
+    """Resolve the company_id for a startup user. Raises 404 if none linked."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    links = db.get_user_company_links(user.id)
+    if not links:
+        raise HTTPException(
+            status_code=404,
+            detail="No company linked to your account. Please verify your domain first.",
+        )
+    company_data = (links[0].get("companies") or {})
+    company_id = company_data.get("id") if isinstance(company_data, dict) else None
+    if not company_id:
+        raise HTTPException(status_code=404, detail="Linked company data unavailable.")
+    return company_id
+
+
+def _safe_analysis_summary(results_payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Extract only the startup-safe fields from a results_payload.
+
+    Deliberately excludes VC thesis context and any Specter-sourced content.
+    """
+    if not isinstance(results_payload, dict):
+        return None
+    ranking = results_payload.get("ranking_result") or {}
+    return {
+        "composite_score": ranking.get("composite_score"),
+        "strategy_fit_score": ranking.get("strategy_fit_score"),
+        "team_score": ranking.get("team_score"),
+        "upside_score": ranking.get("upside_score"),
+        "bucket": ranking.get("bucket"),
+        "key_points": ranking.get("key_points") or [],
+        "red_flags": ranking.get("red_flags") or [],
+    }
+
+
+@app.get("/api/startup/profile")
+async def startup_profile(user: CurrentUser = Depends(_require_startup)) -> dict[str, Any]:
+    """Return the startup's company profile and latest analysis summary."""
+    company_id = await asyncio.to_thread(_first_linked_company_id, user)
+    company = await asyncio.to_thread(db.get_company_by_id, company_id)
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found.")
+
+    analysis = await asyncio.to_thread(db.get_company_latest_analysis, company_id)
+    analysis_summary = None
+    if analysis:
+        analysis_summary = _safe_analysis_summary(analysis.get("results_payload"))
+
+    return {
+        "company": {
+            "id": company.get("id"),
+            "name": company.get("name"),
+            "industry": company.get("industry"),
+            "tagline": company.get("tagline"),
+            "about": company.get("about"),
+            "fundraising": company.get("fundraising", False),
+            "fundraising_updated_at": company.get("fundraising_updated_at"),
+            "claimed_at": company.get("claimed_at"),
+        },
+        "analysis": analysis_summary,
+    }
+
+
+@app.put("/api/startup/fundraising")
+async def startup_fundraising(
+    req: FundraisingToggleRequest,
+    background_tasks: BackgroundTasks,
+    user: CurrentUser = Depends(_require_startup),
+) -> dict[str, Any]:
+    """Toggle the fundraising flag for the startup's linked company.
+
+    When fundraising is toggled ON, triggers async matching against all active
+    VC profiles as a background task.
+    """
+    company_id = await asyncio.to_thread(_first_linked_company_id, user)
+    updated = await asyncio.to_thread(db.set_company_fundraising, company_id, req.fundraising)
+    if not updated:
+        raise HTTPException(status_code=500, detail="Failed to update fundraising flag.")
+
+    if req.fundraising:
+        background_tasks.add_task(_run_matching_background, company_id)
+
+    return {
+        "fundraising": updated.get("fundraising"),
+        "fundraising_updated_at": updated.get("fundraising_updated_at"),
+        "matching_triggered": req.fundraising,
+    }
+
+
+@app.get("/api/startup/evidence")
+async def startup_evidence(user: CurrentUser = Depends(_require_startup)) -> dict[str, Any]:
+    """Return evidence chunks for the startup's company, excluding Specter-sourced files."""
+    company_id = await asyncio.to_thread(_first_linked_company_id, user)
+    chunks = await asyncio.to_thread(db.get_company_chunks, company_id)
+    return {
+        "chunks": [
+            {
+                "id": c.get("chunk_id") or c.get("id"),
+                "text": c.get("text"),
+                "source_file": c.get("source_file"),
+                "page_or_slide": c.get("page_or_slide"),
+            }
+            for c in chunks
+        ]
+    }
+
+
+_SPECTER_SOURCE_FILES = {"companies.csv", "people.csv"}
+
+
+def _safe_evidence_log(results_payload: dict, state: dict | None = None) -> dict:
+    """Extract evidence log data safe for startup-facing responses.
+
+    Filters:
+    - Strips vc_context from any QA pair
+    - Redacts chunk previews from Specter-sourced files (companies.csv, people.csv)
+    - Removes internal fields (startup_slug, company_name)
+    """
+    # Get qa_provenance_rows — prefer results_payload, fall back to state
+    qa_rows = results_payload.get("qa_provenance_rows")
+    if not qa_rows and state:
+        # Fallback: reconstruct from state.all_qa_pairs for pre-upgrade analyses
+        qa_rows, _ = _build_evidence_provenance(state)
+
+    arg_rows = results_payload.get("argument_rows")
+    if not arg_rows and state:
+        _, arg_rows = _build_evidence_provenance(state)
+
+    # Filter QA rows: strip vc_context, redact Specter chunk previews
+    safe_qa: list[dict] = []
+    for qa in (qa_rows or []):
+        row = dict(qa)
+        row.pop("vc_context", None)
+        row.pop("startup_slug", None)
+        row.pop("company_name", None)
+
+        # Redact Specter-sourced chunk previews
+        preview = row.get("chunks_preview", "")
+        if preview:
+            lines = preview.split("\n---\n")
+            safe_lines = []
+            for line in lines:
+                is_specter = any(sf in line for sf in _SPECTER_SOURCE_FILES)
+                if is_specter:
+                    # Keep chunk ID reference but redact text
+                    bracket_end = line.find("]: ")
+                    if bracket_end > 0:
+                        safe_lines.append(line[: bracket_end + 3] + "[External data source]")
+                    else:
+                        safe_lines.append("[External data source]")
+                else:
+                    safe_lines.append(line)
+            row["chunks_preview"] = "\n---\n".join(safe_lines)
+
+        safe_qa.append(row)
+
+    # Filter argument rows: strip internal fields
+    safe_args: list[dict] = []
+    for arg in (arg_rows or []):
+        row = dict(arg)
+        row.pop("startup_slug", None)
+        row.pop("company_name", None)
+        safe_args.append(row)
+
+    # Deduplicate QA pairs (safety net for analyses stored before this fix).
+    # Keyed on (question, answer) — same evidence seen twice is always redundant.
+    seen_qa: set[tuple[str, str]] = set()
+    deduped_qa: list[dict] = []
+    for row in safe_qa:
+        key = (row.get("question", ""), row.get("answer", ""))
+        if key not in seen_qa:
+            seen_qa.add(key)
+            deduped_qa.append(row)
+
+    # Build decision/scores from ranking_result
+    ranking = results_payload.get("ranking_result") or {}
+    return {
+        "qa_pairs": deduped_qa,
+        "arguments": safe_args,
+        "decision": results_payload.get("decision"),
+        "scores": {
+            "composite_score": ranking.get("composite_score"),
+            "strategy_fit_score": ranking.get("strategy_fit_score"),
+            "team_score": ranking.get("team_score"),
+            "upside_score": ranking.get("upside_score"),
+            "bucket": ranking.get("bucket"),
+        },
+    }
+
+
+@app.get("/api/startup/evidence-log")
+async def startup_evidence_log(user: CurrentUser = Depends(_require_startup)) -> dict[str, Any]:
+    """Return the evidence log (QA pairs, arguments, decision) for the startup's latest analysis.
+
+    Provides audit-log-style evidence grounding so startups can see what the AI
+    found and how it reasoned. All VC thesis content and Specter-sourced data
+    are filtered before returning.
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    company_id = await asyncio.to_thread(_first_linked_company_id, user)
+    analysis = await asyncio.to_thread(db.get_latest_analysis_full, company_id)
+    if not analysis:
+        return {"qa_pairs": [], "arguments": [], "decision": None, "scores": {}, "analyzed_at": None}
+
+    results_payload = analysis.get("results_payload") or {}
+    state = analysis.get("state")
+    evidence = _safe_evidence_log(results_payload, state)
+    evidence["analyzed_at"] = analysis.get("created_at")
+    evidence["analysis_id"] = analysis.get("id")
+    return evidence
+
+
+@app.get("/api/startup/matches")
+async def startup_matches(user: CurrentUser = Depends(_require_startup)) -> dict[str, Any]:
+    """Return all VC matches for the startup's company.
+
+    Only shows the VC firm name and scores — never the VC's private thesis.
+    """
+    company_id = await asyncio.to_thread(_first_linked_company_id, user)
+    matches = await asyncio.to_thread(db.get_matches_for_company, company_id)
+    return {
+        "matches": [
+            {
+                "id": m.get("id"),
+                "firm_name": (m.get("vc_profiles") or {}).get("firm_name"),
+                "strategy_fit_score": m.get("strategy_fit_score"),
+                "team_score": m.get("team_score"),
+                "potential_score": m.get("potential_score"),
+                "composite_score": m.get("composite_score"),
+                "bucket": m.get("bucket"),
+                "status": m.get("status"),
+                "created_at": m.get("created_at"),
+            }
+            for m in matches
+        ]
+    }
+
+
+# ---------------------------------------------------------------------------
+# Sprint 2 — VC portal helpers
+# ---------------------------------------------------------------------------
+
+def _get_vc_profile_or_404(user: CurrentUser) -> dict[str, Any]:
+    """Fetch the VC's profile row or raise 404."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    profile = db.get_vc_profile(user.id)
+    if not profile:
+        raise HTTPException(
+            status_code=404,
+            detail="VC profile not found. Please complete your profile first.",
+        )
+    return profile
+
+
+async def _run_matching_background(company_id: str) -> None:
+    """Background task: run matching for a company against all active VCs."""
+    try:
+        from agent.matching.engine import trigger_matching_for_company  # noqa: PLC0415
+        count = await trigger_matching_for_company(company_id, db)
+        import logging  # noqa: PLC0415
+        logging.getLogger(__name__).info(
+            "Matching complete for company=%s: %d matches created", company_id, count
+        )
+    except Exception as exc:
+        import logging  # noqa: PLC0415
+        logging.getLogger(__name__).error(
+            "Matching background task failed for company=%s: %s", company_id, exc
+        )
+
+
+async def _run_vc_rematching_background(vc_profile_id: str) -> None:
+    """Background task: re-run matching for a VC against all actively fundraising companies.
+
+    Called when a VC updates their investment thesis or score thresholds.  Clears
+    all existing matches for this VC, then re-evaluates every company that currently
+    has fundraising=True so the match list reflects the latest thesis and thresholds.
+    """
+    import logging as _log_module  # noqa: PLC0415
+    _logger = _log_module.getLogger(__name__)
+
+    try:
+        from agent.matching.engine import run_matching_for_pair  # noqa: PLC0415
+
+        # 1. Wipe stale matches so we start with a clean slate.
+        deleted = await asyncio.to_thread(db.delete_matches_for_vc, vc_profile_id)
+        _logger.info("VC re-matching: deleted %d stale matches for vc=%s", deleted, vc_profile_id)
+
+        # 2. Fetch the fresh VC profile (with updated thesis / thresholds).
+        vc_profile = await asyncio.to_thread(db.get_vc_profile_by_id, vc_profile_id)
+        if not vc_profile:
+            _logger.warning("VC re-matching: vc_profile %s not found", vc_profile_id)
+            return
+
+        vc_thesis: str = vc_profile.get("investment_thesis") or ""
+        min_strategy: float = float(vc_profile.get("min_strategy_fit") or 0)
+        min_team: float = float(vc_profile.get("min_team") or 0)
+        min_potential: float = float(vc_profile.get("min_potential") or 0)
+
+        # 3. Loop over all fundraising companies.
+        companies = await asyncio.to_thread(db.get_fundraising_companies)
+        _logger.info(
+            "VC re-matching: evaluating %d fundraising companies against vc=%s",
+            len(companies), vc_profile_id,
+        )
+
+        created = 0
+        for company_row in companies:
+            company_id: str = company_row.get("id") or ""
+            if not company_id:
+                continue
+
+            chunks = await asyncio.to_thread(db.get_company_chunks, company_id)
+            all_qa_pairs = await asyncio.to_thread(db.get_analysis_qa_pairs, company_id)
+
+            # Prefer Stage-8-only path if final_arguments available.
+            analysis_final = (
+                await asyncio.to_thread(db.get_analysis_final_state, company_id)
+                if hasattr(db, "get_analysis_final_state")
+                else None
+            )
+            final_arguments = analysis_final.get("final_arguments") if analysis_final else None
+            final_decision = analysis_final.get("final_decision") if analysis_final else None
+
+            if not final_arguments and not all_qa_pairs:
+                _logger.debug(
+                    "VC re-matching: skipping company=%s (no analysis data)", company_id
+                )
+                continue
+
+            try:
+                scores = await run_matching_for_pair(
+                    company_row=company_row,
+                    chunks=chunks,
+                    all_qa_pairs=all_qa_pairs,
+                    vc_thesis=vc_thesis,
+                    final_arguments=final_arguments,
+                    final_decision=final_decision,
+                )
+            except Exception as exc:
+                _logger.error(
+                    "VC re-matching error vc=%s company=%s: %s", vc_profile_id, company_id, exc
+                )
+                continue
+
+            if not scores:
+                continue
+
+            strategy_fit: float = float(scores.get("strategy_fit_score") or 0)
+            team: float = float(scores.get("team_score") or 0)
+            potential: float = float(scores.get("upside_score") or 0)
+
+            if strategy_fit >= min_strategy and team >= min_team and potential >= min_potential:
+                latest = await asyncio.to_thread(db.get_company_latest_analysis, company_id)
+                analysis_id = latest.get("id") if latest else None
+                await asyncio.to_thread(
+                    db.create_match,
+                    vc_profile_id=vc_profile_id,
+                    company_id=company_id,
+                    analysis_id=analysis_id,
+                    scores={
+                        "strategy_fit_score": strategy_fit,
+                        "team_score": team,
+                        "potential_score": potential,
+                        "composite_score": float(scores.get("composite_score") or 0),
+                        "bucket": scores.get("bucket"),
+                    },
+                )
+                created += 1
+                _logger.info(
+                    "VC re-matching: match created vc=%s company=%s scores=%.1f/%.1f/%.1f",
+                    vc_profile_id, company_id, strategy_fit, team, potential,
+                )
+
+        _logger.info(
+            "VC re-matching complete for vc=%s: %d matches created from %d companies",
+            vc_profile_id, created, len(companies),
+        )
+    except Exception as exc:
+        import logging as _lm  # noqa: PLC0415
+        _lm.getLogger(__name__).error(
+            "VC re-matching background task failed for vc=%s: %s", vc_profile_id, exc, exc_info=True
+        )
+
+
+# ---------------------------------------------------------------------------
+# Sprint 2 — VC portal endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/vc/profile")
+async def vc_get_profile(user: CurrentUser = Depends(_require_vc)) -> dict[str, Any]:
+    """Return the VC's profile (firm name, thesis, thresholds)."""
+    profile = await asyncio.to_thread(_get_vc_profile_or_404, user)
+    return {
+        "id": profile.get("id"),
+        "firm_name": profile.get("firm_name"),
+        "investment_thesis": profile.get("investment_thesis"),
+        "min_strategy_fit": profile.get("min_strategy_fit", 0),
+        "min_team": profile.get("min_team", 0),
+        "min_potential": profile.get("min_potential", 0),
+        "active": profile.get("active", True),
+        "created_at": profile.get("created_at"),
+        "updated_at": profile.get("updated_at"),
+    }
+
+
+@app.put("/api/vc/profile")
+async def vc_update_profile(
+    req: VCProfileRequest,
+    user: CurrentUser = Depends(_require_vc),
+) -> dict[str, Any]:
+    """Create or update the VC's profile (firm name + optional thesis)."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    existing = await asyncio.to_thread(db.get_vc_profile, user.id)
+    if existing:
+        updates: dict[str, Any] = {"firm_name": req.firm_name.strip()}
+        if req.investment_thesis is not None:
+            updates["investment_thesis"] = req.investment_thesis.strip()
+        updated = await asyncio.to_thread(db.update_vc_profile, existing["id"], updates)
+        return updated or existing
+    else:
+        created = await asyncio.to_thread(
+            db.create_vc_profile,
+            user.id,
+            req.firm_name,
+            req.investment_thesis,
+        )
+        if not created:
+            raise HTTPException(status_code=500, detail="Failed to create VC profile.")
+        return created
+
+
+@app.put("/api/vc/thesis")
+async def vc_update_thesis(
+    req: VCThesisRequest,
+    background_tasks: BackgroundTasks,
+    user: CurrentUser = Depends(_require_vc),
+) -> dict[str, Any]:
+    """Update only the VC's investment thesis text.
+
+    Triggers background re-matching so all fundraising startups are re-scored
+    against the updated thesis.
+    """
+    profile = await asyncio.to_thread(_get_vc_profile_or_404, user)
+    updated = await asyncio.to_thread(
+        db.update_vc_profile,
+        profile["id"],
+        {"investment_thesis": req.investment_thesis.strip()},
+    )
+    if not updated:
+        raise HTTPException(status_code=500, detail="Failed to update thesis.")
+    background_tasks.add_task(_run_vc_rematching_background, profile["id"])
+    return {"investment_thesis": updated.get("investment_thesis")}
+
+
+@app.put("/api/vc/thresholds")
+async def vc_update_thresholds(
+    req: VCThresholdsRequest,
+    background_tasks: BackgroundTasks,
+    user: CurrentUser = Depends(_require_vc),
+) -> dict[str, Any]:
+    """Update the VC's minimum score thresholds for matching.
+
+    Triggers background re-matching so the match list immediately reflects the
+    new thresholds: stale matches are deleted and every fundraising startup is
+    re-evaluated against the updated criteria.
+    """
+    profile = await asyncio.to_thread(_get_vc_profile_or_404, user)
+    updates = {
+        "min_strategy_fit": req.min_strategy_fit,
+        "min_team": req.min_team,
+        "min_potential": req.min_potential,
+    }
+    updated = await asyncio.to_thread(db.update_vc_profile, profile["id"], updates)
+    if not updated:
+        raise HTTPException(status_code=500, detail="Failed to update thresholds.")
+    background_tasks.add_task(_run_vc_rematching_background, profile["id"])
+    return {
+        "min_strategy_fit": updated.get("min_strategy_fit"),
+        "min_team": updated.get("min_team"),
+        "min_potential": updated.get("min_potential"),
+    }
+
+
+@app.get("/api/vc/matches")
+async def vc_get_matches(user: CurrentUser = Depends(_require_vc)) -> dict[str, Any]:
+    """Return all matches for the VC, ordered by composite score descending."""
+    profile = await asyncio.to_thread(_get_vc_profile_or_404, user)
+    matches = await asyncio.to_thread(db.get_matches_for_vc, profile["id"])
+    return {
+        "matches": [
+            {
+                "id": m.get("id"),
+                "company": {
+                    "id": (m.get("companies") or {}).get("id"),
+                    "name": (m.get("companies") or {}).get("name"),
+                    "industry": (m.get("companies") or {}).get("industry"),
+                    "tagline": (m.get("companies") or {}).get("tagline"),
+                    "about": (m.get("companies") or {}).get("about"),
+                },
+                "strategy_fit_score": m.get("strategy_fit_score"),
+                "team_score": m.get("team_score"),
+                "potential_score": m.get("potential_score"),
+                "composite_score": m.get("composite_score"),
+                "bucket": m.get("bucket"),
+                "status": m.get("status"),
+                "created_at": m.get("created_at"),
+            }
+            for m in matches
+        ]
+    }
+
+
+@app.post("/api/vc/matches/{match_id}/action")
+async def vc_match_action(
+    match_id: str,
+    req: MatchActionRequest,
+    user: CurrentUser = Depends(_require_vc),
+) -> dict[str, Any]:
+    """Update match status (viewed / interested / passed / in_debate)."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    updated = await asyncio.to_thread(db.update_match_status, match_id, req.action)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Match not found or update failed.")
+    return {"id": match_id, "status": req.action}
+
+
+# ---------------------------------------------------------------------------
+# Sprint 3 — Debate engine
+# ---------------------------------------------------------------------------
+
+# Active debate tasks: debate_id → asyncio.Task (so we can cancel on pause)
+_active_debate_tasks: dict[str, asyncio.Task] = {}
+
+# WebSocket connections per debate: debate_id → list of WebSocket
+_debate_ws_clients: dict[str, list[WebSocket]] = {}
+
+
+def _safe_analysis_for_debate(company_id: str) -> dict[str, Any]:
+    """Return the full ranking_result dict from the latest analysis."""
+    if not db:
+        return {}
+    analysis = db.get_company_latest_analysis(company_id)
+    if not analysis:
+        return {}
+    payload = analysis.get("results_payload") or {}
+    return payload.get("ranking_result") or {}
+
+
+async def _broadcast_debate_message(debate_id: str, message: dict[str, Any]) -> None:
+    """Send a message to all WebSocket clients watching this debate."""
+    clients = _debate_ws_clients.get(debate_id, [])
+    dead: list[WebSocket] = []
+    for ws in clients:
+        try:
+            await ws.send_json(message)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        clients.remove(ws)
+
+
+async def _run_debate_task(
+    debate_id: str,
+    company_name: str,
+    vc_thesis: str,
+    analysis_summary: dict[str, Any],
+    chunks: list[dict[str, Any]],
+    existing_messages: list[dict[str, Any]],
+    current_round: int,
+    max_rounds: int,
+) -> None:
+    """Background task that drives the debate loop and broadcasts via WebSocket."""
+    import logging as _logging  # noqa: PLC0415
+    _logger = _logging.getLogger(__name__)
+    try:
+        from agent.debate.orchestrator import run_debate  # noqa: PLC0415
+        async for message in run_debate(
+            debate_id=debate_id,
+            company_name=company_name,
+            vc_thesis=vc_thesis,
+            analysis_summary=analysis_summary,
+            chunks=chunks,
+            existing_messages=existing_messages,
+            current_round=current_round,
+            max_rounds=max_rounds,
+            db_module=db,
+        ):
+            await _broadcast_debate_message(debate_id, message)
+    except asyncio.CancelledError:
+        _logger.info("Debate task %s cancelled (paused)", debate_id)
+        await asyncio.to_thread(db.pause_debate, debate_id)
+    except Exception as exc:
+        _logger.error("Debate task %s error: %s", debate_id, exc)
+    finally:
+        _active_debate_tasks.pop(debate_id, None)
+
+
+@app.post("/api/debates", status_code=201)
+async def create_debate(
+    match_id: str,
+    user: CurrentUser = Depends(_require_vc),
+) -> dict[str, Any]:
+    """Start a new debate for a match. The VC must have actioned the match as 'in_debate'
+    before calling this endpoint.
+
+    Kicks off the debate background task immediately.
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    # Verify the match belongs to this VC
+    vc_profile = await asyncio.to_thread(_get_vc_profile_or_404, user)
+    vc_profile_id: str = vc_profile["id"]
+
+    matches = await asyncio.to_thread(db.get_matches_for_vc, vc_profile_id)
+    match = next((m for m in matches if m["id"] == match_id), None)
+    if not match:
+        raise HTTPException(status_code=404, detail="Match not found.")
+
+    company_id: str = (match.get("companies") or {}).get("id") or ""
+    company_name: str = (match.get("companies") or {}).get("name") or "Unknown"
+    if not company_id:
+        raise HTTPException(status_code=400, detail="Company data unavailable.")
+
+    # Idempotent — return existing debate if already created
+    existing = await asyncio.to_thread(db.get_debate_by_match, match_id)
+    if existing:
+        return existing
+
+    debate = await asyncio.to_thread(
+        db.create_debate,
+        match_id=match_id,
+        company_id=company_id,
+        vc_profile_id=vc_profile_id,
+    )
+    if not debate:
+        raise HTTPException(status_code=500, detail="Failed to create debate.")
+
+    debate_id: str = debate["id"]
+
+    # Mark match as in_debate
+    await asyncio.to_thread(db.update_match_status, match_id, "in_debate")
+
+    # Start background task
+    vc_thesis: str = vc_profile.get("investment_thesis") or ""
+    analysis_summary = await asyncio.to_thread(_safe_analysis_for_debate, company_id)
+    chunks = await asyncio.to_thread(db.get_company_chunks, company_id)
+
+    task = asyncio.create_task(
+        _run_debate_task(
+            debate_id=debate_id,
+            company_name=company_name,
+            vc_thesis=vc_thesis,
+            analysis_summary=analysis_summary,
+            chunks=chunks,
+            existing_messages=[],
+            current_round=1,
+            max_rounds=3,
+        )
+    )
+    _active_debate_tasks[debate_id] = task
+
+    return debate
+
+
+@app.get("/api/debates/{debate_id}")
+async def get_debate(
+    debate_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Return a debate and all its messages."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    debate = await asyncio.to_thread(db.get_debate_by_id, debate_id)
+    if not debate:
+        raise HTTPException(status_code=404, detail="Debate not found.")
+    messages = await asyncio.to_thread(db.get_debate_messages, debate_id)
+    return {**debate, "messages": messages}
+
+
+@app.post("/api/debates/{debate_id}/pause")
+async def pause_debate(
+    debate_id: str,
+    user: CurrentUser = Depends(_require_vc),
+) -> dict[str, Any]:
+    """Pause a running debate (cancels the background task; state is persisted)."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    task = _active_debate_tasks.get(debate_id)
+    if task and not task.done():
+        task.cancel()
+    else:
+        await asyncio.to_thread(db.pause_debate, debate_id)
+    return {"debate_id": debate_id, "status": "paused"}
+
+
+@app.post("/api/debates/{debate_id}/resume")
+async def resume_debate(
+    debate_id: str,
+    user: CurrentUser = Depends(_require_vc),
+) -> dict[str, Any]:
+    """Resume a paused debate from where it left off."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    debate = await asyncio.to_thread(db.get_debate_by_id, debate_id)
+    if not debate:
+        raise HTTPException(status_code=404, detail="Debate not found.")
+    if debate.get("status") == "completed":
+        raise HTTPException(status_code=400, detail="Debate is already completed.")
+
+    vc_profile = await asyncio.to_thread(_get_vc_profile_or_404, user)
+    vc_thesis: str = vc_profile.get("investment_thesis") or ""
+    company_id: str = debate["company_id"]
+    company_name_row = await asyncio.to_thread(db.get_company_by_id, company_id)
+    company_name: str = (company_name_row or {}).get("name") or "Unknown"
+
+    analysis_summary = await asyncio.to_thread(_safe_analysis_for_debate, company_id)
+    chunks = await asyncio.to_thread(db.get_company_chunks, company_id)
+    existing_messages = await asyncio.to_thread(db.get_debate_messages, debate_id)
+    current_round: int = debate.get("current_round") or 1
+    max_rounds: int = debate.get("max_rounds") or 3
+
+    await asyncio.to_thread(db.resume_debate, debate_id)
+
+    task = asyncio.create_task(
+        _run_debate_task(
+            debate_id=debate_id,
+            company_name=company_name,
+            vc_thesis=vc_thesis,
+            analysis_summary=analysis_summary,
+            chunks=chunks,
+            existing_messages=existing_messages,
+            current_round=current_round,
+            max_rounds=max_rounds,
+        )
+    )
+    _active_debate_tasks[debate_id] = task
+
+    return {"debate_id": debate_id, "status": "active", "current_round": current_round}
+
+
+@app.get("/api/vc/debates")
+async def vc_list_debates(user: CurrentUser = Depends(_require_vc)) -> dict[str, Any]:
+    """Return all debates for the VC."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    profile = await asyncio.to_thread(_get_vc_profile_or_404, user)
+    debates = await asyncio.to_thread(db.get_debates_for_vc, profile["id"])
+    return {"debates": debates}
+
+
+@app.get("/api/startup/debates")
+async def startup_list_debates(user: CurrentUser = Depends(_require_startup)) -> dict[str, Any]:
+    """Return all debates for the startup's company."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    company_id = await asyncio.to_thread(_first_linked_company_id, user)
+    debates = await asyncio.to_thread(db.get_debates_for_company, company_id)
+    return {"debates": debates}
+
+
+@app.websocket("/ws/debates/{debate_id}")
+async def debate_websocket(websocket: WebSocket, debate_id: str):
+    """WebSocket endpoint for real-time debate message streaming.
+
+    Clients connect here to receive new messages as the agents generate them.
+    Authentication via ?token=<bearer_token> query param.
+    """
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4001)
+        return
+
+    # Validate token
+    try:
+        user = await get_current_user(authorization=f"Bearer {token}")
+    except HTTPException:
+        await websocket.close(code=4001)
+        return
+
+    await websocket.accept()
+
+    # Register client
+    if debate_id not in _debate_ws_clients:
+        _debate_ws_clients[debate_id] = []
+    _debate_ws_clients[debate_id].append(websocket)
+
+    # Send existing messages immediately on connect
+    if db:
+        messages = await asyncio.to_thread(db.get_debate_messages, debate_id)
+        for msg in messages:
+            await websocket.send_json(msg)
+
+    try:
+        while True:
+            # Keep connection alive; client sends pings
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        clients = _debate_ws_clients.get(debate_id, [])
+        if websocket in clients:
+            clients.remove(websocket)
+
+
+# ---------------------------------------------------------------------------
+# Sprint 4 — Evidence upload, re-analysis, new company onboarding
+# ---------------------------------------------------------------------------
+
+class CreateCompanyRequest(BaseModel):
+    """Request body for creating a new company via the startup portal."""
+
+    name: str
+    industry: str | None = None
+    tagline: str | None = None
+    about: str | None = None
+    domain: str | None = None
+
+
+@app.post("/api/startup/company")
+async def startup_create_company(
+    req: CreateCompanyRequest,
+    user: CurrentUser = Depends(_require_startup),
+) -> dict[str, Any]:
+    """Create a new company record for a startup that has no existing DB entry.
+
+    Fails if the user already has a linked company. After creation, the company
+    is linked to the user via user_company_links. The startup can then upload
+    documents and run a full analysis.
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    # Prevent creating a second company.
+    links = await asyncio.to_thread(db.get_user_company_links, user.id)
+    if links:
+        raise HTTPException(
+            status_code=400,
+            detail="You already have a linked company. Use the upload endpoint to add more evidence.",
+        )
+
+    company_id = await asyncio.to_thread(
+        db.create_company_from_portal,
+        name=req.name,
+        industry=req.industry,
+        tagline=req.tagline,
+        about=req.about,
+        domain=req.domain,
+    )
+    if not company_id:
+        raise HTTPException(status_code=500, detail="Failed to create company record.")
+
+    # Link the user to the new company.
+    link_ok = await asyncio.to_thread(
+        db.create_user_company_link,
+        user_id=user.id,
+        company_id=company_id,
+    )
+    if not link_ok:
+        raise HTTPException(status_code=500, detail="Company created but failed to link to user.")
+
+    return {"company_id": company_id, "name": req.name}
+
+
+_SUPPORTED_UPLOAD_EXTENSIONS = {".pdf", ".pptx", ".docx", ".xlsx", ".xls", ".csv", ".txt", ".md"}
+
+
+@app.post("/api/startup/upload")
+async def startup_upload(
+    files: list[UploadFile],
+    background_tasks: BackgroundTasks,
+    user: CurrentUser = Depends(_require_startup),
+) -> dict[str, Any]:
+    """Upload one or more documents and ingest them as evidence chunks.
+
+    Supports: PDF, PPTX, DOCX, XLSX, XLS, CSV, TXT, MD.
+    Files are saved to Supabase Storage and chunks are inserted into the DB.
+    A new pitch_decks row is created for each uploaded file.
+
+    Returns: list of {filename, pitch_deck_id, chunks_count} for each file.
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided.")
+
+    company_id = await asyncio.to_thread(_first_linked_company_id, user)
+
+    import tempfile  # noqa: PLC0415
+
+    from agent.ingest import EvidenceStore  # noqa: PLC0415
+    from agent.ingest import _EXTENSION_MAP, _TEXT_EXTENSIONS  # noqa: PLC0415
+    from agent.ingest.chunking import smart_chunk_texts  # noqa: PLC0415
+
+    results: list[dict[str, Any]] = []
+    tmp_dir = tempfile.mkdtemp(prefix="startup_upload_")
+
+    try:
+        for upload_file in files:
+            filename = upload_file.filename or "upload"
+            suffix = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+            if suffix not in _SUPPORTED_UPLOAD_EXTENSIONS:
+                results.append({
+                    "filename": filename,
+                    "error": f"Unsupported file type '{suffix}'. Supported: {', '.join(sorted(_SUPPORTED_UPLOAD_EXTENSIONS))}",
+                })
+                continue
+
+            file_bytes = await upload_file.read()
+            if not file_bytes:
+                results.append({"filename": filename, "error": "Empty file."})
+                continue
+
+            # Save to temp dir for parsing.
+            tmp_path = Path(tmp_dir) / filename
+            tmp_path.write_bytes(file_bytes)
+
+            # Parse using ingest pipeline.
+            try:
+                extractor = _EXTENSION_MAP.get(suffix)
+                if extractor is not None:
+                    raw_items = extractor(tmp_path)
+                elif suffix in _TEXT_EXTENSIONS:
+                    raw_items = [{"text": tmp_path.read_text(errors="replace").strip(), "page_or_slide": "N/A", "source_file": filename}]
+                else:
+                    raw_items = []
+
+                if not raw_items:
+                    results.append({"filename": filename, "error": "No content could be extracted."})
+                    continue
+
+                chunks = smart_chunk_texts(raw_items)
+            except Exception as exc:
+                _log = logging.getLogger(__name__)
+                _log.warning("Failed to parse upload %s: %s", filename, exc)
+                results.append({"filename": filename, "error": f"Parse failed: {exc}"})
+                continue
+
+            # Upload bytes to Supabase Storage (best-effort).
+            storage_path = await asyncio.to_thread(
+                db.upload_startup_file_bytes,
+                company_id,
+                filename,
+                file_bytes,
+            ) or f"startup_uploads/{company_id}/{filename}"
+
+            # Create pitch_decks row and insert chunks.
+            pitch_deck_id = await asyncio.to_thread(
+                db.create_pitch_deck_for_upload,
+                company_id,
+                storage_path,
+                filename,
+            )
+            if not pitch_deck_id:
+                results.append({"filename": filename, "error": "Failed to create pitch deck record."})
+                continue
+
+            chunk_count = await asyncio.to_thread(
+                db.insert_chunks_for_pitch_deck,
+                pitch_deck_id,
+                chunks,
+            )
+
+            results.append({
+                "filename": filename,
+                "pitch_deck_id": pitch_deck_id,
+                "chunks_count": chunk_count,
+            })
+    finally:
+        import shutil  # noqa: PLC0415
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    files_processed = sum(1 for r in results if "pitch_deck_id" in r)
+    return {
+        "files_processed": files_processed,
+        "results": results,
+    }
+
+
+@app.post("/api/startup/re-evaluate")
+async def startup_re_evaluate(
+    background_tasks: BackgroundTasks,
+    user: CurrentUser = Depends(_require_startup),
+) -> dict[str, Any]:
+    """Trigger a re-evaluation of the startup's company using all available evidence.
+
+    Re-evaluation is additive: all existing chunks (from Specter, original pitch deck,
+    and any prior uploads) are combined with any new upload into a single EvidenceStore.
+    Stage 1 (decomposition) is skipped if a prior analysis exists — the cached
+    question trees are reused. Stages 2-8 are re-run. Old matches are deleted
+    and re-computed against all active VCs.
+
+    Returns immediately. Status can be polled via GET /api/startup/profile.
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    company_id = await asyncio.to_thread(_first_linked_company_id, user)
+    background_tasks.add_task(_run_re_evaluation, company_id)
+    return {"status": "re_evaluation_started", "company_id": company_id}
+
+
+@app.post("/api/startup/analyze")
+async def startup_analyze(
+    background_tasks: BackgroundTasks,
+    user: CurrentUser = Depends(_require_startup),
+) -> dict[str, Any]:
+    """Trigger a full pipeline analysis for a newly onboarded company.
+
+    Runs all 8 stages (decomposition through ranking). Use this for companies
+    that have uploaded documents but have no prior analysis record.
+    Does NOT auto-trigger VC matching — the startup must explicitly toggle
+    fundraising ON after reviewing their scores.
+
+    Returns immediately. Status can be polled via GET /api/startup/profile.
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    company_id = await asyncio.to_thread(_first_linked_company_id, user)
+    background_tasks.add_task(_run_full_analysis, company_id)
+    return {"status": "analysis_started", "company_id": company_id}
+
+
+_DIMENSION_BY_ASPECT = {
+    "general_company": "strategy_fit",
+    "team": "team",
+    "market": "upside",
+    "product": "upside",
+}
+
+
+def _build_evidence_provenance(
+    final_state: dict,
+    all_qa_pairs: list[dict] | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Build qa_provenance_rows and argument_rows from a completed pipeline state.
+
+    Mirrors the format produced by build_qa_provenance_rows() / build_argument_rows()
+    in src/agent/batch.py but works with a single company's final_state dict.
+
+    Args:
+        final_state: The graph's final state dict (used for final_arguments).
+        all_qa_pairs: Pre-built Q&A pairs to use. If None, reads from final_state.
+            Prefer passing this directly from the caller's local variable to avoid
+            LangGraph state-merging artefacts (duplicate list items).
+
+    Returns:
+        (qa_provenance_rows, argument_rows)
+    """
+    # --- QA provenance rows ---
+    # Prefer the caller-supplied list; fall back to final_state for backward compat.
+    _qa_source = all_qa_pairs if all_qa_pairs is not None else (final_state.get("all_qa_pairs") or [])
+    qa_provenance_rows: list[dict] = []
+    for qa in _qa_source:
+        chunk_ids = qa.get("chunk_ids")
+        if isinstance(chunk_ids, list):
+            chunk_ids_str = ", ".join(str(c) for c in chunk_ids)
+        else:
+            chunk_ids_str = str(chunk_ids) if chunk_ids else ""
+        aspect = str(qa.get("aspect") or "")
+        qa_provenance_rows.append({
+            "aspect": aspect,
+            "dimension": _DIMENSION_BY_ASPECT.get(aspect.strip(), ""),
+            "question": qa.get("question", ""),
+            "answer": qa.get("answer", ""),
+            "chunk_ids": chunk_ids_str,
+            "chunks_preview": qa.get("chunks_preview", ""),
+            "web_search_query": qa.get("web_search_query") or "",
+            "web_search_results": qa.get("web_search_results") or "",
+            "web_search_used": bool(qa.get("web_search_used")),
+            "web_search_decision": qa.get("web_search_decision") or "",
+        })
+
+    # --- Argument rows ---
+    argument_rows: list[dict] = []
+    for arg in (final_state.get("final_arguments") or []):
+        arg_dict = arg.model_dump() if hasattr(arg, "model_dump") else arg
+        # Build qa_pairs_used summary text (same format as batch.py)
+        qa_pairs_used = ""
+        if arg_dict.get("qa_pairs"):
+            qa_pairs_used = "\n---\n".join(
+                f"Q: {q.get('question', '')}\nA: {q.get('answer', '')}"
+                for q in arg_dict["qa_pairs"]
+            )
+        argument_rows.append({
+            "type": arg_dict.get("argument_type", ""),
+            "score": arg_dict.get("score"),
+            "argument_text": arg_dict.get("content", ""),
+            "critique_text": arg_dict.get("critique") or "",
+            "refined_text": arg_dict.get("refined_content") or "",
+            "argument_feedback": arg_dict.get("argument_feedback") or "",
+            "qa_pairs_used": qa_pairs_used,
+            "qa_indices": arg_dict.get("qa_indices", []),
+        })
+
+    return qa_provenance_rows, argument_rows
+
+
+async def _run_re_evaluation(company_id: str) -> None:
+    """Background task: re-evaluate a company with all available evidence.
+
+    Evidence is additive — combines Specter chunks, original pitch deck chunks,
+    and all portal-uploaded chunks. Reuses cached question_trees to skip Stage 1.
+    """
+    import logging as _log_module  # noqa: PLC0415
+    _logger = _log_module.getLogger(__name__)
+    _logger.info("Re-evaluation started for company=%s", company_id)
+
+    try:
+        from agent.dataclasses.company import Company  # noqa: PLC0415
+        from agent.dataclasses.config import Config  # noqa: PLC0415
+        from agent.dataclasses.question_tree import QuestionTree  # noqa: PLC0415
+        from agent.evidence_answering import answer_all_trees_from_evidence  # noqa: PLC0415
+        from agent.ingest.store import Chunk, EvidenceStore  # noqa: PLC0415
+        from agent.pipeline.graph import graph  # noqa: PLC0415
+        from agent.pipeline.state.investment_story import IterativeInvestmentStoryState  # noqa: PLC0415
+
+        # 1. Load company row.
+        company_row = await asyncio.to_thread(db.get_company_by_id, company_id)
+        if not company_row:
+            _logger.error("Re-evaluation: company %s not found", company_id)
+            return
+
+        company = Company(
+            name=company_row.get("name") or "Unknown",
+            industry=company_row.get("industry"),
+            tagline=company_row.get("tagline"),
+            about=company_row.get("about"),
+            domain=company_row.get("domain"),
+        )
+
+        # 2. Load ALL chunks (no Specter filter) — additive corpus.
+        all_chunk_rows = await asyncio.to_thread(db.get_all_company_chunks, company_id)
+        if not all_chunk_rows:
+            _logger.warning("Re-evaluation: no chunks found for company=%s — aborting", company_id)
+            return
+
+        store = EvidenceStore(startup_slug=company_id)
+        for idx, c in enumerate(all_chunk_rows):
+            store.chunks.append(Chunk(
+                chunk_id=c.get("chunk_id") or f"chunk_{idx}",
+                text=c.get("text") or "",
+                source_file=c.get("source_file") or "",
+                page_or_slide=c.get("page_or_slide") or "N/A",
+            ))
+        _logger.info("Re-evaluation: %d total chunks for company=%s", len(store.chunks), company_id)
+
+        # 3. Try to load cached question_trees to skip Stage 1.
+        cached_trees_raw = await asyncio.to_thread(db.get_analysis_question_trees, company_id)
+        question_trees: dict[str, QuestionTree] | None = None
+        if cached_trees_raw:
+            try:
+                question_trees = {
+                    aspect: QuestionTree.model_validate(tree_data)
+                    for aspect, tree_data in cached_trees_raw.items()
+                }
+                _logger.info(
+                    "Re-evaluation: reusing %d cached question trees for company=%s",
+                    len(question_trees), company_id,
+                )
+            except Exception as exc:
+                _logger.warning("Re-evaluation: failed to reconstruct question trees: %s", exc)
+                question_trees = None
+
+        config = Config(
+            n_pro_arguments=3,
+            n_contra_arguments=3,
+            k_best_arguments_per_iteration=[3, 1],
+            max_iterations=1,
+        )
+
+        if question_trees:
+            # 4a. Re-run Stage 2 (Answering) with combined corpus.
+            _logger.info("Re-evaluation: running Stage 2 (answering) for company=%s", company_id)
+            all_qa_pairs = await answer_all_trees_from_evidence(question_trees, company, store)
+
+            # 4b. Run Stages 3-8 via graph (enters at argument generation).
+            _logger.info("Re-evaluation: running Stages 3-8 for company=%s", company_id)
+            final_state = await graph.ainvoke(
+                {
+                    "company": company,
+                    "config": config,
+                    "all_qa_pairs": all_qa_pairs,
+                    "vc_context": "",
+                    "slug": company_id,
+                    "prompt_overrides": {},
+                },
+                config={"recursion_limit": 100},
+            )
+        else:
+            # 4c. No cached trees — run full pipeline (Stages 1-8).
+            _logger.info("Re-evaluation: no cached trees, running full pipeline for company=%s", company_id)
+            temp_state = IterativeInvestmentStoryState(
+                company=company,
+                config=config,
+                prompt_overrides={},
+            )
+            decomp_result = await _decompose_questions_safe(temp_state)
+            if not decomp_result:
+                _logger.error("Re-evaluation: decomposition failed for company=%s", company_id)
+                return
+
+            retrieved_trees = decomp_result.get("question_trees", {})
+            all_qa_pairs = await answer_all_trees_from_evidence(retrieved_trees, company, store)
+            final_state = await graph.ainvoke(
+                {
+                    "company": company,
+                    "config": config,
+                    "all_qa_pairs": all_qa_pairs,
+                    "vc_context": "",
+                    "slug": company_id,
+                    "prompt_overrides": {},
+                },
+                config={"recursion_limit": 100},
+            )
+
+        # 5. Build results_payload from the final state (including evidence provenance).
+        ranking = final_state.get("ranking_result")
+        ranking_dict = ranking.model_dump() if hasattr(ranking, "model_dump") else (ranking or {})
+        # Pass local all_qa_pairs directly to avoid LangGraph state-merge artefacts.
+        qa_provenance_rows, argument_rows = _build_evidence_provenance(
+            final_state, all_qa_pairs=all_qa_pairs
+        )
+        results_payload = {
+            "mode": "single",
+            "ranking_result": ranking_dict,
+            "qa_provenance_rows": qa_provenance_rows,
+            "argument_rows": argument_rows,
+            "decision": final_state.get("final_decision"),
+        }
+
+        # 6. Build state snapshot for storage (includes question_trees for future reuse).
+        state_snapshot = {
+            "question_trees": {
+                k: v.model_dump() if hasattr(v, "model_dump") else v
+                for k, v in (final_state.get("question_trees") or {}).items()
+            },
+            "all_qa_pairs": final_state.get("all_qa_pairs") or [],
+            "final_arguments": [
+                a.model_dump() if hasattr(a, "model_dump") else a
+                for a in (final_state.get("final_arguments") or [])
+            ],
+            "final_decision": final_state.get("final_decision"),
+        }
+
+        # 7. Persist new analysis record (old ones are preserved for history).
+        analysis_id = await asyncio.to_thread(
+            db.create_analysis_record,
+            company_id=company_id,
+            pitch_deck_id=None,  # multi-deck scenario; no single pitch_deck
+            state=state_snapshot,
+            results_payload=results_payload,
+            status="done",
+            run_config={"source": "portal_re_evaluate"},
+        )
+        _logger.info("Re-evaluation: analysis saved, id=%s for company=%s", analysis_id, company_id)
+
+        # 8. Delete stale matches and re-trigger matching.
+        deleted = await asyncio.to_thread(db.delete_matches_for_company, company_id)
+        _logger.info("Re-evaluation: deleted %d stale matches for company=%s", deleted, company_id)
+
+        # Only trigger matching if the company has fundraising enabled.
+        company_fresh = await asyncio.to_thread(db.get_company_by_id, company_id)
+        if company_fresh and company_fresh.get("fundraising"):
+            await _run_matching_background(company_id)
+        else:
+            _logger.info(
+                "Re-evaluation: fundraising=false for company=%s — matching not triggered", company_id
+            )
+
+    except Exception as exc:
+        import logging as _lm  # noqa: PLC0415
+        _lm.getLogger(__name__).error(
+            "Re-evaluation failed for company=%s: %s", company_id, exc, exc_info=True
+        )
+
+
+async def _run_full_analysis(company_id: str) -> None:
+    """Background task: run a full 8-stage pipeline analysis for a new company.
+
+    Used when a startup has uploaded documents but has no prior analysis record.
+    All chunks are combined into one EvidenceStore. Stages 1-8 run in sequence.
+    Does NOT auto-trigger VC matching — the startup must toggle fundraising ON.
+    """
+    import logging as _log_module  # noqa: PLC0415
+    _logger = _log_module.getLogger(__name__)
+    _logger.info("Full analysis started for company=%s", company_id)
+
+    try:
+        from agent.dataclasses.company import Company  # noqa: PLC0415
+        from agent.dataclasses.config import Config  # noqa: PLC0415
+        from agent.evidence_answering import answer_all_trees_from_evidence  # noqa: PLC0415
+        from agent.ingest.store import Chunk, EvidenceStore  # noqa: PLC0415
+        from agent.pipeline.graph import graph  # noqa: PLC0415
+        from agent.pipeline.state.investment_story import IterativeInvestmentStoryState  # noqa: PLC0415
+
+        # 1. Load company row.
+        company_row = await asyncio.to_thread(db.get_company_by_id, company_id)
+        if not company_row:
+            _logger.error("Full analysis: company %s not found", company_id)
+            return
+
+        company = Company(
+            name=company_row.get("name") or "Unknown",
+            industry=company_row.get("industry"),
+            tagline=company_row.get("tagline"),
+            about=company_row.get("about"),
+            domain=company_row.get("domain"),
+        )
+
+        # 2. Load ALL chunks (no Specter filter).
+        all_chunk_rows = await asyncio.to_thread(db.get_all_company_chunks, company_id)
+        if not all_chunk_rows:
+            _logger.warning("Full analysis: no chunks found for company=%s — aborting", company_id)
+            return
+
+        store = EvidenceStore(startup_slug=company_id)
+        for idx, c in enumerate(all_chunk_rows):
+            store.chunks.append(Chunk(
+                chunk_id=c.get("chunk_id") or f"chunk_{idx}",
+                text=c.get("text") or "",
+                source_file=c.get("source_file") or "",
+                page_or_slide=c.get("page_or_slide") or "N/A",
+            ))
+        _logger.info("Full analysis: %d chunks for company=%s", len(store.chunks), company_id)
+
+        config = Config(
+            n_pro_arguments=3,
+            n_contra_arguments=3,
+            k_best_arguments_per_iteration=[3, 1],
+            max_iterations=1,
+        )
+
+        # 3. Stage 1: Decompose questions.
+        _logger.info("Full analysis: running Stage 1 (decomposition) for company=%s", company_id)
+        temp_state = IterativeInvestmentStoryState(
+            company=company,
+            config=config,
+            prompt_overrides={},
+        )
+        decomp_result = await _decompose_questions_safe(temp_state)
+        if not decomp_result:
+            _logger.error("Full analysis: decomposition failed for company=%s", company_id)
+            return
+
+        question_trees = decomp_result.get("question_trees", {})
+        _logger.info("Full analysis: %d question trees for company=%s", len(question_trees), company_id)
+
+        # 4. Stage 2: Answer from evidence.
+        _logger.info("Full analysis: running Stage 2 (answering) for company=%s", company_id)
+        all_qa_pairs = await answer_all_trees_from_evidence(question_trees, company, store)
+        _logger.info("Full analysis: %d Q&A pairs for company=%s", len(all_qa_pairs), company_id)
+
+        # 5. Stages 3-8: Argument generation through ranking.
+        _logger.info("Full analysis: running Stages 3-8 for company=%s", company_id)
+        final_state = await graph.ainvoke(
+            {
+                "company": company,
+                "config": config,
+                "all_qa_pairs": all_qa_pairs,
+                "vc_context": "",
+                "slug": company_id,
+                "prompt_overrides": {},
+            },
+            config={"recursion_limit": 100},
+        )
+
+        # 6. Build results_payload (including evidence provenance) and state snapshot.
+        ranking = final_state.get("ranking_result")
+        ranking_dict = ranking.model_dump() if hasattr(ranking, "model_dump") else (ranking or {})
+        # Pass local all_qa_pairs directly to avoid LangGraph state-merge artefacts.
+        qa_provenance_rows, argument_rows = _build_evidence_provenance(
+            final_state, all_qa_pairs=all_qa_pairs
+        )
+        results_payload = {
+            "mode": "single",
+            "ranking_result": ranking_dict,
+            "qa_provenance_rows": qa_provenance_rows,
+            "argument_rows": argument_rows,
+            "decision": final_state.get("final_decision"),
+        }
+
+        state_snapshot = {
+            "question_trees": {
+                k: v.model_dump() if hasattr(v, "model_dump") else v
+                for k, v in (final_state.get("question_trees") or {}).items()
+            },
+            "all_qa_pairs": all_qa_pairs,
+            "final_arguments": [
+                a.model_dump() if hasattr(a, "model_dump") else a
+                for a in (final_state.get("final_arguments") or [])
+            ],
+            "final_decision": final_state.get("final_decision"),
+        }
+
+        # 7. Persist analysis record.
+        analysis_id = await asyncio.to_thread(
+            db.create_analysis_record,
+            company_id=company_id,
+            pitch_deck_id=None,
+            state=state_snapshot,
+            results_payload=results_payload,
+            status="done",
+            run_config={"source": "portal_full_analyze"},
+        )
+        _logger.info(
+            "Full analysis: complete, analysis_id=%s for company=%s", analysis_id, company_id
+        )
+        # NOTE: Do NOT trigger matching here. Startup must explicitly toggle fundraising ON.
+
+    except Exception as exc:
+        import logging as _lm  # noqa: PLC0415
+        _lm.getLogger(__name__).error(
+            "Full analysis failed for company=%s: %s", company_id, exc, exc_info=True
+        )
+
+
+async def _decompose_questions_safe(state: Any) -> dict[str, Any] | None:
+    """Run Stage 1 (decompose_all_questions) and return the updated state dict.
+
+    Returns None if decomposition fails. Isolated here to avoid code duplication
+    between _run_re_evaluation and _run_full_analysis.
+    """
+    try:
+        from agent.pipeline.stages.parallel_decomposition import decompose_all_questions  # noqa: PLC0415
+        result = await decompose_all_questions(state)
+        return result if isinstance(result, dict) else {}
+    except Exception as exc:
+        import logging as _lm  # noqa: PLC0415
+        _lm.getLogger(__name__).error("Decomposition failed: %s", exc, exc_info=True)
+        return None
+
+
+# ---------------------------------------------------------------------------
 
 @app.get("/api/web-search-available")
 async def web_search_available(session_id: str | None = Cookie(default=None)):

@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-from agent.ingest.chunking import chunk_texts
+from agent.ingest.chunking import chunk_texts, smart_chunk_texts
+from agent.ingest.docx_ingest import extract_docx
 from agent.ingest.pdf_ingest import extract_pdf
 from agent.ingest.pptx_ingest import extract_pptx
 from agent.ingest.store import Chunk, EvidenceStore
@@ -11,6 +12,7 @@ from agent.ingest.tabular_ingest import extract_tabular
 _EXTENSION_MAP = {
     ".pdf": extract_pdf,
     ".pptx": extract_pptx,
+    ".docx": extract_docx,
     ".csv": extract_tabular,
     ".xlsx": extract_tabular,
     ".xls": extract_tabular,
@@ -77,7 +79,7 @@ def ingest_startup_folder(
         elif suffix in _TEXT_EXTENSIONS:
             raw_items.extend(_extract_text_file(file_path))
 
-    chunks = chunk_texts(raw_items, chunk_size=chunk_size, overlap=overlap)
+    chunks = smart_chunk_texts(raw_items, target_size=chunk_size)
     return EvidenceStore(startup_slug=slug, chunks=chunks)
 
 
