@@ -61,13 +61,20 @@ from agent.pipeline.state.investment_story import (
 
 def check_start_point(
     state: IterativeInvestmentStoryState,
-) -> Literal["decompose_questions", "generate_pro_and_contra_arguments", "score_and_select_best_k"]:
+) -> Literal["decompose_questions", "generate_pro_and_contra_arguments", "score_and_select_best_k", "score_company_dimensions"]:
     """Router: determines pipeline entry point based on state.
 
-    - If company provided but no question_trees: start with decomposition
-    - If question_trees exist but is_final=False: start with argument generation
+    - If final_arguments + final_decision exist (VC matching optimisation):
+      skip directly to Stage 8 (score_company_dimensions) — ~5x cheaper
     - If is_final=True: skip to scoring (for final evaluation only)
+    - If question_trees or all_qa_pairs exist: skip decomposition/answering
+    - Otherwise: start from decomposition
     """
+    # Stage 8 only: pre-computed final_arguments + final_decision supplied.
+    # Used by the matching engine to avoid re-running Stages 1-7 per VC.
+    if state.final_arguments and state.final_decision:
+        return "score_company_dimensions"
+
     # If is_final, skip to scoring
     if state.is_final:
         if len(state.current_arguments) == 0:

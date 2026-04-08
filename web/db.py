@@ -3149,3 +3149,1102 @@ def load_analyses_by_company(company_name: str) -> list[dict[str, Any]]:
 def ensure_excel_bucket() -> None:
     """Excel export has been removed."""
     return None
+
+
+# ---------------------------------------------------------------------------
+# Sprint 1 — User profiles, company claiming, fundraising flag
+# ---------------------------------------------------------------------------
+
+_SPECTER_SOURCE_FILES = {"companies.csv", "people.csv"}
+_SPECTER_SOURCE_PREFIXES = ("specter-", "specter_")
+
+
+def get_user_profile(user_id: str) -> dict[str, Any] | None:
+    """Return the users_profile row for the given Supabase auth user id."""
+    client = _get_client()
+    if not client or not user_id:
+        return None
+    try:
+        rows = (
+            client.table("users_profile")
+            .select("id, role, display_name, organization, approved, created_at")
+            .eq("id", user_id)
+            .limit(1)
+            .execute()
+        )
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("get_user_profile", "users_profile", exc)
+        return None
+
+
+def create_user_profile(
+    user_id: str,
+    role: str,
+    display_name: str | None,
+    organization: str | None,
+) -> dict[str, Any] | None:
+    """Insert a new users_profile row. Returns the created row or None on error."""
+    client = _get_client()
+    if not client or not user_id or not role:
+        return None
+    payload: dict[str, Any] = {
+        "id": user_id,
+        "role": role,
+        "approved": False,
+    }
+    if display_name:
+        payload["display_name"] = display_name.strip()
+    if organization:
+        payload["organization"] = organization.strip()
+    try:
+        rows = client.table("users_profile").insert(payload).execute()
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("create_user_profile", "users_profile", exc)
+        return None
+
+
+def get_user_company_links(user_id: str) -> list[dict[str, Any]]:
+    """Return all company links for the given user, joined with company data."""
+    client = _get_client()
+    if not client or not user_id:
+        return []
+    try:
+        rows = (
+            client.table("user_company_links")
+            .select(
+                "user_id, company_id, role_in_company, verified_at, "
+                "companies(id, name, industry, tagline, about, team, domain, "
+                "fundraising, fundraising_updated_at, claimed_at)"
+            )
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return list(rows.data or [])
+    except Exception as exc:
+        _log_supabase_error("get_user_company_links", "user_company_links", exc)
+        return []
+
+
+def create_user_company_link(
+    user_id: str,
+    company_id: str,
+    role_in_company: str | None = None,
+) -> bool:
+    """Insert a user_company_links row. Returns True on success."""
+    client = _get_client()
+    if not client or not user_id or not company_id:
+        return False
+    payload: dict[str, Any] = {
+        "user_id": user_id,
+        "company_id": company_id,
+    }
+    if role_in_company:
+        payload["role_in_company"] = role_in_company.strip()
+    try:
+        client.table("user_company_links").upsert(
+            payload,
+            on_conflict="user_id,company_id",
+        ).execute()
+        return True
+    except Exception as exc:
+        _log_supabase_error("create_user_company_link", "user_company_links", exc)
+        return False
+
+
+def get_company_by_id(company_id: str) -> dict[str, Any] | None:
+    """Return a companies row by UUID."""
+    client = _get_client()
+    if not client or not company_id:
+        return None
+    try:
+        rows = (
+            client.table("companies")
+            .select(
+                "id, name, industry, tagline, about, team, domain, "
+                "fundraising, fundraising_updated_at, claimed_at, data_room_enabled"
+            )
+            .eq("id", company_id)
+            .limit(1)
+            .execute()
+        )
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("get_company_by_id", "companies", exc)
+        return None
+
+
+def set_company_claimed_at(company_id: str) -> bool:
+    """Stamp claimed_at on a company when the first startup user verifies their domain."""
+    client = _get_client()
+    if not client or not company_id:
+        return False
+    try:
+        client.table("companies").update(
+            {"claimed_at": _utcnow().isoformat()}
+        ).eq("id", company_id).is_("claimed_at", "null").execute()
+        return True
+    except Exception as exc:
+        _log_supabase_error("set_company_claimed_at", "companies", exc)
+        return False
+
+
+def set_company_fundraising(company_id: str, fundraising: bool) -> dict[str, Any] | None:
+    """Toggle the fundraising flag and refresh fundraising_updated_at. Returns updated row."""
+    client = _get_client()
+    if not client or not company_id:
+        return None
+    try:
+        rows = (
+            client.table("companies")
+            .update(
+                {
+                    "fundraising": fundraising,
+                    "fundraising_updated_at": _utcnow().isoformat(),
+                }
+            )
+            .eq("id", company_id)
+            .execute()
+        )
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("set_company_fundraising", "companies", exc)
+        return None
+
+
+def get_company_chunks(company_id: str) -> list[dict[str, Any]]:
+    """Return evidence chunks for a company, excluding Specter-sourced files.
+
+    Chunks are joined through pitch_decks → company_id. Rows whose source_file
+    matches any Specter file (companies.csv / people.csv) are filtered out at
+    the DB query level and never returned to callers.
+    """
+    client = _get_client()
+    if not client or not company_id:
+        return []
+    try:
+        # Fetch pitch_deck ids for this company first.
+        decks = (
+            client.table("pitch_decks")
+            .select("id")
+            .eq("company_id", company_id)
+            .execute()
+        )
+        deck_ids = [d["id"] for d in (decks.data or []) if d.get("id")]
+        if not deck_ids:
+            return []
+
+        rows = _fetch_chunks_for_pitch_deck_ids(client, deck_ids)
+
+        # Filter Specter sources — critical security boundary.
+        filtered = [
+            r for r in rows
+            if not _is_specter_source(r.get("source_file"))
+        ]
+        return filtered
+    except Exception as exc:
+        _log_supabase_error("get_company_chunks", "chunks", exc)
+        return []
+
+
+def get_company_latest_analysis(company_id: str) -> dict[str, Any] | None:
+    """Return the most recent completed analysis for a company."""
+    client = _get_client()
+    if not client or not company_id:
+        return None
+    try:
+        rows = (
+            client.table("analyses")
+            .select("id, job_id_legacy, results_payload, status, created_at")
+            .eq("company_id", company_id)
+            .eq("status", "done")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("get_company_latest_analysis", "analyses", exc)
+        return None
+
+
+def _is_specter_source(source_file: str | None) -> bool:
+    """Return True if the chunk came from a Specter source (must never be shown to startup users).
+
+    Catches both legacy CSV filenames (companies.csv, people.csv) and the
+    source_file values written by specter_ingest.py (specter-company, specter-people, etc.).
+    """
+    if not source_file:
+        return False
+    name = source_file.strip().lower().split("/")[-1]
+    return name in _SPECTER_SOURCE_FILES or name.startswith(_SPECTER_SOURCE_PREFIXES)
+
+
+# ---------------------------------------------------------------------------
+# Sprint 2 — VC profiles
+# ---------------------------------------------------------------------------
+
+def get_vc_profile(user_id: str) -> dict[str, Any] | None:
+    """Return the vc_profiles row for the given user_id, or None."""
+    client = _get_client()
+    if not client or not user_id:
+        return None
+    try:
+        rows = (
+            client.table("vc_profiles")
+            .select("id, user_id, firm_name, investment_thesis, min_strategy_fit, min_team, min_potential, active, created_at, updated_at")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("get_vc_profile", "vc_profiles", exc)
+        return None
+
+
+def get_vc_profile_by_id(vc_profile_id: str) -> dict[str, Any] | None:
+    """Return the vc_profiles row for the given profile id, or None."""
+    client = _get_client()
+    if not client or not vc_profile_id:
+        return None
+    try:
+        rows = (
+            client.table("vc_profiles")
+            .select("id, user_id, firm_name, investment_thesis, min_strategy_fit, min_team, min_potential, active, created_at, updated_at")
+            .eq("id", vc_profile_id)
+            .limit(1)
+            .execute()
+        )
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("get_vc_profile_by_id", "vc_profiles", exc)
+        return None
+
+
+def create_vc_profile(
+    user_id: str,
+    firm_name: str,
+    investment_thesis: str | None = None,
+) -> dict[str, Any] | None:
+    """Insert a new vc_profiles row. Returns the created row or None on error."""
+    client = _get_client()
+    if not client or not user_id or not firm_name:
+        return None
+    payload: dict[str, Any] = {
+        "user_id": user_id,
+        "firm_name": firm_name.strip(),
+        "updated_at": _utcnow().isoformat(),
+    }
+    if investment_thesis:
+        payload["investment_thesis"] = investment_thesis.strip()
+    try:
+        rows = client.table("vc_profiles").insert(payload).execute()
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("create_vc_profile", "vc_profiles", exc)
+        return None
+
+
+def update_vc_profile(vc_profile_id: str, updates: dict[str, Any]) -> dict[str, Any] | None:
+    """Update a vc_profiles row by id. Returns the updated row or None."""
+    client = _get_client()
+    if not client or not vc_profile_id or not updates:
+        return None
+    updates["updated_at"] = _utcnow().isoformat()
+    try:
+        rows = (
+            client.table("vc_profiles")
+            .update(updates)
+            .eq("id", vc_profile_id)
+            .execute()
+        )
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("update_vc_profile", "vc_profiles", exc)
+        return None
+
+
+def get_active_vc_profiles() -> list[dict[str, Any]]:
+    """Return all vc_profiles where active=true (used by the matching engine)."""
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        rows = (
+            client.table("vc_profiles")
+            .select("id, user_id, firm_name, investment_thesis, min_strategy_fit, min_team, min_potential")
+            .eq("active", True)
+            .execute()
+        )
+        return list(rows.data or [])
+    except Exception as exc:
+        _log_supabase_error("get_active_vc_profiles", "vc_profiles", exc)
+        return []
+
+
+def get_fundraising_companies() -> list[dict[str, Any]]:
+    """Return companies with fundraising=true (matched by matching engine on VC thesis change)."""
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        rows = (
+            client.table("companies")
+            .select("id, name, industry, domain")
+            .eq("fundraising", True)
+            .execute()
+        )
+        return list(rows.data or [])
+    except Exception as exc:
+        _log_supabase_error("get_fundraising_companies", "companies", exc)
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Sprint 2 — Matches
+# ---------------------------------------------------------------------------
+
+def create_match(
+    *,
+    vc_profile_id: str,
+    company_id: str,
+    analysis_id: str | None,
+    scores: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Upsert a matches row for (vc_profile_id, company_id). Returns the row or None."""
+    client = _get_client()
+    if not client or not vc_profile_id or not company_id:
+        return None
+    payload: dict[str, Any] = {
+        "vc_profile_id": vc_profile_id,
+        "company_id": company_id,
+        "analysis_id": analysis_id,
+        "strategy_fit_score": scores.get("strategy_fit_score"),
+        "team_score": scores.get("team_score"),
+        "potential_score": scores.get("potential_score"),
+        "composite_score": scores.get("composite_score"),
+        "bucket": scores.get("bucket"),
+        "status": "new",
+    }
+    try:
+        rows = (
+            client.table("matches")
+            .upsert(payload, on_conflict="vc_profile_id,company_id")
+            .execute()
+        )
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("create_match", "matches", exc)
+        return None
+
+
+def match_exists(vc_profile_id: str, company_id: str) -> bool:
+    """Return True if a match row already exists for this (vc, company) pair."""
+    client = _get_client()
+    if not client:
+        return False
+    try:
+        rows = (
+            client.table("matches")
+            .select("id")
+            .eq("vc_profile_id", vc_profile_id)
+            .eq("company_id", company_id)
+            .limit(1)
+            .execute()
+        )
+        return bool(rows.data)
+    except Exception as exc:
+        _log_supabase_error("match_exists", "matches", exc)
+        return False
+
+
+def get_matches_for_vc(vc_profile_id: str) -> list[dict[str, Any]]:
+    """Return all matches for a VC, joined with company data."""
+    client = _get_client()
+    if not client or not vc_profile_id:
+        return []
+    try:
+        rows = (
+            client.table("matches")
+            .select(
+                "id, strategy_fit_score, team_score, potential_score, composite_score, "
+                "bucket, status, created_at, "
+                "companies(id, name, industry, tagline, about, fundraising)"
+            )
+            .eq("vc_profile_id", vc_profile_id)
+            .order("composite_score", desc=True)
+            .execute()
+        )
+        return list(rows.data or [])
+    except Exception as exc:
+        _log_supabase_error("get_matches_for_vc", "matches", exc)
+        return []
+
+
+def get_matches_for_company(company_id: str) -> list[dict[str, Any]]:
+    """Return all matches for a company (startup-facing view — excludes VC thesis)."""
+    client = _get_client()
+    if not client or not company_id:
+        return []
+    try:
+        rows = (
+            client.table("matches")
+            .select(
+                "id, strategy_fit_score, team_score, potential_score, composite_score, "
+                "bucket, status, created_at, "
+                "vc_profiles(id, firm_name)"
+            )
+            .eq("company_id", company_id)
+            .order("composite_score", desc=True)
+            .execute()
+        )
+        return list(rows.data or [])
+    except Exception as exc:
+        _log_supabase_error("get_matches_for_company", "matches", exc)
+        return []
+
+
+def update_match_status(match_id: str, status: str) -> dict[str, Any] | None:
+    """Update match status. Returns updated row or None."""
+    client = _get_client()
+    if not client or not match_id or not status:
+        return None
+    try:
+        rows = (
+            client.table("matches")
+            .update({"status": status})
+            .eq("id", match_id)
+            .execute()
+        )
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("update_match_status", "matches", exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Sprint 2 — Q&A pairs from analysis state (for matching engine)
+# ---------------------------------------------------------------------------
+
+def get_analysis_qa_pairs(company_id: str) -> list[dict[str, Any]]:
+    """Return all_qa_pairs from the latest completed analysis state for a company.
+
+    The pipeline stores the full LangGraph state (including all_qa_pairs) in the
+    analyses.state column. The matching engine uses these to re-score against a
+    VC-specific thesis without re-running the expensive decomposition + answering stages.
+    """
+    client = _get_client()
+    if not client or not company_id:
+        return []
+    try:
+        rows = (
+            client.table("analyses")
+            .select("state")
+            .eq("company_id", company_id)
+            .eq("status", "done")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not rows.data:
+            return []
+        state = rows.data[0].get("state")
+        if not isinstance(state, dict):
+            return []
+        qa_pairs = state.get("all_qa_pairs") or []
+        return list(qa_pairs) if isinstance(qa_pairs, list) else []
+    except Exception as exc:
+        _log_supabase_error("get_analysis_qa_pairs", "analyses", exc)
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Sprint 3 — Debates
+# ---------------------------------------------------------------------------
+
+def create_debate(
+    *,
+    match_id: str,
+    company_id: str,
+    vc_profile_id: str,
+    max_rounds: int = 3,
+) -> dict[str, Any] | None:
+    """Insert a new debates row. Returns the created row or None on error."""
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        rows = client.table("debates").insert({
+            "match_id": match_id,
+            "company_id": company_id,
+            "vc_profile_id": vc_profile_id,
+            "max_rounds": max_rounds,
+            "updated_at": _utcnow().isoformat(),
+        }).execute()
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("create_debate", "debates", exc)
+        return None
+
+
+def get_debate_by_id(debate_id: str) -> dict[str, Any] | None:
+    """Return a debates row by id."""
+    client = _get_client()
+    if not client or not debate_id:
+        return None
+    try:
+        rows = (
+            client.table("debates")
+            .select("id, match_id, company_id, vc_profile_id, status, current_round, max_rounds, summary, created_at, updated_at")
+            .eq("id", debate_id)
+            .limit(1)
+            .execute()
+        )
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("get_debate_by_id", "debates", exc)
+        return None
+
+
+def get_debate_by_match(match_id: str) -> dict[str, Any] | None:
+    """Return the debate for a given match_id, or None."""
+    client = _get_client()
+    if not client or not match_id:
+        return None
+    try:
+        rows = (
+            client.table("debates")
+            .select("id, match_id, company_id, vc_profile_id, status, current_round, max_rounds, summary, created_at, updated_at")
+            .eq("match_id", match_id)
+            .limit(1)
+            .execute()
+        )
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("get_debate_by_match", "debates", exc)
+        return None
+
+
+def update_debate_round(debate_id: str, round_num: int) -> bool:
+    """Update current_round and updated_at on a debate."""
+    client = _get_client()
+    if not client or not debate_id:
+        return False
+    try:
+        client.table("debates").update({
+            "current_round": round_num,
+            "updated_at": _utcnow().isoformat(),
+        }).eq("id", debate_id).execute()
+        return True
+    except Exception as exc:
+        _log_supabase_error("update_debate_round", "debates", exc)
+        return False
+
+
+def complete_debate(debate_id: str, summary: str) -> bool:
+    """Mark a debate as completed and store the summary."""
+    client = _get_client()
+    if not client or not debate_id:
+        return False
+    try:
+        client.table("debates").update({
+            "status": "completed",
+            "summary": summary,
+            "updated_at": _utcnow().isoformat(),
+        }).eq("id", debate_id).execute()
+        return True
+    except Exception as exc:
+        _log_supabase_error("complete_debate", "debates", exc)
+        return False
+
+
+def pause_debate(debate_id: str) -> bool:
+    """Set debate status to paused."""
+    client = _get_client()
+    if not client or not debate_id:
+        return False
+    try:
+        client.table("debates").update({
+            "status": "paused",
+            "updated_at": _utcnow().isoformat(),
+        }).eq("id", debate_id).execute()
+        return True
+    except Exception as exc:
+        _log_supabase_error("pause_debate", "debates", exc)
+        return False
+
+
+def resume_debate(debate_id: str) -> bool:
+    """Set debate status back to active."""
+    client = _get_client()
+    if not client or not debate_id:
+        return False
+    try:
+        client.table("debates").update({
+            "status": "active",
+            "updated_at": _utcnow().isoformat(),
+        }).eq("id", debate_id).execute()
+        return True
+    except Exception as exc:
+        _log_supabase_error("resume_debate", "debates", exc)
+        return False
+
+
+def save_debate_message(
+    *,
+    debate_id: str,
+    round: int,
+    speaker: str,
+    content: str,
+    citations: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Insert a debate_messages row. Returns the created row or None."""
+    client = _get_client()
+    if not client or not debate_id:
+        return None
+    try:
+        rows = client.table("debate_messages").insert({
+            "debate_id": debate_id,
+            "round": round,
+            "speaker": speaker,
+            "content": content,
+            "citations": _serialize(citations or []),
+        }).execute()
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("save_debate_message", "debate_messages", exc)
+        return None
+
+
+def get_debate_messages(debate_id: str) -> list[dict[str, Any]]:
+    """Return all messages for a debate, ordered by created_at."""
+    client = _get_client()
+    if not client or not debate_id:
+        return []
+    try:
+        rows = (
+            client.table("debate_messages")
+            .select("id, debate_id, round, speaker, content, citations, created_at")
+            .eq("debate_id", debate_id)
+            .order("created_at", desc=False)
+            .execute()
+        )
+        return list(rows.data or [])
+    except Exception as exc:
+        _log_supabase_error("get_debate_messages", "debate_messages", exc)
+        return []
+
+
+def get_debates_for_vc(vc_profile_id: str) -> list[dict[str, Any]]:
+    """Return all debates for a VC profile."""
+    client = _get_client()
+    if not client or not vc_profile_id:
+        return []
+    try:
+        rows = (
+            client.table("debates")
+            .select("id, match_id, company_id, status, current_round, max_rounds, summary, created_at, companies(id, name, industry)")
+            .eq("vc_profile_id", vc_profile_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return list(rows.data or [])
+    except Exception as exc:
+        _log_supabase_error("get_debates_for_vc", "debates", exc)
+        return []
+
+
+def get_debates_for_company(company_id: str) -> list[dict[str, Any]]:
+    """Return all debates for a startup company."""
+    client = _get_client()
+    if not client or not company_id:
+        return []
+    try:
+        rows = (
+            client.table("debates")
+            .select("id, match_id, vc_profile_id, status, current_round, max_rounds, summary, created_at, vc_profiles(id, firm_name)")
+            .eq("company_id", company_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return list(rows.data or [])
+    except Exception as exc:
+        _log_supabase_error("get_debates_for_company", "debates", exc)
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Sprint 4 — Evidence upload + re-analysis helpers
+# ---------------------------------------------------------------------------
+
+def create_company_from_portal(
+    *,
+    name: str,
+    industry: str | None = None,
+    tagline: str | None = None,
+    about: str | None = None,
+    domain: str | None = None,
+) -> str | None:
+    """Create a new company record via the startup portal self-onboarding flow.
+
+    Stamps claimed_at so the company appears as portal-claimed.
+    Returns the company_id UUID or None on error.
+    """
+    client = _get_client()
+    if not client or not name:
+        return None
+
+    company_key = _normalize_company_key(name, domain)
+    payload: dict[str, Any] = {
+        "name": name.strip(),
+        "company_key": company_key,
+        "claimed_at": _utcnow().isoformat(),
+    }
+    if industry:
+        payload["industry"] = industry.strip()
+    if tagline:
+        payload["tagline"] = tagline.strip()
+    if about:
+        payload["about"] = about.strip()
+    if domain:
+        payload["domain"] = domain.strip().lower()
+
+    try:
+        row = client.table("companies").upsert(payload, on_conflict="company_key").execute()
+        if row.data:
+            return row.data[0].get("id")
+    except Exception as exc:
+        _log_supabase_error("create_company_from_portal", "companies", exc)
+
+    # Fallback: try to look up by key.
+    try:
+        row = (
+            client.table("companies")
+            .select("id")
+            .eq("company_key", company_key)
+            .limit(1)
+            .execute()
+        )
+        if row.data:
+            return row.data[0].get("id")
+    except Exception as exc:
+        _log_supabase_error("create_company_from_portal_select", "companies", exc)
+    return None
+
+
+def create_pitch_deck_for_upload(
+    company_id: str,
+    storage_path: str,
+    original_filename: str,
+) -> str | None:
+    """Insert a pitch_decks row for a portal upload. Returns pitch_deck_id or None."""
+    client = _get_client()
+    if not client or not company_id:
+        return None
+    try:
+        row = client.table("pitch_decks").insert({
+            "company_id": company_id,
+            "storage_path": storage_path,
+            "original_filename": original_filename,
+        }).execute()
+        return row.data[0].get("id") if row.data else None
+    except Exception as exc:
+        _log_supabase_error("create_pitch_deck_for_upload", "pitch_decks", exc)
+        return None
+
+
+def insert_chunks_for_pitch_deck(
+    pitch_deck_id: str,
+    chunks: list[Any],
+) -> int:
+    """Bulk-insert chunk rows for a pitch_deck. Returns the number of chunks inserted.
+
+    Accepts either Chunk dataclass objects (with chunk_id, text, source_file,
+    page_or_slide) or plain dicts with the same keys.
+    """
+    client = _get_client()
+    if not client or not pitch_deck_id or not chunks:
+        return 0
+
+    inserted = 0
+    for idx, chunk in enumerate(chunks):
+        if hasattr(chunk, "chunk_id"):
+            chunk_id = chunk.chunk_id
+            text = chunk.text
+            source_file = chunk.source_file
+            page_or_slide = chunk.page_or_slide
+        else:
+            chunk_id = chunk.get("chunk_id")
+            text = chunk.get("text", "")
+            source_file = chunk.get("source_file", "")
+            page_or_slide = chunk.get("page_or_slide")
+        try:
+            client.table("chunks").insert({
+                "pitch_deck_id": pitch_deck_id,
+                "chunk_id": chunk_id,
+                "text": text,
+                "source_file": source_file,
+                "page_or_slide": str(page_or_slide) if page_or_slide is not None else None,
+                "sort_order": idx,
+            }).execute()
+            inserted += 1
+        except Exception as exc:
+            _log_supabase_error("insert_chunks_for_pitch_deck", "chunks", exc)
+    return inserted
+
+
+def get_all_company_chunks(company_id: str) -> list[dict[str, Any]]:
+    """Return ALL evidence chunks for a company across all pitch_decks.
+
+    Unlike get_company_chunks(), this does NOT filter Specter sources.
+    Used internally by the pipeline re-evaluation so all evidence (including
+    Specter-sourced competitor/market context) feeds TF-IDF retrieval.
+    NEVER call this from a startup-facing endpoint.
+    """
+    client = _get_client()
+    if not client or not company_id:
+        return []
+    try:
+        decks = (
+            client.table("pitch_decks")
+            .select("id")
+            .eq("company_id", company_id)
+            .execute()
+        )
+        deck_ids = [d["id"] for d in (decks.data or []) if d.get("id")]
+        if not deck_ids:
+            return []
+        return _fetch_chunks_for_pitch_deck_ids(client, deck_ids)
+    except Exception as exc:
+        _log_supabase_error("get_all_company_chunks", "chunks", exc)
+        return []
+
+
+def get_analysis_question_trees(company_id: str) -> dict[str, Any] | None:
+    """Return question_trees from the latest completed analysis state.
+
+    Used by re-evaluation to skip Stage 1 (decomposition) and reuse
+    the existing question structure with the augmented evidence corpus.
+    Returns None if no completed analysis exists or state is missing.
+    """
+    client = _get_client()
+    if not client or not company_id:
+        return None
+    try:
+        rows = (
+            client.table("analyses")
+            .select("state")
+            .eq("company_id", company_id)
+            .eq("status", "done")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not rows.data:
+            return None
+        state = rows.data[0].get("state")
+        if not isinstance(state, dict):
+            return None
+        trees = state.get("question_trees")
+        return dict(trees) if isinstance(trees, dict) and trees else None
+    except Exception as exc:
+        _log_supabase_error("get_analysis_question_trees", "analyses", exc)
+        return None
+
+
+def get_analysis_final_state(company_id: str) -> dict[str, Any] | None:
+    """Return final_arguments and final_decision from the latest completed analysis.
+
+    Used by the matching engine to skip Stages 1-7 and route directly to
+    Stage 8 (Ranking) with the VC-specific thesis, reducing LLM costs ~5x.
+    Returns None if no completed analysis or required fields are absent.
+    """
+    client = _get_client()
+    if not client or not company_id:
+        return None
+    try:
+        rows = (
+            client.table("analyses")
+            .select("state")
+            .eq("company_id", company_id)
+            .eq("status", "done")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not rows.data:
+            return None
+        state = rows.data[0].get("state")
+        if not isinstance(state, dict):
+            return None
+        final_arguments = state.get("final_arguments")
+        final_decision = state.get("final_decision")
+        if not final_arguments or not final_decision:
+            return None
+        return {
+            "final_arguments": list(final_arguments) if isinstance(final_arguments, list) else [],
+            "final_decision": final_decision,
+        }
+    except Exception as exc:
+        _log_supabase_error("get_analysis_final_state", "analyses", exc)
+        return None
+
+
+def get_latest_analysis_full(company_id: str) -> dict[str, Any] | None:
+    """Fetch the latest completed analysis with both results_payload and state.
+
+    Returns the full row dict (id, results_payload, state, created_at) or None.
+    Used by the startup evidence-log endpoint.
+    """
+    client = _get_client()
+    if not client or not company_id:
+        return None
+    try:
+        rows = (
+            client.table("analyses")
+            .select("id, results_payload, state, created_at")
+            .eq("company_id", company_id)
+            .eq("status", "done")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not rows.data:
+            return None
+        return rows.data[0]
+    except Exception as exc:
+        _log_supabase_error("get_latest_analysis_full", "analyses", exc)
+        return None
+
+
+def create_analysis_record(
+    *,
+    company_id: str,
+    pitch_deck_id: str | None,
+    state: dict[str, Any],
+    results_payload: dict[str, Any],
+    status: str = "done",
+    run_config: dict[str, Any] | None = None,
+) -> str | None:
+    """Insert a new analyses row for a portal-triggered pipeline run.
+
+    Returns the analysis_id UUID or None on error.
+    Old analysis rows are preserved for historical comparison.
+    """
+    client = _get_client()
+    if not client or not company_id:
+        return None
+    try:
+        row = client.table("analyses").insert({
+            "company_id": company_id,
+            "pitch_deck_id": pitch_deck_id,
+            "state": _serialize(state),
+            "results_payload": _serialize(results_payload),
+            "status": status,
+            "run_config": _serialize(run_config or {}),
+        }).execute()
+        return row.data[0].get("id") if row.data else None
+    except Exception as exc:
+        _log_supabase_error("create_analysis_record", "analyses", exc)
+        return None
+
+
+def delete_matches_for_company(company_id: str) -> int:
+    """Delete all match rows for a company so they can be re-computed.
+
+    Called before re-evaluation to clear stale scores. Returns the number
+    of rows deleted (or 0 on error).
+    """
+    client = _get_client()
+    if not client or not company_id:
+        return 0
+    try:
+        result = (
+            client.table("matches")
+            .delete()
+            .eq("company_id", company_id)
+            .execute()
+        )
+        return len(result.data or [])
+    except Exception as exc:
+        _log_supabase_error("delete_matches_for_company", "matches", exc)
+        return 0
+
+
+def delete_matches_for_vc(vc_profile_id: str) -> int:
+    """Delete all match rows for a VC profile so they can be re-computed.
+
+    Called when a VC changes their investment thesis or score thresholds,
+    so stale matches are cleared and new ones are recalculated. Returns
+    the number of rows deleted (or 0 on error).
+    """
+    client = _get_client()
+    if not client or not vc_profile_id:
+        return 0
+    try:
+        result = (
+            client.table("matches")
+            .delete()
+            .eq("vc_profile_id", vc_profile_id)
+            .execute()
+        )
+        return len(result.data or [])
+    except Exception as exc:
+        _log_supabase_error("delete_matches_for_vc", "matches", exc)
+        return 0
+
+
+def upload_startup_file_bytes(
+    company_id: str,
+    filename: str,
+    file_bytes: bytes,
+    mime_type: str | None = None,
+) -> str | None:
+    """Upload a startup-uploaded file to Supabase Storage.
+
+    Storage path: startup_uploads/{company_id}/{filename}
+
+    Returns the storage_path string on success, or None on error.
+    Errors are logged but not raised — the caller should still proceed
+    with chunk insertion even if the storage upload fails.
+    """
+    client = _get_client()
+    if not client or not company_id or not filename:
+        return None
+    # Sanitise filename for storage path.
+    safe_name = re.sub(r"[^a-zA-Z0-9._\-]+", "-", filename).strip("-") or "upload"
+    storage_path = f"startup_uploads/{company_id}/{safe_name}"
+    try:
+        ensure_source_files_bucket()
+        options: dict[str, Any] = {"upsert": "true"}
+        if mime_type:
+            options["content-type"] = mime_type
+        client.storage.from_(SOURCE_FILES_BUCKET).upload(storage_path, file_bytes, options)
+        return storage_path
+    except Exception as exc:
+        _log_supabase_error("upload_startup_file_bytes", "storage", exc)
+        return None
+
+
+def get_company_analysis_status(company_id: str) -> str | None:
+    """Return the status of the latest analysis for a company ('done', 'running', etc.)."""
+    client = _get_client()
+    if not client or not company_id:
+        return None
+    try:
+        rows = (
+            client.table("analyses")
+            .select("status, created_at")
+            .eq("company_id", company_id)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if rows.data:
+            return rows.data[0].get("status")
+        return None
+    except Exception as exc:
+        _log_supabase_error("get_company_analysis_status", "analyses", exc)
+        return None
