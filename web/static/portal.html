@@ -2453,6 +2453,392 @@ function LoadingScreen() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Admin portal
+// ---------------------------------------------------------------------------
+function AdminPortal({ user, onSignOut }) {
+  const [tab, setTab] = React.useState("overview");
+  const [data, setData] = React.useState({});
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState(null);
+  const [actionMsg, setActionMsg] = React.useState(null);
+
+  function fmt(n) { return n == null ? "—" : typeof n === "number" ? Math.round(n) : n; }
+  function fmtDate(s) { return s ? new Date(s).toLocaleString() : "—"; }
+  function bucketBadge(b) {
+    if (!b) return null;
+    return <span className={`badge bucket-${b}`} style={{fontSize:".75rem"}}>{b.replace(/_/g," ")}</span>;
+  }
+  function scorePill(n, label) {
+    if (n == null) return <span style={{color:"var(--text-muted)"}}>—</span>;
+    const v = Math.round(n);
+    const color = v >= 70 ? "#22c55e" : v >= 50 ? "#f59e0b" : "#ef4444";
+    return <span style={{color, fontWeight:600}}>{label && <span style={{fontWeight:400,color:"var(--text-muted)",fontSize:".8rem",marginRight:3}}>{label}</span>}{v}</span>;
+  }
+
+  async function loadTab(t) {
+    setLoading(true); setError(null);
+    const ep = {
+      overview: "/api/admin/overview",
+      companies: "/api/admin/companies",
+      matches: "/api/admin/matches",
+      vcs: "/api/admin/vc-profiles",
+      analyses: "/api/admin/analyses",
+      users: "/api/admin/users",
+    }[t];
+    try {
+      const d = await api("GET", ep);
+      setData(prev => ({...prev, [t]: d}));
+    } catch(e) { setError(e.message); }
+    finally { setLoading(false); }
+  }
+
+  React.useEffect(() => { loadTab(tab); }, [tab]);
+
+  // Auto-refresh overview every 30s
+  React.useEffect(() => {
+    if (tab !== "overview") return;
+    const id = setInterval(() => loadTab("overview"), 30000);
+    return () => clearInterval(id);
+  }, [tab]);
+
+  async function approveUser(userId, approved) {
+    try {
+      await api("POST", `/api/admin/users/${userId}/approve`, { approved });
+      setActionMsg(`User ${approved ? "approved" : "unapproved"}.`);
+      loadTab("users");
+    } catch(e) { setError(e.message); }
+  }
+
+  async function triggerMatching(companyId, name) {
+    try {
+      await api("POST", `/api/admin/trigger-matching/${companyId}`, {});
+      setActionMsg(`Matching triggered for ${name}.`);
+    } catch(e) { setError(e.message); }
+  }
+
+  const TABS = [
+    { key: "overview", label: "Overview" },
+    { key: "companies", label: "Companies" },
+    { key: "matches", label: "Matches" },
+    { key: "vcs", label: "VC Profiles" },
+    { key: "analyses", label: "Analyses" },
+    { key: "users", label: "Users" },
+  ];
+
+  const d = data[tab] || {};
+
+  function renderOverview() {
+    const c = d.counts || {};
+    const stats = [
+      { label: "Companies", value: c.companies ?? "—" },
+      { label: "Fundraising", value: c.fundraising ?? "—" },
+      { label: "Analysed", value: c.analysed ?? "—" },
+      { label: "VC Profiles", value: c.vc_profiles ?? "—" },
+      { label: "Matches", value: c.matches ?? "—" },
+      { label: "Running jobs", value: c.running_analyses ?? "—" },
+    ];
+    return (
+      <div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:12,marginBottom:24}}>
+          {stats.map(s => (
+            <div key={s.label} style={{background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:8,padding:"14px 16px",textAlign:"center"}}>
+              <div style={{fontSize:"1.7rem",fontWeight:700,color:"var(--accent)"}}>{s.value}</div>
+              <div style={{fontSize:".8rem",color:"var(--text-muted)",marginTop:2}}>{s.label}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+          <div>
+            <h3 style={{marginBottom:8,fontSize:"1rem"}}>Recent analyses</h3>
+            {(d.recent_analyses || []).length === 0
+              ? <p style={{color:"var(--text-muted)"}}>None yet.</p>
+              : (d.recent_analyses || []).map(a => (
+                <div key={a.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"1px solid var(--border)"}}>
+                  <span style={{flex:1,fontWeight:500}}>{a.company_name || a.company_id}</span>
+                  <span style={{fontSize:".8rem",color: a.status==="done"?"#22c55e":a.status==="error"?"#ef4444":"#f59e0b"}}>{a.status || "running"}</span>
+                  {a.composite_score != null && <span style={{fontSize:".8rem",color:"var(--text-muted)"}}>{Math.round(a.composite_score)}</span>}
+                  {bucketBadge(a.bucket)}
+                  <span style={{fontSize:".75rem",color:"var(--text-muted)"}}>{fmtDate(a.created_at).split(",")[0]}</span>
+                </div>
+              ))
+            }
+          </div>
+          <div>
+            <h3 style={{marginBottom:8,fontSize:"1rem"}}>Recent matches</h3>
+            {(d.recent_matches || []).length === 0
+              ? <p style={{color:"var(--text-muted)"}}>None yet.</p>
+              : (d.recent_matches || []).map(m => (
+                <div key={m.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"1px solid var(--border)"}}>
+                  <span style={{flex:1,fontWeight:500}}>{(m.companies||{}).name || "—"}</span>
+                  <span style={{fontSize:".8rem",color:"var(--text-muted)"}}>→</span>
+                  <span style={{fontSize:".85rem"}}>{(m.vc_profiles||{}).firm_name || "—"}</span>
+                  {bucketBadge(m.bucket)}
+                  <span style={{fontSize:".8rem",color:"var(--text-muted)"}}>{Math.round(m.composite_score||0)}</span>
+                </div>
+              ))
+            }
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderCompanies() {
+    return (
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:".875rem"}}>
+          <thead>
+            <tr style={{borderBottom:"2px solid var(--border)",textAlign:"left"}}>
+              <th style={{padding:"8px 12px"}}>Company</th>
+              <th style={{padding:"8px 12px"}}>Industry</th>
+              <th style={{padding:"8px 12px"}}>Fundraising</th>
+              <th style={{padding:"8px 12px"}}>Analysis</th>
+              <th style={{padding:"8px 12px",textAlign:"center"}}>Scores (S/T/P)</th>
+              <th style={{padding:"8px 12px"}}>Bucket</th>
+              <th style={{padding:"8px 12px"}}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {(d.companies || []).map(c => (
+              <tr key={c.id} style={{borderBottom:"1px solid var(--border)"}}>
+                <td style={{padding:"8px 12px",fontWeight:500}}>{c.name}</td>
+                <td style={{padding:"8px 12px",color:"var(--text-muted)"}}>{c.industry || "—"}</td>
+                <td style={{padding:"8px 12px"}}>
+                  <span style={{color:c.fundraising?"#22c55e":"var(--text-muted)"}}>{c.fundraising ? "✓ Active" : "Off"}</span>
+                </td>
+                <td style={{padding:"8px 12px"}}>
+                  <span style={{color:c.analysis_status==="done"?"#22c55e":c.analysis_status==="error"?"#ef4444":"var(--text-muted)"}}>
+                    {c.analysis_status || "—"}
+                  </span>
+                  {c.analysis_error && <span title={c.analysis_error} style={{marginLeft:4,cursor:"help",color:"#ef4444"}}>⚠</span>}
+                </td>
+                <td style={{padding:"8px 12px",textAlign:"center"}}>
+                  {c.composite_score != null
+                    ? <span>{scorePill(c.strategy_fit_score)} / {scorePill(c.team_score)} / {scorePill(c.upside_score)}</span>
+                    : <span style={{color:"var(--text-muted)"}}>—</span>}
+                </td>
+                <td style={{padding:"8px 12px"}}>{bucketBadge(c.bucket)}</td>
+                <td style={{padding:"8px 12px"}}>
+                  {c.fundraising && (
+                    <button className="btn btn-ghost" style={{fontSize:".75rem",padding:"2px 8px"}}
+                      onClick={() => triggerMatching(c.id, c.name)}>
+                      ▶ Match
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!(d.companies||[]).length && <p style={{color:"var(--text-muted)",padding:16}}>No companies yet.</p>}
+      </div>
+    );
+  }
+
+  function renderMatches() {
+    return (
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:".875rem"}}>
+          <thead>
+            <tr style={{borderBottom:"2px solid var(--border)",textAlign:"left"}}>
+              <th style={{padding:"8px 12px"}}>Startup</th>
+              <th style={{padding:"8px 12px"}}>VC</th>
+              <th style={{padding:"8px 12px",textAlign:"center"}}>Strategy</th>
+              <th style={{padding:"8px 12px",textAlign:"center"}}>Team</th>
+              <th style={{padding:"8px 12px",textAlign:"center"}}>Potential</th>
+              <th style={{padding:"8px 12px",textAlign:"center"}}>Composite</th>
+              <th style={{padding:"8px 12px"}}>Bucket</th>
+              <th style={{padding:"8px 12px"}}>Status</th>
+              <th style={{padding:"8px 12px"}}>Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(d.matches || []).map(m => (
+              <tr key={m.id} style={{borderBottom:"1px solid var(--border)"}}>
+                <td style={{padding:"8px 12px",fontWeight:500}}>{(m.companies||{}).name || "—"}</td>
+                <td style={{padding:"8px 12px"}}>{(m.vc_profiles||{}).firm_name || "—"}</td>
+                <td style={{padding:"8px 12px",textAlign:"center"}}>{scorePill(m.strategy_fit_score)}</td>
+                <td style={{padding:"8px 12px",textAlign:"center"}}>{scorePill(m.team_score)}</td>
+                <td style={{padding:"8px 12px",textAlign:"center"}}>{scorePill(m.potential_score)}</td>
+                <td style={{padding:"8px 12px",textAlign:"center",fontWeight:700}}>{fmt(m.composite_score)}</td>
+                <td style={{padding:"8px 12px"}}>{bucketBadge(m.bucket)}</td>
+                <td style={{padding:"8px 12px",color:"var(--text-muted)",fontSize:".8rem"}}>{m.status || "pending"}</td>
+                <td style={{padding:"8px 12px",color:"var(--text-muted)",fontSize:".8rem"}}>{fmtDate(m.created_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!(d.matches||[]).length && <p style={{color:"var(--text-muted)",padding:16}}>No matches yet.</p>}
+      </div>
+    );
+  }
+
+  function renderVCs() {
+    return (
+      <div>
+        {(d.vc_profiles || []).map(v => (
+          <div key={v.id} className="section-card" style={{marginBottom:12}}>
+            <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap",marginBottom:6}}>
+              <span style={{fontWeight:600,fontSize:"1rem"}}>{v.firm_name || "—"}</span>
+              <span className={`badge ${v.active ? "" : "badge-muted"}`}>{v.active ? "active" : "inactive"}</span>
+              <span style={{fontSize:".8rem",color:"var(--text-muted)"}}>{v.match_count} match{v.match_count !== 1 ? "es" : ""}</span>
+              <span style={{marginLeft:"auto",fontSize:".75rem",color:"var(--text-muted)"}}>Joined {fmtDate(v.created_at).split(",")[0]}</span>
+            </div>
+            <div style={{fontSize:".8rem",color:"var(--text-muted)",marginBottom:6}}>
+              Min thresholds — Strategy: <b style={{color:"var(--text)"}}>{v.min_strategy_fit ?? 0}</b> &nbsp;
+              Team: <b style={{color:"var(--text)"}}>{v.min_team ?? 0}</b> &nbsp;
+              Potential: <b style={{color:"var(--text)"}}>{v.min_potential ?? 0}</b>
+            </div>
+            {v.investment_thesis && (
+              <p style={{fontSize:".82rem",color:"var(--text-muted)",margin:0,lineHeight:1.5,
+                maxHeight:60,overflow:"hidden",textOverflow:"ellipsis",display:"-webkit-box",
+                WebkitLineClamp:3,WebkitBoxOrient:"vertical"}}>
+                {v.investment_thesis}
+              </p>
+            )}
+          </div>
+        ))}
+        {!(d.vc_profiles||[]).length && <p style={{color:"var(--text-muted)"}}>No VC profiles yet.</p>}
+      </div>
+    );
+  }
+
+  function renderAnalyses() {
+    return (
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:".875rem"}}>
+          <thead>
+            <tr style={{borderBottom:"2px solid var(--border)",textAlign:"left"}}>
+              <th style={{padding:"8px 12px"}}>Company</th>
+              <th style={{padding:"8px 12px"}}>Status</th>
+              <th style={{padding:"8px 12px",textAlign:"center"}}>Score</th>
+              <th style={{padding:"8px 12px"}}>Bucket</th>
+              <th style={{padding:"8px 12px"}}>Created</th>
+              <th style={{padding:"8px 12px"}}>Error</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(d.analyses || []).map(a => (
+              <tr key={a.id} style={{borderBottom:"1px solid var(--border)"}}>
+                <td style={{padding:"8px 12px",fontWeight:500}}>{a.company_name || a.company_id}</td>
+                <td style={{padding:"8px 12px"}}>
+                  <span style={{color:a.status==="done"?"#22c55e":a.status==="error"?"#ef4444":"#f59e0b"}}>
+                    {a.status || "running"}
+                  </span>
+                </td>
+                <td style={{padding:"8px 12px",textAlign:"center"}}>{scorePill(a.composite_score)}</td>
+                <td style={{padding:"8px 12px"}}>{bucketBadge(a.bucket)}</td>
+                <td style={{padding:"8px 12px",color:"var(--text-muted)",fontSize:".8rem"}}>{fmtDate(a.created_at)}</td>
+                <td style={{padding:"8px 12px",color:"#ef4444",fontSize:".8rem",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={a.error||""}>{a.error || ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!(d.analyses||[]).length && <p style={{color:"var(--text-muted)",padding:16}}>No analyses yet.</p>}
+      </div>
+    );
+  }
+
+  function renderUsers() {
+    return (
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:".875rem"}}>
+          <thead>
+            <tr style={{borderBottom:"2px solid var(--border)",textAlign:"left"}}>
+              <th style={{padding:"8px 12px"}}>Name / Org</th>
+              <th style={{padding:"8px 12px"}}>Role</th>
+              <th style={{padding:"8px 12px"}}>Approved</th>
+              <th style={{padding:"8px 12px"}}>Joined</th>
+              <th style={{padding:"8px 12px"}}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {(d.users || []).map(u => (
+              <tr key={u.id} style={{borderBottom:"1px solid var(--border)"}}>
+                <td style={{padding:"8px 12px"}}>
+                  <div style={{fontWeight:500}}>{u.display_name || u.id.slice(0,8)}</div>
+                  {u.organization && <div style={{fontSize:".8rem",color:"var(--text-muted)"}}>{u.organization}</div>}
+                </td>
+                <td style={{padding:"8px 12px"}}><span className="badge">{u.role}</span></td>
+                <td style={{padding:"8px 12px"}}>
+                  <span style={{color:u.approved?"#22c55e":"#ef4444"}}>{u.approved ? "✓ Yes" : "✗ No"}</span>
+                </td>
+                <td style={{padding:"8px 12px",color:"var(--text-muted)",fontSize:".8rem"}}>{fmtDate(u.created_at)}</td>
+                <td style={{padding:"8px 12px"}}>
+                  <button className="btn btn-ghost" style={{fontSize:".75rem",padding:"2px 8px"}}
+                    onClick={() => approveUser(u.id, !u.approved)}>
+                    {u.approved ? "Unapprove" : "Approve"}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!(d.users||[]).length && <p style={{color:"var(--text-muted)",padding:16}}>No users yet.</p>}
+      </div>
+    );
+  }
+
+  const tabContent = {
+    overview: renderOverview,
+    companies: renderCompanies,
+    matches: renderMatches,
+    vcs: renderVCs,
+    analyses: renderAnalyses,
+    users: renderUsers,
+  };
+
+  return (
+    <div style={{minHeight:"100vh",background:"var(--bg)"}}>
+      {/* Header */}
+      <header style={{borderBottom:"1px solid var(--border)",padding:"12px 24px",display:"flex",alignItems:"center",gap:16}}>
+        <span style={{fontWeight:700,fontSize:"1.1rem",color:"var(--accent)"}}>Admin Portal</span>
+        <span style={{color:"var(--text-muted)",fontSize:".85rem"}}>Deal Intelligence</span>
+        <span style={{marginLeft:"auto",fontSize:".85rem",color:"var(--text-muted)"}}>{user?.email}</span>
+        <button className="btn btn-ghost" onClick={onSignOut} style={{fontSize:".82rem"}}>Sign out</button>
+      </header>
+
+      {/* Tabs */}
+      <div style={{borderBottom:"1px solid var(--border)",padding:"0 24px",display:"flex",gap:4}}>
+        {TABS.map(t => (
+          <button key={t.key}
+            onClick={() => setTab(t.key)}
+            style={{
+              padding:"10px 16px",border:"none",background:"transparent",cursor:"pointer",
+              color: tab===t.key ? "var(--accent)" : "var(--text-muted)",
+              borderBottom: tab===t.key ? "2px solid var(--accent)" : "2px solid transparent",
+              fontWeight: tab===t.key ? 600 : 400, fontSize:".9rem",
+            }}>
+            {t.label}
+          </button>
+        ))}
+        <button onClick={() => loadTab(tab)}
+          style={{marginLeft:"auto",padding:"8px 14px",border:"none",background:"transparent",
+            cursor:"pointer",color:"var(--text-muted)",fontSize:".85rem"}}>
+          {loading ? "↻" : "↻ Refresh"}
+        </button>
+      </div>
+
+      {/* Content */}
+      <main style={{padding:24,maxWidth:1200,margin:"0 auto"}}>
+        {actionMsg && (
+          <div style={{background:"var(--bg-card)",border:"1px solid #22c55e",borderRadius:8,padding:"10px 16px",marginBottom:16,color:"#22c55e",fontSize:".9rem",display:"flex",justifyContent:"space-between"}}>
+            {actionMsg}
+            <button onClick={() => setActionMsg(null)} style={{background:"none",border:"none",cursor:"pointer",color:"#22c55e"}}>✕</button>
+          </div>
+        )}
+        {error && <Alert type="error">{error}</Alert>}
+        {loading
+          ? <div style={{display:"flex",justifyContent:"center",padding:48}}><Spinner /></div>
+          : (tabContent[tab] || (() => null))()
+        }
+      </main>
+    </div>
+  );
+}
+
 // ============================================================
 // Root App
 // ============================================================
@@ -2471,7 +2857,9 @@ function App() {
   }, []);
 
   function _routeAfterLogin(me, vcProfileExists) {
-    if (me.role === "vc") {
+    if (me.role === "admin") {
+      navigate("/admin");
+    } else if (me.role === "vc") {
       if (!vcProfileExists) {
         setVCSetupNeeded(true);
         navigate("/vc-setup");
@@ -2554,6 +2942,7 @@ function App() {
   const r = route;
   if (r === "/register") return <RegisterView />;
   if (r === "/verify-domain" && user) return <VerifyDomainView user={user} onVerified={handleVerified} />;
+  if (r === "/admin" && user && user.role === "admin") return <AdminPortal user={user} onSignOut={handleSignOut} />;
   if (r === "/dashboard" && user && user.role === "startup") return <DashboardView user={user} onSignOut={handleSignOut} />;
   if (r === "/vc-setup" && user && user.role === "vc") return <VCSetupView user={user} onComplete={handleVCSetupComplete} />;
   if (r === "/vc-dashboard" && user && user.role === "vc") return (

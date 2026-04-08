@@ -2971,6 +2971,99 @@ async def vc_match_action(
 
 
 # ---------------------------------------------------------------------------
+# Admin portal endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/admin/overview")
+async def admin_overview(user: CurrentUser = Depends(_require_admin)) -> dict[str, Any]:
+    """Return aggregate counts for the admin dashboard."""
+    companies, vc_profiles, matches, analyses, users = await asyncio.gather(
+        asyncio.to_thread(db.admin_get_all_companies),
+        asyncio.to_thread(db.admin_get_all_vc_profiles),
+        asyncio.to_thread(db.admin_get_all_matches),
+        asyncio.to_thread(db.admin_get_recent_analyses, 40),
+        asyncio.to_thread(db.admin_get_all_users),
+    )
+    fundraising = [c for c in companies if c.get("fundraising")]
+    analysed = [c for c in companies if c.get("analysis_status") == "done"]
+    running = [a for a in analyses if a.get("status") not in ("done", "error", None)]
+    return {
+        "counts": {
+            "companies": len(companies),
+            "fundraising": len(fundraising),
+            "analysed": len(analysed),
+            "vc_profiles": len(vc_profiles),
+            "matches": len(matches),
+            "analyses": len(analyses),
+            "users": len(users),
+            "running_analyses": len(running),
+        },
+        "recent_analyses": analyses[:10],
+        "recent_matches": matches[:10],
+    }
+
+
+@app.get("/api/admin/companies")
+async def admin_companies(user: CurrentUser = Depends(_require_admin)) -> dict[str, Any]:
+    """Return all companies with latest analysis scores."""
+    companies = await asyncio.to_thread(db.admin_get_all_companies)
+    return {"companies": companies}
+
+
+@app.get("/api/admin/vc-profiles")
+async def admin_vc_profiles(user: CurrentUser = Depends(_require_admin)) -> dict[str, Any]:
+    """Return all VC profiles with match counts."""
+    profiles = await asyncio.to_thread(db.admin_get_all_vc_profiles)
+    return {"vc_profiles": profiles}
+
+
+@app.get("/api/admin/matches")
+async def admin_matches(user: CurrentUser = Depends(_require_admin)) -> dict[str, Any]:
+    """Return all matches with company and VC names."""
+    matches = await asyncio.to_thread(db.admin_get_all_matches)
+    return {"matches": matches}
+
+
+@app.get("/api/admin/analyses")
+async def admin_analyses(user: CurrentUser = Depends(_require_admin)) -> dict[str, Any]:
+    """Return recent analyses with status and scores."""
+    analyses = await asyncio.to_thread(db.admin_get_recent_analyses, 40)
+    return {"analyses": analyses}
+
+
+@app.get("/api/admin/users")
+async def admin_users(user: CurrentUser = Depends(_require_admin)) -> dict[str, Any]:
+    """Return all registered users."""
+    users = await asyncio.to_thread(db.admin_get_all_users)
+    return {"users": users}
+
+
+@app.post("/api/admin/users/{user_id}/approve")
+async def admin_approve_user(
+    user_id: str,
+    body: dict[str, Any],
+    user: CurrentUser = Depends(_require_admin),
+) -> dict[str, Any]:
+    """Approve or unapprove a user account."""
+    approved: bool = bool(body.get("approved", True))
+    ok = await asyncio.to_thread(db.admin_set_user_approved, user_id, approved)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to update user approval.")
+    return {"user_id": user_id, "approved": approved}
+
+
+@app.post("/api/admin/trigger-matching/{company_id}")
+async def admin_trigger_matching(
+    company_id: str,
+    background_tasks: BackgroundTasks,
+    user: CurrentUser = Depends(_require_admin),
+) -> dict[str, Any]:
+    """Manually trigger matching for a company against all active VC profiles."""
+    background_tasks.add_task(_run_matching_background, company_id)
+    return {"triggered": True, "company_id": company_id}
+
+
+# ---------------------------------------------------------------------------
 # Sprint 3 — Debate engine
 # ---------------------------------------------------------------------------
 

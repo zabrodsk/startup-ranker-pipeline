@@ -4248,3 +4248,201 @@ def get_company_analysis_status(company_id: str) -> str | None:
     except Exception as exc:
         _log_supabase_error("get_company_analysis_status", "analyses", exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Admin — read-only aggregate views
+# ---------------------------------------------------------------------------
+
+def admin_get_all_companies() -> list[dict[str, Any]]:
+    """Return all companies with latest analysis scores for admin overview."""
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        # Companies
+        rows = (
+            client.table("companies")
+            .select("id, name, industry, tagline, domain, fundraising, fundraising_updated_at, created_at")
+            .order("created_at", desc=True)
+            .execute()
+        )
+        companies = list(rows.data or [])
+        if not companies:
+            return []
+
+        # Latest analysis per company
+        company_ids = [c["id"] for c in companies]
+        # Fetch analyses for all companies
+        analysis_rows = (
+            client.table("analyses")
+            .select("company_id, status, results_payload, created_at, error")
+            .in_("company_id", company_ids)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        # Keep only the most recent analysis per company
+        latest: dict[str, dict] = {}
+        for a in (analysis_rows.data or []):
+            cid = a.get("company_id")
+            if cid and cid not in latest:
+                latest[cid] = a
+
+        for c in companies:
+            a = latest.get(c["id"])
+            if a:
+                payload = a.get("results_payload") or {}
+                ranking = payload.get("ranking_result") or {}
+                c["analysis_status"] = a.get("status")
+                c["analysis_created_at"] = a.get("created_at")
+                c["analysis_error"] = a.get("error")
+                c["composite_score"] = ranking.get("composite_score")
+                c["strategy_fit_score"] = ranking.get("strategy_fit_score")
+                c["team_score"] = ranking.get("team_score")
+                c["upside_score"] = ranking.get("upside_score")
+                c["bucket"] = ranking.get("bucket")
+            else:
+                c["analysis_status"] = None
+                c["analysis_created_at"] = None
+                c["analysis_error"] = None
+                c["composite_score"] = None
+                c["strategy_fit_score"] = None
+                c["team_score"] = None
+                c["upside_score"] = None
+                c["bucket"] = None
+
+        return companies
+    except Exception as exc:
+        _log_supabase_error("admin_get_all_companies", "companies", exc)
+        return []
+
+
+def admin_get_all_vc_profiles() -> list[dict[str, Any]]:
+    """Return all VC profiles with match counts for admin overview."""
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        rows = (
+            client.table("vc_profiles")
+            .select("id, user_id, firm_name, investment_thesis, min_strategy_fit, min_team, min_potential, active, created_at")
+            .order("created_at", desc=True)
+            .execute()
+        )
+        profiles = list(rows.data or [])
+        if not profiles:
+            return []
+
+        # Count matches per VC
+        vc_ids = [p["id"] for p in profiles]
+        match_rows = (
+            client.table("matches")
+            .select("vc_profile_id")
+            .in_("vc_profile_id", vc_ids)
+            .execute()
+        )
+        counts: dict[str, int] = {}
+        for m in (match_rows.data or []):
+            vid = m.get("vc_profile_id")
+            if vid:
+                counts[vid] = counts.get(vid, 0) + 1
+
+        for p in profiles:
+            p["match_count"] = counts.get(p["id"], 0)
+
+        return profiles
+    except Exception as exc:
+        _log_supabase_error("admin_get_all_vc_profiles", "vc_profiles", exc)
+        return []
+
+
+def admin_get_all_matches() -> list[dict[str, Any]]:
+    """Return all matches joined with company and VC names for admin overview."""
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        rows = (
+            client.table("matches")
+            .select(
+                "id, strategy_fit_score, team_score, potential_score, composite_score, "
+                "bucket, status, created_at, "
+                "companies(id, name, industry), "
+                "vc_profiles(id, firm_name)"
+            )
+            .order("created_at", desc=True)
+            .limit(200)
+            .execute()
+        )
+        return list(rows.data or [])
+    except Exception as exc:
+        _log_supabase_error("admin_get_all_matches", "matches", exc)
+        return []
+
+
+def admin_get_recent_analyses(limit: int = 40) -> list[dict[str, Any]]:
+    """Return recent analyses with company name and key scores for admin overview."""
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        rows = (
+            client.table("analyses")
+            .select(
+                "id, company_id, status, created_at, error, "
+                "results_payload, "
+                "companies(id, name)"
+            )
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        results = []
+        for a in (rows.data or []):
+            payload = a.get("results_payload") or {}
+            ranking = payload.get("ranking_result") or {}
+            results.append({
+                "id": a.get("id"),
+                "company_id": a.get("company_id"),
+                "company_name": (a.get("companies") or {}).get("name"),
+                "status": a.get("status"),
+                "created_at": a.get("created_at"),
+                "error": a.get("error"),
+                "composite_score": ranking.get("composite_score"),
+                "bucket": ranking.get("bucket"),
+            })
+        return results
+    except Exception as exc:
+        _log_supabase_error("admin_get_recent_analyses", "analyses", exc)
+        return []
+
+
+def admin_get_all_users() -> list[dict[str, Any]]:
+    """Return all users_profile rows for admin management."""
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        rows = (
+            client.table("users_profile")
+            .select("id, role, display_name, organization, approved, created_at")
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return list(rows.data or [])
+    except Exception as exc:
+        _log_supabase_error("admin_get_all_users", "users_profile", exc)
+        return []
+
+
+def admin_set_user_approved(user_id: str, approved: bool) -> bool:
+    """Approve or unapprove a user. Returns True on success."""
+    client = _get_client()
+    if not client or not user_id:
+        return False
+    try:
+        client.table("users_profile").update({"approved": approved}).eq("id", user_id).execute()
+        return True
+    except Exception as exc:
+        _log_supabase_error("admin_set_user_approved", "users_profile", exc)
+        return False
