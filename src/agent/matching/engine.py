@@ -190,6 +190,11 @@ async def trigger_matching_for_company(company_id: str, db_module: Any) -> int:
         logger.info("No active VC profiles to match against")
         return 0
 
+    logger.info(
+        "Starting matching for company=%s against %d VC profiles (stage8=%s, qa_pairs=%d)",
+        company_id, len(vc_profiles), bool(final_arguments), len(all_qa_pairs),
+    )
+
     latest_analysis = await asyncio.to_thread(db_module.get_company_latest_analysis, company_id)
     analysis_id: str | None = latest_analysis.get("id") if latest_analysis else None
 
@@ -227,11 +232,21 @@ async def trigger_matching_for_company(company_id: str, db_module: Any) -> int:
             continue
 
         if not scores:
+            logger.warning(
+                "run_matching_for_pair returned None for vc=%s company=%s — "
+                "graph.ainvoke likely failed or returned no ranking_result",
+                vc_profile_id, company_id,
+            )
             continue
 
         strategy_fit: float = float(scores.get("strategy_fit_score") or 0)
         team: float = float(scores.get("team_score") or 0)
         potential: float = float(scores.get("upside_score") or 0)
+        logger.info(
+            "Scores for vc=%s company=%s: strategy=%.1f team=%.1f potential=%.1f composite=%.1f bucket=%s",
+            vc_profile_id, company_id, strategy_fit, team, potential,
+            float(scores.get("composite_score") or 0), scores.get("bucket"),
+        )
 
         meets_thresholds = (
             strategy_fit >= min_strategy

@@ -3066,6 +3066,7 @@ async def admin_trigger_matching(
 @app.get("/api/admin/matching-debug/{company_id}")
 async def admin_matching_debug(
     company_id: str,
+    key: str | None = None,
     user: CurrentUser = Depends(_require_admin),
 ) -> dict[str, Any]:
     """Diagnostic endpoint: check matching preconditions without running LLMs.
