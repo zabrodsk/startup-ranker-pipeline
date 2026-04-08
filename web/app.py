@@ -3063,6 +3063,72 @@ async def admin_trigger_matching(
     return {"triggered": True, "company_id": company_id}
 
 
+@app.get("/api/admin/matching-debug/{company_id}")
+async def admin_matching_debug(
+    company_id: str,
+    user: CurrentUser = Depends(_require_admin),
+) -> dict[str, Any]:
+    """Diagnostic endpoint: check matching preconditions without running LLMs.
+
+    Returns a full checklist so you can see exactly why matching succeeds or fails.
+    """
+    result: dict[str, Any] = {"company_id": company_id, "checks": {}}
+
+    company = await asyncio.to_thread(db.get_company_by_id, company_id)
+    result["checks"]["company_found"] = bool(company)
+    result["checks"]["company_name"] = (company or {}).get("name")
+    result["checks"]["fundraising"] = (company or {}).get("fundraising", False)
+
+    chunks = await asyncio.to_thread(db.get_company_chunks, company_id)
+    result["checks"]["chunk_count"] = len(chunks)
+
+    qa_pairs = await asyncio.to_thread(db.get_analysis_qa_pairs, company_id)
+    result["checks"]["qa_pairs_count"] = len(qa_pairs)
+
+    analysis_final = None
+    if hasattr(db, "get_analysis_final_state"):
+        analysis_final = await asyncio.to_thread(db.get_analysis_final_state, company_id)
+    result["checks"]["final_arguments_count"] = len((analysis_final or {}).get("final_arguments") or [])
+    result["checks"]["final_decision"] = (analysis_final or {}).get("final_decision")
+    result["checks"]["stage8_shortcut_available"] = bool(
+        analysis_final and analysis_final.get("final_arguments") and analysis_final.get("final_decision")
+    )
+
+    vc_profiles = await asyncio.to_thread(db.get_active_vc_profiles)
+    result["checks"]["active_vc_count"] = len(vc_profiles)
+    result["vc_profiles"] = []
+    for vc in vc_profiles:
+        vc_id = vc.get("id", "")
+        exists = await asyncio.to_thread(db.match_exists, vc_id, company_id)
+        result["vc_profiles"].append({
+            "id": vc_id,
+            "firm_name": vc.get("firm_name"),
+            "min_strategy_fit": vc.get("min_strategy_fit"),
+            "min_team": vc.get("min_team"),
+            "min_potential": vc.get("min_potential"),
+            "thesis_length": len(vc.get("investment_thesis") or ""),
+            "match_already_exists": exists,
+        })
+
+    will_attempt = (
+        bool(company)
+        and (bool(analysis_final) or bool(qa_pairs))
+        and len(vc_profiles) > 0
+    )
+    result["will_attempt_matching"] = will_attempt
+    if not will_attempt:
+        if not company:
+            result["skip_reason"] = "Company not found"
+        elif not analysis_final and not qa_pairs:
+            result["skip_reason"] = "No QA pairs or final_arguments — company needs a completed analysis first"
+        elif not vc_profiles:
+            result["skip_reason"] = "No active VC profiles"
+    else:
+        result["skip_reason"] = None
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Sprint 3 — Debate engine
 # ---------------------------------------------------------------------------
