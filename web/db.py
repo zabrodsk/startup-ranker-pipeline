@@ -3571,7 +3571,7 @@ def get_matches_for_vc(vc_profile_id: str) -> list[dict[str, Any]]:
             .select(
                 "id, strategy_fit_score, team_score, potential_score, composite_score, "
                 "bucket, status, created_at, "
-                "companies(id, name, industry, tagline, about, fundraising)"
+                "companies(id, name, industry, tagline, about, fundraising, data_room_enabled)"
             )
             .eq("vc_profile_id", vc_profile_id)
             .order("composite_score", desc=True)
@@ -4446,3 +4446,218 @@ def admin_set_user_approved(user_id: str, approved: bool) -> bool:
     except Exception as exc:
         _log_supabase_error("admin_set_user_approved", "users_profile", exc)
         return False
+
+
+# ---------------------------------------------------------------------------
+# Data Room
+# ---------------------------------------------------------------------------
+
+def create_data_room_file(
+    *,
+    company_id: str,
+    storage_path: str,
+    original_filename: str,
+    file_size_bytes: int | None = None,
+    mime_type: str | None = None,
+    category: str = "other",
+    also_evidence: bool = False,
+    pitch_deck_id: str | None = None,
+    uploaded_by: str | None = None,
+) -> dict[str, Any] | None:
+    """Insert a data_room_files row. Returns the created row or None."""
+    client = _get_client()
+    if not client or not company_id:
+        return None
+    payload: dict[str, Any] = {
+        "company_id": company_id,
+        "storage_path": storage_path,
+        "original_filename": original_filename,
+        "file_size_bytes": file_size_bytes,
+        "mime_type": mime_type,
+        "category": category,
+        "also_evidence": also_evidence,
+        "pitch_deck_id": pitch_deck_id,
+        "uploaded_by": uploaded_by,
+    }
+    try:
+        rows = client.table("data_room_files").insert(payload).execute()
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("create_data_room_file", "data_room_files", exc)
+        return None
+
+
+def list_data_room_files(company_id: str) -> list[dict[str, Any]]:
+    """List all data room files for a company, newest first."""
+    client = _get_client()
+    if not client or not company_id:
+        return []
+    try:
+        rows = (
+            client.table("data_room_files")
+            .select("id, original_filename, file_size_bytes, mime_type, category, also_evidence, created_at")
+            .eq("company_id", company_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return list(rows.data or [])
+    except Exception as exc:
+        _log_supabase_error("list_data_room_files", "data_room_files", exc)
+        return []
+
+
+def get_data_room_file(file_id: str) -> dict[str, Any] | None:
+    """Fetch a single data room file by ID."""
+    client = _get_client()
+    if not client or not file_id:
+        return None
+    try:
+        rows = (
+            client.table("data_room_files")
+            .select("*")
+            .eq("id", file_id)
+            .limit(1)
+            .execute()
+        )
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("get_data_room_file", "data_room_files", exc)
+        return None
+
+
+def delete_data_room_file(file_id: str) -> bool:
+    """Delete a data room file row. Returns True on success."""
+    client = _get_client()
+    if not client or not file_id:
+        return False
+    try:
+        client.table("data_room_files").delete().eq("id", file_id).execute()
+        return True
+    except Exception as exc:
+        _log_supabase_error("delete_data_room_file", "data_room_files", exc)
+        return False
+
+
+def delete_storage_file(storage_path: str) -> bool:
+    """Delete a file from Supabase Storage. Returns True on success."""
+    client = _get_client()
+    if not client or not storage_path:
+        return False
+    try:
+        client.storage.from_(SOURCE_FILES_BUCKET).remove([storage_path])
+        return True
+    except Exception as exc:
+        _log_supabase_error("delete_storage_file", "storage", exc)
+        return False
+
+
+def set_data_room_enabled(company_id: str, enabled: bool) -> bool:
+    """Toggle companies.data_room_enabled. Returns True on success."""
+    client = _get_client()
+    if not client or not company_id:
+        return False
+    try:
+        client.table("companies").update({"data_room_enabled": enabled}).eq("id", company_id).execute()
+        return True
+    except Exception as exc:
+        _log_supabase_error("set_data_room_enabled", "companies", exc)
+        return False
+
+
+def list_data_room_files_for_match(
+    match_id: str,
+    vc_user_id: str,
+) -> list[dict[str, Any]] | None:
+    """Get data room files for a match. Verifies VC owns the match and data_room_enabled.
+
+    Returns list of files on success, or None if access denied / not found.
+    """
+    client = _get_client()
+    if not client or not match_id or not vc_user_id:
+        return None
+    try:
+        # 1. Fetch the match and verify VC ownership
+        match_rows = (
+            client.table("matches")
+            .select("id, company_id, vc_profile_id, vc_profiles(user_id)")
+            .eq("id", match_id)
+            .limit(1)
+            .execute()
+        )
+        if not match_rows.data:
+            return None
+        match = match_rows.data[0]
+        vc_profile = match.get("vc_profiles") or {}
+        if vc_profile.get("user_id") != vc_user_id:
+            return None  # VC doesn't own this match
+
+        company_id = match.get("company_id")
+        if not company_id:
+            return None
+
+        # 2. Check data_room_enabled
+        co_rows = (
+            client.table("companies")
+            .select("data_room_enabled")
+            .eq("id", company_id)
+            .limit(1)
+            .execute()
+        )
+        if not co_rows.data or not co_rows.data[0].get("data_room_enabled"):
+            return None
+
+        # 3. Fetch files
+        file_rows = (
+            client.table("data_room_files")
+            .select("id, original_filename, file_size_bytes, mime_type, category, created_at")
+            .eq("company_id", company_id)
+            .order("category")
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return list(file_rows.data or [])
+    except Exception as exc:
+        _log_supabase_error("list_data_room_files_for_match", "data_room_files", exc)
+        return None
+
+
+def create_signed_download_url(storage_path: str, expires_in: int = 3600) -> str | None:
+    """Generate a signed URL for downloading a file from Supabase Storage.
+
+    Args:
+        storage_path: Path within the SOURCE_FILES_BUCKET.
+        expires_in: URL validity in seconds (default 1 hour).
+
+    Returns:
+        Signed URL string, or None on error.
+    """
+    client = _get_client()
+    if not client or not storage_path:
+        return None
+    try:
+        result = client.storage.from_(SOURCE_FILES_BUCKET).create_signed_url(
+            storage_path, expires_in
+        )
+        # supabase-py returns {"signedURL": "..."} or {"signedUrl": "..."}
+        return result.get("signedURL") or result.get("signedUrl") or result.get("signed_url")
+    except Exception as exc:
+        _log_supabase_error("create_signed_download_url", "storage", exc)
+        return None
+
+
+def count_data_room_files(company_id: str) -> int:
+    """Return the number of data room files for a company."""
+    client = _get_client()
+    if not client or not company_id:
+        return 0
+    try:
+        rows = (
+            client.table("data_room_files")
+            .select("id", count="exact")
+            .eq("company_id", company_id)
+            .execute()
+        )
+        return rows.count or 0
+    except Exception as exc:
+        _log_supabase_error("count_data_room_files", "data_room_files", exc)
+        return 0

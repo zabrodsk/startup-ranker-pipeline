@@ -1545,12 +1545,24 @@ function DashboardView({ user, onSignOut }) {
   const [evidenceLog, setEvidenceLog] = React.useState(null);
   const [loadingEvidenceLog, setLoadingEvidenceLog] = React.useState(true);
 
+  // Data room state
+  const [dataRoomEnabled, setDataRoomEnabled] = React.useState(false);
+  const [dataRoomFiles, setDataRoomFiles] = React.useState([]);
+  const [drLoading, setDrLoading] = React.useState(false);
+  const [drUploading, setDrUploading] = React.useState(false);
+  const [drCategory, setDrCategory] = React.useState("other");
+  const [drAlsoEvidence, setDrAlsoEvidence] = React.useState(false);
+  const [drUploadResult, setDrUploadResult] = React.useState(null);
+
   function loadProfile() {
     setLoadingProfile(true);
     api("GET", "/api/startup/profile")
       .then(data => {
         setProfile(data);
         setFundraising(data?.company?.fundraising ?? false);
+        const drEnabled = data?.company?.data_room_enabled ?? false;
+        setDataRoomEnabled(drEnabled);
+        if (drEnabled) loadDataRoomFiles();
         if (!data?.company) setNoCompany(true);
       })
       .catch(err => setError(err.message))
@@ -1579,6 +1591,64 @@ function DashboardView({ user, onSignOut }) {
       .then(data => setEvidenceLog(data))
       .catch(() => setEvidenceLog(null))
       .finally(() => setLoadingEvidenceLog(false));
+  }
+
+  function loadDataRoomFiles() {
+    setDrLoading(true);
+    api("GET", "/api/startup/data-room/files")
+      .then(data => setDataRoomFiles(data?.files || []))
+      .catch(() => setDataRoomFiles([]))
+      .finally(() => setDrLoading(false));
+  }
+
+  async function handleDrToggle() {
+    const newVal = !dataRoomEnabled;
+    try {
+      await api("PUT", "/api/startup/data-room/toggle", { enabled: newVal });
+      setDataRoomEnabled(newVal);
+      if (newVal) loadDataRoomFiles();
+    } catch (err) { setError(err.message); }
+  }
+
+  async function handleDrUpload(files) {
+    if (!files || files.length === 0) return;
+    setDrUploading(true);
+    setDrUploadResult(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", files[0]);
+      formData.append("category", drCategory);
+      formData.append("also_evidence", drAlsoEvidence ? "true" : "false");
+      const token = getToken();
+      const resp = await fetch("/api/startup/data-room/upload", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.detail || resp.statusText); }
+      const data = await resp.json();
+      setDrUploadResult(data);
+      loadDataRoomFiles();
+      if (data.evidence_created) { loadChunks(); loadEvidenceLog(); }
+    } catch (err) { setError(err.message); }
+    finally { setDrUploading(false); }
+  }
+
+  async function handleDrDelete(fileId) {
+    if (!confirm("Delete this file from the data room?")) return;
+    try {
+      await api("DELETE", `/api/startup/data-room/files/${fileId}`);
+      setDataRoomFiles(prev => prev.filter(f => f.id !== fileId));
+    } catch (err) { setError(err.message); }
+  }
+
+  async function handleDrDownload(fileId, filename) {
+    try {
+      const data = await api("GET", `/api/data-room/download/${fileId}`);
+      if (data.download_url) {
+        const a = document.createElement("a"); a.href = data.download_url; a.target = "_blank"; a.download = filename || "download"; a.click();
+      }
+    } catch (err) { setError(err.message); }
   }
 
   React.useEffect(() => {
@@ -1895,6 +1965,100 @@ function DashboardView({ user, onSignOut }) {
           )}
         </div>
       </div>
+
+      {/* ===== Data Room ===== */}
+      <div className="section-card">
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+          <h2 style={{margin:0}}>Data Room</h2>
+          <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:".9rem"}}>
+            <span style={{color:"#6e6e73"}}>{dataRoomEnabled ? "Enabled" : "Disabled"}</span>
+            <div
+              onClick={handleDrToggle}
+              style={{
+                width:44,height:24,borderRadius:12,
+                background:dataRoomEnabled ? "var(--green)" : "#48484a",
+                position:"relative",cursor:"pointer",transition:"background .2s"
+              }}
+            >
+              <div style={{
+                width:20,height:20,borderRadius:10,background:"#fff",
+                position:"absolute",top:2,
+                left:dataRoomEnabled ? 22 : 2,
+                transition:"left .2s"
+              }} />
+            </div>
+          </label>
+        </div>
+        <p style={{color:"#6e6e73",marginBottom:16}}>
+          Share files with matched VCs. Enable the data room to let investors access your documents.
+        </p>
+
+        {dataRoomEnabled && (
+          <>
+            {/* Upload area */}
+            <div style={{border:"1px dashed var(--border)",borderRadius:8,padding:16,marginBottom:16}}>
+              <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap",marginBottom:12}}>
+                <select
+                  className="form-input"
+                  value={drCategory}
+                  onChange={e => setDrCategory(e.target.value)}
+                  style={{width:"auto",minWidth:140}}
+                >
+                  <option value="pitch_deck">Pitch Deck</option>
+                  <option value="financials">Financials</option>
+                  <option value="legal">Legal</option>
+                  <option value="team">Team</option>
+                  <option value="product">Product</option>
+                  <option value="other">Other</option>
+                </select>
+                <label style={{display:"flex",alignItems:"center",gap:6,fontSize:".85rem",color:"#6e6e73",cursor:"pointer"}}>
+                  <input type="checkbox" checked={drAlsoEvidence} onChange={e => setDrAlsoEvidence(e.target.checked)} />
+                  Also use as AI evidence
+                </label>
+              </div>
+              <UploadZone onUpload={handleDrUpload} disabled={drUploading} />
+              {drUploading && (
+                <div style={{display:"flex",alignItems:"center",gap:8,marginTop:8,color:"#6e6e73"}}>
+                  <Spinner /> Uploading…
+                </div>
+              )}
+              {drUploadResult && (
+                <div style={{marginTop:8,fontSize:".88rem",color:"var(--green)"}}>
+                  ✓ {drUploadResult.file?.original_filename} uploaded
+                  {drUploadResult.evidence_created && ` (${drUploadResult.chunks_count} chunks created)`}
+                </div>
+              )}
+            </div>
+
+            {/* File list */}
+            {drLoading ? (
+              <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
+            ) : dataRoomFiles.length === 0 ? (
+              <Alert type="info">No files in your data room yet. Upload documents above.</Alert>
+            ) : (
+              <div style={{display:"flex",flexDirection:"column",gap:0}}>
+                {dataRoomFiles.map(f => (
+                  <div key={f.id} style={{
+                    display:"flex",justifyContent:"space-between",alignItems:"center",
+                    padding:"10px 0",borderBottom:"1px solid var(--border)",fontSize:".88rem",gap:8,flexWrap:"wrap"
+                  }}>
+                    <div style={{display:"flex",alignItems:"center",gap:8,flex:1,minWidth:0}}>
+                      <span style={{color:"#CCCCCC",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.original_filename}</span>
+                      <span className="badge" style={{fontSize:".75rem",textTransform:"capitalize"}}>{(f.category || "other").replace("_"," ")}</span>
+                      {f.also_evidence && <span className="badge badge-green" style={{fontSize:".7rem"}}>Evidence</span>}
+                      {f.file_size_bytes && <span style={{color:"#6e6e73",fontSize:".78rem"}}>{(f.file_size_bytes / 1024).toFixed(0)} KB</span>}
+                    </div>
+                    <div style={{display:"flex",gap:6}}>
+                      <button className="btn btn-sm btn-outline" onClick={() => handleDrDownload(f.id, f.original_filename)}>Download</button>
+                      <button className="btn btn-sm btn-outline-red" onClick={() => handleDrDelete(f.id)}>Delete</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -2164,6 +2328,39 @@ function VCDashboardView({ user, onSignOut, onStartDebate }) {
   const [saveMsg, setSaveMsg] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
+  // Data room expansion per match
+  const [drExpanded, setDrExpanded] = useState({});    // { matchId: true/false }
+  const [drFiles, setDrFiles] = useState({});           // { matchId: [...files] }
+  const [drLoadingFor, setDrLoadingFor] = useState({}); // { matchId: true/false }
+
+  async function toggleDataRoom(matchId) {
+    if (drExpanded[matchId]) {
+      setDrExpanded(prev => ({ ...prev, [matchId]: false }));
+      return;
+    }
+    setDrExpanded(prev => ({ ...prev, [matchId]: true }));
+    if (drFiles[matchId]) return; // already loaded
+    setDrLoadingFor(prev => ({ ...prev, [matchId]: true }));
+    try {
+      const data = await api("GET", `/api/vc/matches/${matchId}/data-room`);
+      setDrFiles(prev => ({ ...prev, [matchId]: data?.files || [] }));
+    } catch (err) {
+      setError(err.message);
+      setDrExpanded(prev => ({ ...prev, [matchId]: false }));
+    } finally {
+      setDrLoadingFor(prev => ({ ...prev, [matchId]: false }));
+    }
+  }
+
+  async function vcDownloadFile(fileId, filename) {
+    try {
+      const data = await api("GET", `/api/data-room/download/${fileId}`);
+      if (data.download_url) {
+        const a = document.createElement("a"); a.href = data.download_url; a.target = "_blank"; a.download = filename || "download"; a.click();
+      }
+    } catch (err) { setError(err.message); }
+  }
+
   function loadProfile() {
     return api("GET", "/api/vc/profile")
       .then(data => {
@@ -2398,6 +2595,44 @@ function VCDashboardView({ user, onSignOut, onStartDebate }) {
                       Composite {m.composite_score != null ? Math.round(m.composite_score) : "—"}
                     </span>
                   </div>
+
+                  {/* Data Room */}
+                  {m.data_room_enabled && m.data_room_file_count > 0 && (
+                    <div style={{marginTop:10,width:"100%"}}>
+                      <button
+                        className="btn btn-sm btn-outline"
+                        style={{width:"auto",padding:"5px 14px",fontSize:".82rem"}}
+                        onClick={() => toggleDataRoom(m.id)}
+                      >
+                        {drExpanded[m.id] ? "▾" : "▸"} Data Room ({m.data_room_file_count} file{m.data_room_file_count !== 1 ? "s" : ""})
+                      </button>
+                      {drExpanded[m.id] && (
+                        <div style={{marginTop:8,padding:"10px 14px",background:"rgba(255,255,255,0.03)",borderRadius:8,border:"1px solid var(--border)"}}>
+                          {drLoadingFor[m.id] ? (
+                            <div style={{display:"flex",justifyContent:"center",padding:12}}><Spinner /></div>
+                          ) : (drFiles[m.id] || []).length === 0 ? (
+                            <span style={{color:"#6e6e73",fontSize:".85rem"}}>No files available.</span>
+                          ) : (
+                            (drFiles[m.id] || []).map(f => (
+                              <div key={f.id} style={{
+                                display:"flex",justifyContent:"space-between",alignItems:"center",
+                                padding:"6px 0",borderBottom:"1px solid var(--border)",fontSize:".85rem",gap:8
+                              }}>
+                                <div style={{display:"flex",alignItems:"center",gap:8,flex:1,minWidth:0}}>
+                                  <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.original_filename}</span>
+                                  <span className="badge" style={{fontSize:".7rem",textTransform:"capitalize"}}>{(f.category || "other").replace("_"," ")}</span>
+                                  {f.file_size_bytes && <span style={{color:"#6e6e73",fontSize:".75rem"}}>{(f.file_size_bytes / 1024).toFixed(0)} KB</span>}
+                                </div>
+                                <button className="btn btn-sm btn-outline" onClick={() => vcDownloadFile(f.id, f.original_filename)} style={{padding:"3px 10px",fontSize:".78rem"}}>
+                                  Download
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <div className="match-actions" style={{marginTop:10}}>
                     {m.status !== "interested" && m.status !== "passed" && m.status !== "in_debate" && (

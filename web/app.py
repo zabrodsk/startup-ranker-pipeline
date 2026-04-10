@@ -83,7 +83,7 @@ if not any(isinstance(h, _InMemoryLogHandler) for h in _root_logger.handlers):
         _root_logger.setLevel(logging.DEBUG)
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, Cookie, FastAPI, File, Header, HTTPException, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, Body, Cookie, FastAPI, File, Form, Header, HTTPException, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -2507,6 +2507,7 @@ async def startup_profile(user: CurrentUser = Depends(_require_startup)) -> dict
             "fundraising": company.get("fundraising", False),
             "fundraising_updated_at": company.get("fundraising_updated_at"),
             "claimed_at": company.get("claimed_at"),
+            "data_room_enabled": company.get("data_room_enabled", False),
         },
         "analysis": analysis_summary,
     }
@@ -2988,6 +2989,13 @@ async def vc_get_matches(user: CurrentUser = Depends(_require_vc)) -> dict[str, 
     """Return all matches for the VC, ordered by composite score descending."""
     profile = await asyncio.to_thread(_get_vc_profile_or_404, user)
     matches = await asyncio.to_thread(db.get_matches_for_vc, profile["id"])
+
+    # Enrich with data room file counts (batch to avoid N+1).
+    company_ids = list({(m.get("companies") or {}).get("id") for m in matches} - {None})
+    dr_counts: dict[str, int] = {}
+    for cid in company_ids:
+        dr_counts[cid] = await asyncio.to_thread(db.count_data_room_files, cid)
+
     return {
         "matches": [
             {
@@ -3006,6 +3014,8 @@ async def vc_get_matches(user: CurrentUser = Depends(_require_vc)) -> dict[str, 
                 "bucket": m.get("bucket"),
                 "status": m.get("status"),
                 "created_at": m.get("created_at"),
+                "data_room_enabled": (m.get("companies") or {}).get("data_room_enabled", False),
+                "data_room_file_count": dr_counts.get((m.get("companies") or {}).get("id"), 0),
             }
             for m in matches
         ]
@@ -3678,6 +3688,262 @@ async def startup_re_evaluate(
     company_id = await asyncio.to_thread(_first_linked_company_id, user)
     background_tasks.add_task(_run_re_evaluation, company_id)
     return {"status": "re_evaluation_started", "company_id": company_id}
+
+
+# ---------------------------------------------------------------------------
+# Data Room endpoints
+# ---------------------------------------------------------------------------
+
+_DATA_ROOM_CATEGORIES = {"pitch_deck", "financials", "legal", "team", "product", "other"}
+
+
+@app.put("/api/startup/data-room/toggle")
+async def startup_data_room_toggle(
+    user: CurrentUser = Depends(_require_startup),
+    enabled: bool = Body(..., embed=True),
+) -> dict[str, Any]:
+    """Enable or disable the data room for the startup's company."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    company_id = await asyncio.to_thread(_first_linked_company_id, user)
+    ok = await asyncio.to_thread(db.set_data_room_enabled, company_id, enabled)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to update data room setting.")
+    return {"data_room_enabled": enabled}
+
+
+@app.post("/api/startup/data-room/upload")
+async def startup_data_room_upload(
+    file: UploadFile,
+    user: CurrentUser = Depends(_require_startup),
+    category: str = Form("other"),
+    also_evidence: bool = Form(False),
+) -> dict[str, Any]:
+    """Upload a file to the startup's data room.
+
+    If also_evidence is True, the file is additionally parsed, chunked and
+    ingested as evidence for the AI pipeline (same as POST /api/startup/upload).
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    company_id = await asyncio.to_thread(_first_linked_company_id, user)
+    filename = file.filename or "upload"
+    suffix = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+    if suffix not in _SUPPORTED_UPLOAD_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{suffix}'. Supported: {', '.join(sorted(_SUPPORTED_UPLOAD_EXTENSIONS))}",
+        )
+
+    if category not in _DATA_ROOM_CATEGORIES:
+        category = "other"
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Empty file.")
+
+    # Upload to Supabase Storage under data_room/ sub-path.
+    safe_name = __import__("re").sub(r"[^a-zA-Z0-9._\-]+", "-", filename).strip("-") or "upload"
+    storage_path = f"startup_uploads/{company_id}/data_room/{safe_name}"
+    try:
+        from web.db import ensure_source_files_bucket, SOURCE_FILES_BUCKET  # noqa: PLC0415
+        await asyncio.to_thread(ensure_source_files_bucket)
+        client = db._get_client()
+        options: dict[str, Any] = {"upsert": "true"}
+        content_type = file.content_type
+        if content_type:
+            options["content-type"] = content_type
+        await asyncio.to_thread(
+            client.storage.from_(SOURCE_FILES_BUCKET).upload,
+            storage_path, file_bytes, options,
+        )
+    except Exception as exc:
+        _log = logging.getLogger(__name__)
+        _log.warning("Data room storage upload failed for %s: %s", filename, exc)
+        # Proceed anyway — record the row so the user sees the file.
+
+    # Optionally ingest as evidence.
+    pitch_deck_id: str | None = None
+    chunks_count = 0
+    if also_evidence:
+        import tempfile  # noqa: PLC0415
+        from agent.ingest import _EXTENSION_MAP, _TEXT_EXTENSIONS  # noqa: PLC0415
+        from agent.ingest.chunking import smart_chunk_texts  # noqa: PLC0415
+
+        tmp_dir = tempfile.mkdtemp(prefix="dr_upload_")
+        try:
+            tmp_path = Path(tmp_dir) / filename
+            tmp_path.write_bytes(file_bytes)
+
+            extractor = _EXTENSION_MAP.get(suffix)
+            if extractor is not None:
+                raw_items = extractor(tmp_path)
+            elif suffix in _TEXT_EXTENSIONS:
+                raw_items = [{"text": tmp_path.read_text(errors="replace").strip(), "page_or_slide": "N/A", "source_file": filename}]
+            else:
+                raw_items = []
+
+            if raw_items:
+                chunks = smart_chunk_texts(raw_items)
+                evidence_storage = await asyncio.to_thread(
+                    db.upload_startup_file_bytes, company_id, filename, file_bytes,
+                ) or f"startup_uploads/{company_id}/{safe_name}"
+                pitch_deck_id = await asyncio.to_thread(
+                    db.create_pitch_deck_for_upload, company_id, evidence_storage, filename,
+                )
+                if pitch_deck_id:
+                    chunks_count = await asyncio.to_thread(
+                        db.insert_chunks_for_pitch_deck, pitch_deck_id, chunks,
+                    )
+        except Exception as exc:
+            _log = logging.getLogger(__name__)
+            _log.warning("Data room evidence ingest failed for %s: %s", filename, exc)
+        finally:
+            import shutil  # noqa: PLC0415
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # Create the data_room_files row.
+    row = await asyncio.to_thread(
+        db.create_data_room_file,
+        company_id=company_id,
+        storage_path=storage_path,
+        original_filename=filename,
+        file_size_bytes=len(file_bytes),
+        mime_type=file.content_type,
+        category=category,
+        also_evidence=also_evidence,
+        pitch_deck_id=pitch_deck_id,
+        uploaded_by=user.id,
+    )
+    if not row:
+        raise HTTPException(status_code=500, detail="Failed to create data room record.")
+
+    return {
+        "file": {
+            "id": row.get("id"),
+            "original_filename": row.get("original_filename"),
+            "file_size_bytes": row.get("file_size_bytes"),
+            "mime_type": row.get("mime_type"),
+            "category": row.get("category"),
+            "also_evidence": row.get("also_evidence"),
+            "created_at": row.get("created_at"),
+        },
+        "evidence_created": also_evidence and pitch_deck_id is not None,
+        "chunks_count": chunks_count,
+    }
+
+
+@app.get("/api/startup/data-room/files")
+async def startup_data_room_files(
+    user: CurrentUser = Depends(_require_startup),
+) -> dict[str, Any]:
+    """List all data room files for the startup's company."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    company_id = await asyncio.to_thread(_first_linked_company_id, user)
+    files = await asyncio.to_thread(db.list_data_room_files, company_id)
+    return {"files": files}
+
+
+@app.delete("/api/startup/data-room/files/{file_id}")
+async def startup_data_room_delete(
+    file_id: str,
+    user: CurrentUser = Depends(_require_startup),
+) -> dict[str, Any]:
+    """Delete a data room file (DB row + Storage object)."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    company_id = await asyncio.to_thread(_first_linked_company_id, user)
+
+    # Verify ownership.
+    file_row = await asyncio.to_thread(db.get_data_room_file, file_id)
+    if not file_row or file_row.get("company_id") != company_id:
+        raise HTTPException(status_code=404, detail="File not found.")
+
+    # Delete from Storage (best-effort).
+    await asyncio.to_thread(db.delete_storage_file, file_row.get("storage_path", ""))
+
+    # If also_evidence and linked pitch_deck, delete the pitch_deck (chunks cascade).
+    if file_row.get("also_evidence") and file_row.get("pitch_deck_id"):
+        try:
+            def _delete_pitch_deck(pd_id: str) -> None:
+                client = db._get_client()
+                if client:
+                    client.table("pitch_decks").delete().eq("id", pd_id).execute()
+            await asyncio.to_thread(_delete_pitch_deck, file_row["pitch_deck_id"])
+        except Exception:
+            pass  # best-effort
+
+    # Delete the data_room_files row.
+    await asyncio.to_thread(db.delete_data_room_file, file_id)
+    return {"deleted": True}
+
+
+@app.get("/api/vc/matches/{match_id}/data-room")
+async def vc_match_data_room(
+    match_id: str,
+    user: CurrentUser = Depends(_require_vc),
+) -> dict[str, Any]:
+    """List data room files for a matched company. Verifies VC ownership + data_room_enabled."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    files = await asyncio.to_thread(db.list_data_room_files_for_match, match_id, user.id)
+    if files is None:
+        raise HTTPException(status_code=403, detail="Access denied or data room not enabled.")
+    return {"files": files}
+
+
+@app.get("/api/data-room/download/{file_id}")
+async def data_room_download(
+    file_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Generate a signed download URL for a data room file.
+
+    Accessible by:
+    - Startup users who own the company
+    - VC users with an active match to the company (and data_room_enabled)
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    file_row = await asyncio.to_thread(db.get_data_room_file, file_id)
+    if not file_row:
+        raise HTTPException(status_code=404, detail="File not found.")
+
+    company_id = file_row.get("company_id")
+
+    # Check access.
+    allowed = False
+    if user.role == "startup":
+        try:
+            linked = await asyncio.to_thread(_first_linked_company_id, user)
+            allowed = linked == company_id
+        except HTTPException:
+            pass
+    elif user.role in ("vc", "admin"):
+        # Check if VC has any active match with this company.
+        profile = await asyncio.to_thread(db.get_vc_profile, user.id)
+        if profile:
+            matches = await asyncio.to_thread(db.get_matches_for_vc, profile["id"])
+            for m in matches:
+                co = m.get("companies") or {}
+                if co.get("id") == company_id and co.get("data_room_enabled"):
+                    allowed = True
+                    break
+    elif user.role == "admin":
+        allowed = True
+
+    if not allowed:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    url = await asyncio.to_thread(db.create_signed_download_url, file_row.get("storage_path", ""))
+    if not url:
+        raise HTTPException(status_code=500, detail="Failed to generate download URL.")
+
+    return {"download_url": url, "filename": file_row.get("original_filename")}
 
 
 @app.post("/api/startup/analyze")
