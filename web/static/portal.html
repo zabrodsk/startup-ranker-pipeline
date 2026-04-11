@@ -1319,6 +1319,222 @@ function EvidenceCard({ chunk }) {
   );
 }
 
+// ---------- Re-evaluation progress card ----------
+//
+// The server emits free-form progress strings via _append_progress in
+// _run_re_evaluation. We map them to a fixed set of 6 visible stages so the
+// founder sees a stable progress bar instead of arbitrary text. The mapping
+// is intentionally tolerant — unknown messages stay on whatever step we last
+// matched, so a future server-side rename does not blank the UI.
+const REEVAL_STAGES = [
+  { key: "loading",   label: "Loading evidence",        hint: "Fetching all uploaded chunks for your company" },
+  { key: "answering", label: "Re-answering questions",  hint: "The AI re-asks every investment question against the new evidence" },
+  { key: "arguing",   label: "Generating arguments",    hint: "Building pro/contra arguments and stress-testing them with a critic" },
+  { key: "scoring",   label: "Scoring & decision",      hint: "Composite score, dimension scores, and final invest/pass decision" },
+  { key: "saving",    label: "Saving results",          hint: "Persisting the new analysis row and cost telemetry" },
+  { key: "matching",  label: "Updating VC matches",     hint: "Re-scoring your matches with the new analysis (matches are preserved, scores refresh)" },
+];
+
+function reevalStageIndexFromProgress(progress) {
+  if (!progress) return 0;
+  const p = progress.toLowerCase();
+  if (p.startsWith("error")) return -1;
+  if (p.includes("re-evaluation complete")) return REEVAL_STAGES.length;
+  if (p.includes("re-running vc matching") || p.includes("matching")) return 5;
+  if (p.includes("saving analysis") || p.includes("persisting")) return 4;
+  if (p.includes("stages 7-8") || p.includes("ranking") || p.includes("decision")) return 3;
+  if (p.includes("stages 3-6") || p.includes("argument") || p.includes("critique") || p.includes("refinement")) return 2;
+  if (p.includes("stage 2") || p.includes("answering") || p.includes("decomposing") || p.includes("stage 1")) return 1;
+  if (p.includes("loading") || p.includes("evidence chunks")) return 0;
+  return 0;
+}
+
+function fmtElapsed(ms) {
+  if (!ms || ms < 0) return "0s";
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const ss = s % 60;
+  return m > 0 ? `${m}m ${ss}s` : `${ss}s`;
+}
+
+function ReevalProgressCard({ job, showLog, onToggleLog, onRetry, onDismiss }) {
+  // Tick once a second so the elapsed-time display stays current even when
+  // the server has not emitted a new progress event in a while.
+  const [, forceTick] = React.useState(0);
+  React.useEffect(() => {
+    if (!job || job.status === "done" || job.status === "error") return;
+    const iv = setInterval(() => forceTick(t => t + 1), 1000);
+    return () => clearInterval(iv);
+  }, [job?.status]);
+
+  if (!job) return null;
+  const status = job.status || "running";
+  const isDone = status === "done";
+  const isError = status === "error";
+  const stepIdx = reevalStageIndexFromProgress(job.progress);
+  const totalSteps = REEVAL_STAGES.length;
+  const completedSteps = isDone
+    ? totalSteps
+    : isError
+      ? Math.max(0, stepIdx)
+      : Math.min(stepIdx, totalSteps - 1);
+  const currentStage = isDone || isError ? null : REEVAL_STAGES[completedSteps];
+  const elapsed = job.started_at ? Date.now() - job.started_at : 0;
+  const pct = isDone ? 100 : Math.round((completedSteps / totalSteps) * 100);
+
+  // Border + accent color follow status.
+  const accent = isError ? "#ff453a" : isDone ? "#22c55e" : "#0a84ff";
+  const bg = isError ? "rgba(255,69,58,0.06)" : isDone ? "rgba(34,197,94,0.06)" : "rgba(10,132,255,0.04)";
+
+  return (
+    <div style={{
+      marginTop:14,
+      border:`1px solid ${accent}`,
+      background:bg,
+      borderRadius:10,
+      padding:"14px 16px",
+    }}>
+      {/* Header row */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          {!isDone && !isError && <Spinner />}
+          {isDone && <span style={{color:accent,fontSize:"1.1rem",fontWeight:600}}>✓</span>}
+          {isError && <span style={{color:accent,fontSize:"1.1rem",fontWeight:600}}>!</span>}
+          <div>
+            <div style={{fontWeight:600,color:"#1d1d1f"}}>
+              {isDone   && "Re-evaluation complete"}
+              {isError  && "Re-evaluation failed"}
+              {!isDone && !isError && (currentStage?.label || "Re-evaluating…")}
+            </div>
+            <div style={{fontSize:".78rem",color:"#6e6e73",marginTop:2}}>
+              Job <code style={{fontSize:".78rem"}}>{job.job_id}</code>
+              {" · "}
+              {isDone || isError ? `Took ${fmtElapsed(elapsed)}` : `Elapsed ${fmtElapsed(elapsed)}`}
+              {isDone   && " — your evidence and matches below are now refreshed."}
+              {!isDone && !isError && currentStage?.hint && (
+                <span> · {currentStage.hint}</span>
+              )}
+            </div>
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:6}}>
+          {(isDone || isError) && (
+            <button
+              onClick={onDismiss}
+              style={{
+                background:"transparent",
+                border:"1px solid var(--border)",
+                color:"#1d1d1f",
+                padding:"4px 10px",
+                borderRadius:6,
+                fontSize:".78rem",
+                cursor:"pointer",
+              }}>
+              Dismiss
+            </button>
+          )}
+          {isError && (
+            <button
+              onClick={onRetry}
+              style={{
+                background:accent,
+                border:"none",
+                color:"white",
+                padding:"4px 10px",
+                borderRadius:6,
+                fontSize:".78rem",
+                cursor:"pointer",
+              }}>
+              Try again
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Progress bar */}
+      {!isError && (
+        <div style={{marginTop:12}}>
+          <div style={{
+            height:6,
+            background:"rgba(0,0,0,0.08)",
+            borderRadius:3,
+            overflow:"hidden",
+          }}>
+            <div style={{
+              height:"100%",
+              width:`${pct}%`,
+              background:accent,
+              transition:"width .4s ease",
+            }}/>
+          </div>
+          <div style={{
+            display:"flex",
+            justifyContent:"space-between",
+            marginTop:6,
+            fontSize:".7rem",
+            color:"#6e6e73",
+          }}>
+            {REEVAL_STAGES.map((s, i) => (
+              <span key={s.key} style={{
+                color: i < completedSteps ? accent : (i === completedSteps && !isDone ? "#1d1d1f" : "#9e9ea3"),
+                fontWeight: i === completedSteps && !isDone ? 600 : 400,
+                whiteSpace:"nowrap",
+                overflow:"hidden",
+                textOverflow:"ellipsis",
+                maxWidth:"15%",
+                textAlign:"center",
+              }} title={s.label}>
+                {i < completedSteps ? "✓ " : ""}{s.label.split(" ")[0]}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Error message */}
+      {isError && job.progress && (
+        <div style={{marginTop:10,fontSize:".82rem",color:"#1d1d1f"}}>
+          {job.progress}
+        </div>
+      )}
+
+      {/* Technical log (collapsible) */}
+      {Array.isArray(job.progress_log) && job.progress_log.length > 0 && (
+        <div style={{marginTop:10}}>
+          <button
+            onClick={onToggleLog}
+            style={{
+              background:"transparent",
+              border:"none",
+              color:"#0a84ff",
+              fontSize:".72rem",
+              padding:0,
+              cursor:"pointer",
+            }}>
+            {showLog ? "Hide technical log" : `Show technical log (${job.progress_log.length} entries)`}
+          </button>
+          {showLog && (
+            <pre style={{
+              marginTop:6,
+              padding:8,
+              background:"rgba(0,0,0,0.04)",
+              border:"1px solid var(--border)",
+              borderRadius:6,
+              fontSize:".72rem",
+              maxHeight:160,
+              overflow:"auto",
+              whiteSpace:"pre-wrap",
+              color:"#1d1d1f",
+            }}>
+              {job.progress_log.slice(-20).join("\n")}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------- Analysis Evidence Log (Audit-style) ----------
 function QaPairCard({ qa }) {
   const [showPreview, setShowPreview] = React.useState(false);
@@ -1586,8 +1802,14 @@ function DashboardView({ user, onSignOut }) {
   const [uploading, setUploading] = React.useState(false);
   const [uploadResults, setUploadResults] = React.useState([]);
   const [reEvaluating, setReEvaluating] = React.useState(false);
-  const [reEvalMsg, setReEvalMsg] = React.useState(null);
+  const [reEvalError, setReEvalError] = React.useState(null);
   const [useWebSearch, setUseWebSearch] = React.useState(false);
+  // Live re-evaluation status: { job_id, status, progress, progress_log,
+  // started_at, finished_at, use_web_search } | null. Polled every 3s while
+  // running so the founder sees actual stage progress instead of a static
+  // "refresh in a few minutes" toast.
+  const [reevalJob, setReevalJob] = React.useState(null);
+  const [reevalShowLog, setReevalShowLog] = React.useState(false);
 
   // Full analysis state (for new companies)
   const [analyzing, setAnalyzing] = React.useState(false);
@@ -1877,20 +2099,96 @@ function DashboardView({ user, onSignOut }) {
 
   async function handleReEvaluate() {
     setReEvaluating(true);
-    setReEvalMsg(null);
+    setReEvalError(null);
     setError(null);
+    setReevalShowLog(false);
     try {
-      await api("POST", "/api/startup/re-evaluate", { use_web_search: useWebSearch });
-      const webMsg = useWebSearch
-        ? " Web search is enabled — Perplexity will be queried where document evidence is missing."
-        : "";
-      setReEvalMsg("Re-evaluation started in the background. Your scores will update shortly — refresh the page in a few minutes." + webMsg);
+      const resp = await api("POST", "/api/startup/re-evaluate", { use_web_search: useWebSearch });
+      const jobId = resp?.job_id || null;
+      if (!jobId) {
+        // Should not happen — endpoint always returns one — but degrade gracefully.
+        setReEvalError("Re-evaluation queued, but the server did not return a job id. Refresh in a few minutes.");
+        return;
+      }
+      setReevalJob({
+        job_id: jobId,
+        status: "running",
+        progress: "Queued",
+        progress_log: [],
+        started_at: Date.now(),
+        finished_at: null,
+        use_web_search: useWebSearch,
+      });
     } catch (err) {
-      setError(err.message);
+      setReEvalError(err.message);
     } finally {
       setReEvaluating(false);
     }
   }
+
+  // Poll the re-evaluation status while a standalone re-eval is in flight.
+  // Stops as soon as the server reports done/error and then auto-refreshes
+  // the evidence log, matches, and chunks so the founder sees the new
+  // analysis without having to reload the page. A 15-minute hard timeout
+  // protects against runaway polling if the worker dies silently.
+  React.useEffect(() => {
+    const job = reevalJob;
+    if (!job?.job_id) return;
+    if (job.status === "done" || job.status === "error") return;
+
+    let cancelled = false;
+    const POLL_INTERVAL_MS = 3000;
+    const HARD_TIMEOUT_MS = 15 * 60 * 1000;
+
+    async function tick() {
+      if (cancelled) return;
+      // Hard timeout — surface a recoverable error so the founder can retry.
+      if (Date.now() - job.started_at > HARD_TIMEOUT_MS) {
+        setReevalJob(prev => prev && prev.job_id === job.job_id
+          ? { ...prev, status: "error", progress: "Timed out after 15 minutes — the run may still be in progress on the server.", finished_at: Date.now() }
+          : prev);
+        return;
+      }
+      try {
+        const data = await api("GET", `/api/startup/reeval-status/${job.job_id}`);
+        if (cancelled) return;
+        setReevalJob(prev => prev && prev.job_id === job.job_id
+          ? {
+              ...prev,
+              status: data?.status || prev.status,
+              progress: data?.progress || prev.progress,
+              progress_log: data?.progress_log || prev.progress_log,
+              finished_at: (data?.status === "done" || data?.status === "error") ? Date.now() : prev.finished_at,
+            }
+          : prev);
+
+        // Terminal status: refresh the data the founder cares about so the
+        // page reflects the new analysis without a manual reload.
+        if (data?.status === "done") {
+          loadEvidenceLog();
+          loadMatches();
+          loadChunks();
+          loadProfile();
+        }
+      } catch (err) {
+        // 404 = the job is no longer in the in-memory _jobs dict (worker
+        // restarted or job was cleaned up). Treat as a soft error and stop
+        // polling so we don't hammer the endpoint.
+        if (cancelled) return;
+        const msg = String(err?.message || "");
+        if (msg.includes("404") || msg.toLowerCase().includes("not found")) {
+          setReevalJob(prev => prev && prev.job_id === job.job_id
+            ? { ...prev, status: "error", progress: "Lost track of the job (server restart?). Please refresh the page to see whether it finished.", finished_at: Date.now() }
+            : prev);
+        }
+        // Network blip — keep polling.
+      }
+    }
+
+    tick();
+    const iv = setInterval(tick, POLL_INTERVAL_MS);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [reevalJob?.job_id, reevalJob?.status]);
 
   async function handleAnalyze() {
     setAnalyzing(true);
@@ -2344,42 +2642,60 @@ function DashboardView({ user, onSignOut }) {
           </p>
         )}
 
-        {/* Re-evaluate button — only shown if company has prior analysis */}
-        {company && hasAnalysis && (
-          <div style={{marginTop:16,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
-            <button
-              className="btn btn-primary"
-              onClick={handleReEvaluate}
-              disabled={reEvaluating || uploading}
-            >
-              {reEvaluating ? <><Spinner /> Re-evaluating…</> : "Re-evaluate with new evidence"}
-            </button>
-            <label
-              style={{
-                display:"flex",
-                alignItems:"center",
-                gap:6,
-                fontSize:".85rem",
-                color:"#1d1d1f",
-                cursor: reEvaluating ? "not-allowed" : "pointer",
-                userSelect:"none",
-              }}
-              title="When enabled, Stage 2 may call Perplexity to fill gaps where document evidence cannot answer a question."
-            >
-              <input
-                type="checkbox"
-                checked={useWebSearch}
-                onChange={(e) => setUseWebSearch(e.target.checked)}
-                disabled={reEvaluating}
-              />
-              Use web search
-            </label>
-            <span style={{color:"#6e6e73",fontSize:".85rem"}}>
-              Combines all evidence and refreshes your scores.
-            </span>
-          </div>
-        )}
-        {reEvalMsg && <Alert type="info" style={{marginTop:12}}>{reEvalMsg}</Alert>}
+        {/* Re-evaluate button — only shown if company has prior analysis.
+            The button is disabled while a re-eval job is in flight so the
+            founder cannot accidentally launch a second concurrent run; the
+            ReevalProgressCard below shows live status until completion. */}
+        {company && hasAnalysis && (() => {
+          const jobInFlight = reevalJob && reevalJob.status !== "done" && reevalJob.status !== "error";
+          const buttonDisabled = reEvaluating || uploading || jobInFlight;
+          return (
+            <div style={{marginTop:16,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+              <button
+                className="btn btn-primary"
+                onClick={handleReEvaluate}
+                disabled={buttonDisabled}
+              >
+                {jobInFlight
+                  ? <><Spinner /> Re-evaluating…</>
+                  : reEvaluating
+                    ? <><Spinner /> Starting…</>
+                    : "Re-evaluate with new evidence"}
+              </button>
+              <label
+                style={{
+                  display:"flex",
+                  alignItems:"center",
+                  gap:6,
+                  fontSize:".85rem",
+                  color:"#1d1d1f",
+                  cursor: buttonDisabled ? "not-allowed" : "pointer",
+                  userSelect:"none",
+                }}
+                title="When enabled, Stage 2 may call Perplexity to fill gaps where document evidence cannot answer a question."
+              >
+                <input
+                  type="checkbox"
+                  checked={useWebSearch}
+                  onChange={(e) => setUseWebSearch(e.target.checked)}
+                  disabled={buttonDisabled}
+                />
+                Use web search
+              </label>
+              <span style={{color:"#6e6e73",fontSize:".85rem"}}>
+                Combines all evidence and refreshes your scores. Live progress is shown below.
+              </span>
+            </div>
+          );
+        })()}
+        {reEvalError && <Alert type="error" style={{marginTop:12}}>{reEvalError}</Alert>}
+        <ReevalProgressCard
+          job={reevalJob}
+          showLog={reevalShowLog}
+          onToggleLog={() => setReevalShowLog(s => !s)}
+          onRetry={() => { setReevalJob(null); handleReEvaluate(); }}
+          onDismiss={() => setReevalJob(null)}
+        />
 
         {/* Analysis evidence log (audit-style Q&A + arguments) */}
         <div style={{marginTop:24}}>
