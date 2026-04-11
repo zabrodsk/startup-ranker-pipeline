@@ -497,6 +497,55 @@
       margin: 8px 0;
     }
 
+    /* Founder-portal debate request cards (paused debates awaiting founder). */
+    .debate-request-card {
+      background: rgba(255,255,255,0.02);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-md);
+      padding: 16px 18px;
+      margin-bottom: 12px;
+    }
+    .debate-request-card.awaiting {
+      background: rgba(255,200,60,0.04);
+      border-color: rgba(255,200,60,0.35);
+    }
+    .debate-request-card.completed { opacity: 0.78; }
+    .debate-request-header {
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 10px; margin-bottom: 10px;
+    }
+    .debate-request-firm { font-weight: 600; color: var(--text-white); font-size: 1rem; }
+    .debate-request-topic {
+      font-weight: 600; color: var(--text-white);
+      font-size: .95rem; margin: 4px 0;
+    }
+    .debate-request-questions {
+      margin: 8px 0 10px 0; padding-left: 20px;
+      color: var(--text-light); font-size: .88rem; line-height: 1.55;
+    }
+    .debate-request-rationale {
+      font-size: .82rem; color: var(--text-dim);
+      margin-top: 6px; font-style: italic;
+    }
+    .debate-request-actions {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px;
+    }
+    .debate-evidence-bubble {
+      background: rgba(255,200,60,0.05);
+      border: 1px solid rgba(255,200,60,0.3);
+      color: var(--text-light);
+      border-radius: var(--radius-md);
+      padding: 12px 14px; max-width: 90%;
+    }
+    .debate-founder-bubble {
+      background: rgba(100,180,255,0.05);
+      border: 1px solid rgba(100,180,255,0.3);
+      color: var(--text-light);
+      border-radius: var(--radius-md);
+      padding: 10px 14px; max-width: 90%;
+      font-size: .88rem;
+    }
+
     .citation-list { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
     .citation-chip {
       background: rgba(0,210,106,0.08);
@@ -853,6 +902,11 @@ async function api(method, path, body, { timeoutMs = 15000 } = {}) {
   }
 
   if (!res.ok) {
+    if (res.status === 401) {
+      clearToken();
+      navigate("/login");
+      throw new Error("Session expired. Please log in again.");
+    }
     const err = await res.json().catch(() => ({}));
     const apiErr = new Error(err?.detail || `HTTP ${res.status}`);
     apiErr.status = res.status;
@@ -1533,6 +1587,7 @@ function DashboardView({ user, onSignOut }) {
   const [uploadResults, setUploadResults] = React.useState([]);
   const [reEvaluating, setReEvaluating] = React.useState(false);
   const [reEvalMsg, setReEvalMsg] = React.useState(null);
+  const [useWebSearch, setUseWebSearch] = React.useState(false);
 
   // Full analysis state (for new companies)
   const [analyzing, setAnalyzing] = React.useState(false);
@@ -1553,6 +1608,16 @@ function DashboardView({ user, onSignOut }) {
   const [drCategory, setDrCategory] = React.useState("other");
   const [drAlsoEvidence, setDrAlsoEvidence] = React.useState(false);
   const [drUploadResult, setDrUploadResult] = React.useState(null);
+
+  // Debates section state (founder-side visibility + pause/resume loop)
+  const [debates, setDebates] = React.useState([]);
+  const [loadingDebates, setLoadingDebates] = React.useState(false);
+  const [uploadingForDebate, setUploadingForDebate] = React.useState({});   // debateId -> bool
+  const [pendingJobId, setPendingJobId] = React.useState({});               // debateId -> job_id
+  const [jobStatus, setJobStatus] = React.useState({});                     // job_id -> {status, progress}
+  const [respondingForDebate, setRespondingForDebate] = React.useState({}); // debateId -> bool
+  const [debateActionError, setDebateActionError] = React.useState({});     // debateId -> string
+  const [viewingDebateId, setViewingDebateId] = React.useState(null);
 
   function loadProfile() {
     setLoadingProfile(true);
@@ -1651,12 +1716,121 @@ function DashboardView({ user, onSignOut }) {
     } catch (err) { setError(err.message); }
   }
 
+  function loadDebates() {
+    setLoadingDebates(true);
+    api("GET", "/api/startup/debates")
+      .then(data => setDebates(data?.debates || []))
+      .catch(() => setDebates([]))
+      .finally(() => setLoadingDebates(false));
+  }
+
   React.useEffect(() => {
     loadProfile();
     loadChunks();
     loadMatches();
     loadEvidenceLog();
+    loadDebates();
+    // Poll debates every 30s so founder sees new evidence requests in near-real-time.
+    const poll = setInterval(loadDebates, 30000);
+    return () => clearInterval(poll);
   }, []);
+
+  // Poll any in-flight re-evaluation job statuses tied to a debate.
+  React.useEffect(() => {
+    const entries = Object.entries(pendingJobId).filter(([, jobId]) => !!jobId);
+    if (entries.length === 0) return;
+    let cancelled = false;
+    async function tick() {
+      for (const [debateId, jobId] of entries) {
+        try {
+          const data = await api("GET", `/api/startup/reeval-status/${jobId}`);
+          if (cancelled) return;
+          setJobStatus(prev => ({ ...prev, [jobId]: data }));
+          if (data?.status === "done" || data?.status === "error") {
+            // Stop polling this one but keep the record so the UI renders
+            // "Return to debate" / "Try again".
+          }
+        } catch (_) {}
+      }
+    }
+    tick();
+    const iv = setInterval(tick, 5000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [pendingJobId]);
+
+  async function handleDebateEvidenceUpload(debateId, files) {
+    if (!files || files.length === 0) return;
+    setUploadingForDebate(prev => ({ ...prev, [debateId]: true }));
+    setDebateActionError(prev => ({ ...prev, [debateId]: null }));
+    try {
+      // 1. Upload file(s) as AI evidence (not data room).
+      const formData = new FormData();
+      for (const f of files) formData.append("files", f);
+      const token = getToken();
+      const resp = await fetch("/api/startup/upload", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+        throw new Error(err.detail || "Upload failed");
+      }
+      // 2. Kick off re-evaluation. The endpoint mints a job_id; we read it from
+      //    the response so we can poll status + pass it through when the
+      //    founder returns to the debate.
+      const reevalResp = await api("POST", "/api/startup/re-evaluate", { use_web_search: false });
+      const jobId = reevalResp?.job_id || null;
+      if (jobId) {
+        setPendingJobId(prev => ({ ...prev, [debateId]: jobId }));
+        setJobStatus(prev => ({ ...prev, [jobId]: { status: "running", progress: "Queued" } }));
+      }
+      // Refresh chunks/evidence panels so the uploaded file is visible in the list.
+      loadChunks();
+      loadEvidenceLog();
+    } catch (err) {
+      setDebateActionError(prev => ({ ...prev, [debateId]: err.message }));
+    } finally {
+      setUploadingForDebate(prev => ({ ...prev, [debateId]: false }));
+    }
+  }
+
+  async function handleDebateReturnAfterUpload(debateId) {
+    const jobId = pendingJobId[debateId] || null;
+    setRespondingForDebate(prev => ({ ...prev, [debateId]: true }));
+    setDebateActionError(prev => ({ ...prev, [debateId]: null }));
+    try {
+      await api("POST", `/api/startup/debates/${debateId}/respond`, {
+        response_type: "uploaded",
+        reeval_job_id: jobId,
+      });
+      // Clear pending state, refresh debates list, and open the debate read-only.
+      setPendingJobId(prev => { const n = { ...prev }; delete n[debateId]; return n; });
+      loadDebates();
+      setViewingDebateId(debateId);
+    } catch (err) {
+      setDebateActionError(prev => ({ ...prev, [debateId]: err.message }));
+    } finally {
+      setRespondingForDebate(prev => ({ ...prev, [debateId]: false }));
+    }
+  }
+
+  async function handleDebateDecline(debateId) {
+    if (!confirm("This will tell the VC agent you cannot provide the requested evidence. The debate will resume without it. Continue?")) return;
+    setRespondingForDebate(prev => ({ ...prev, [debateId]: true }));
+    setDebateActionError(prev => ({ ...prev, [debateId]: null }));
+    try {
+      await api("POST", `/api/startup/debates/${debateId}/respond`, {
+        response_type: "unavailable",
+      });
+      loadDebates();
+      setViewingDebateId(debateId);
+    } catch (err) {
+      setDebateActionError(prev => ({ ...prev, [debateId]: err.message }));
+    } finally {
+      setRespondingForDebate(prev => ({ ...prev, [debateId]: false }));
+    }
+  }
 
   async function handleToggle() {
     setToggleLoading(true);
@@ -1706,8 +1880,11 @@ function DashboardView({ user, onSignOut }) {
     setReEvalMsg(null);
     setError(null);
     try {
-      await api("POST", "/api/startup/re-evaluate");
-      setReEvalMsg("Re-evaluation started in the background. Your scores will update shortly — refresh the page in a few minutes.");
+      await api("POST", "/api/startup/re-evaluate", { use_web_search: useWebSearch });
+      const webMsg = useWebSearch
+        ? " Web search is enabled — Perplexity will be queried where document evidence is missing."
+        : "";
+      setReEvalMsg("Re-evaluation started in the background. Your scores will update shortly — refresh the page in a few minutes." + webMsg);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -1760,6 +1937,18 @@ function DashboardView({ user, onSignOut }) {
         {error && <Alert type="error">{error}</Alert>}
         <CreateCompanyForm onCreated={handleCompanyCreated} />
       </div>
+    );
+  }
+
+  // Read-only debate view (founder drilldown). Takes over the dashboard render
+  // tree so the founder can watch the debate stream without losing their place.
+  if (viewingDebateId) {
+    return (
+      <DebateView
+        debateId={viewingDebateId}
+        readOnly
+        onBack={() => { setViewingDebateId(null); loadDebates(); }}
+      />
     );
   }
 
@@ -1832,6 +2021,134 @@ function DashboardView({ user, onSignOut }) {
         </div>
       )}
 
+      {/* Debates */}
+      {company && (
+        <div className="section-card">
+          <h2>Debates</h2>
+          {loadingDebates && debates.length === 0 ? (
+            <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
+          ) : debates.length === 0 ? (
+            <Alert type="info">No active debates yet. A debate is kicked off when a VC invites your company into a structured discussion.</Alert>
+          ) : (
+            debates.map(d => {
+              const awaiting = d.status === "paused" && d.awaiting_input_from === "founder";
+              const req = d.latest_evidence_request || null;
+              const info = req?.info_request || null;
+              const jobId = pendingJobId[d.id];
+              const job = jobId ? jobStatus[jobId] : null;
+              const isUploading = !!uploadingForDebate[d.id];
+              const isResponding = !!respondingForDebate[d.id];
+              const errMsg = debateActionError[d.id];
+              const reevalRunning = job && job.status === "running";
+              const reevalDone = job && job.status === "done";
+              const reevalErrored = job && job.status === "error";
+              return (
+                <div key={d.id} className={`debate-request-card ${awaiting ? "awaiting" : (d.status === "completed" ? "completed" : "")}`}>
+                  <div className="debate-request-header">
+                    <div className="debate-request-firm">
+                      {(d.vc_profiles && d.vc_profiles.firm_name) || d.firm_name || "VC debate"}
+                    </div>
+                    <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                      <span className={`badge ${d.status === "active" ? "badge-green" : ""}`} style={{textTransform:"capitalize"}}>{d.status}</span>
+                      {d.status !== "completed" && (
+                        <span style={{fontSize:".8rem",color:"var(--text-dim)"}}>Round {d.current_round || 1}/{d.max_rounds || 3}</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {awaiting && info && (
+                    <div>
+                      <Alert type="info">The VC agent is asking for additional evidence before continuing.</Alert>
+                      {info.topic && <div className="debate-request-topic">{info.topic}</div>}
+                      {Array.isArray(info.questions) && info.questions.length > 0 && (
+                        <ul className="debate-request-questions">
+                          {info.questions.map((q, qi) => <li key={qi}>{q}</li>)}
+                        </ul>
+                      )}
+                      {info.rationale && <div className="debate-request-rationale">{info.rationale}</div>}
+                    </div>
+                  )}
+
+                  {errMsg && <Alert type="error" style={{marginTop:10}}>{errMsg}</Alert>}
+
+                  {awaiting && reevalRunning && (
+                    <Alert type="info" style={{marginTop:10}}>
+                      <Spinner /> Re-evaluation in progress — {job.progress || "running"}…
+                    </Alert>
+                  )}
+                  {awaiting && reevalErrored && (
+                    <Alert type="error" style={{marginTop:10}}>
+                      Re-evaluation failed: {job?.progress || "unknown error"}. Try uploading again, or decline to provide the evidence.
+                    </Alert>
+                  )}
+
+                  {awaiting && (
+                    <div className="debate-request-actions">
+                      {!reevalDone && (
+                        <label className="btn btn-primary" style={{cursor: (isUploading || reevalRunning) ? "not-allowed" : "pointer", opacity: (isUploading || reevalRunning) ? 0.6 : 1}}>
+                          {isUploading ? <Spinner /> : (reevalRunning ? "Uploading…" : "Upload evidence & re-evaluate")}
+                          <input
+                            type="file"
+                            multiple
+                            accept=".pdf,.pptx,.docx,.txt,.md,.csv"
+                            disabled={isUploading || reevalRunning || isResponding}
+                            onChange={e => {
+                              const files = Array.from(e.target.files || []);
+                              if (files.length) handleDebateEvidenceUpload(d.id, files);
+                              e.target.value = "";
+                            }}
+                            style={{display:"none"}}
+                          />
+                        </label>
+                      )}
+                      {reevalDone && (
+                        <button
+                          className="btn btn-primary"
+                          disabled={isResponding}
+                          onClick={() => handleDebateReturnAfterUpload(d.id)}
+                        >
+                          {isResponding ? <Spinner /> : "Return to debate"}
+                        </button>
+                      )}
+                      <button
+                        className="btn btn-ghost"
+                        disabled={isUploading || reevalRunning || isResponding}
+                        onClick={() => handleDebateDecline(d.id)}
+                      >
+                        I don't have this information
+                      </button>
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() => setViewingDebateId(d.id)}
+                      >
+                        View debate
+                      </button>
+                    </div>
+                  )}
+
+                  {!awaiting && (
+                    <div className="debate-request-actions">
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() => setViewingDebateId(d.id)}
+                      >
+                        View debate
+                      </button>
+                    </div>
+                  )}
+
+                  {d.status === "completed" && d.summary && (
+                    <div style={{marginTop:10,color:"var(--text-dim)",fontSize:".85rem",lineHeight:1.5}}>
+                      {d.summary.slice(0, 260)}{d.summary.length > 260 ? "…" : ""}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
       {/* VC Matches */}
       {company && (
         <div className="section-card">
@@ -1872,7 +2189,7 @@ function DashboardView({ user, onSignOut }) {
 
       {/* Analysis */}
       <div className="section-card">
-        <h2>Rockaway assessment</h2>
+        <h2>Assessment</h2>
         {loadingProfile ? (
           <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
         ) : (
@@ -1894,76 +2211,6 @@ function DashboardView({ user, onSignOut }) {
           </Alert>
         )}
         {analyzeMsg && <Alert type="info" style={{marginTop:12}}>{analyzeMsg}</Alert>}
-      </div>
-
-      {/* Evidence + Upload */}
-      <div className="section-card">
-        <h2>Your uploaded evidence</h2>
-        <p style={{color:"#6e6e73",marginBottom:16}}>
-          Documents and data used in your assessment. Sensitive internal files are never shown here.
-        </p>
-
-        {/* Upload zone */}
-        <UploadZone onUpload={handleUpload} disabled={uploading} />
-
-        {uploading && (
-          <div style={{display:"flex",alignItems:"center",gap:8,marginTop:12,color:"#6e6e73"}}>
-            <Spinner /> Uploading and processing files…
-          </div>
-        )}
-
-        {uploadResults.length > 0 && (
-          <div style={{marginTop:12}}>
-            {uploadResults.map((r, i) => (
-              <div key={i} style={{padding:"6px 0",borderBottom:"1px solid var(--border)",fontSize:".88rem",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <span style={{color:"#CCCCCC"}}>{r.filename}</span>
-                {r.error
-                  ? <span style={{color:"#ff453a"}}>{r.error}</span>
-                  : <span style={{color:"var(--green)"}}>✓ {r.chunks_count} chunks</span>
-                }
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Re-evaluate button — only shown if company has prior analysis */}
-        {company && hasAnalysis && (
-          <div style={{marginTop:16,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
-            <button
-              className="btn btn-primary"
-              onClick={handleReEvaluate}
-              disabled={reEvaluating || uploading}
-            >
-              {reEvaluating ? <><Spinner /> Re-evaluating…</> : "Re-evaluate with new evidence"}
-            </button>
-            <span style={{color:"#6e6e73",fontSize:".85rem"}}>
-              Combines all evidence and refreshes your scores.
-            </span>
-          </div>
-        )}
-        {reEvalMsg && <Alert type="info" style={{marginTop:12}}>{reEvalMsg}</Alert>}
-
-        {/* Analysis evidence log (audit-style Q&A + arguments) */}
-        <div style={{marginTop:24}}>
-          <h3 className="elog-section-title">Analysis Evidence</h3>
-          {loadingEvidenceLog ? (
-            <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
-          ) : (
-            <AnalysisEvidenceLog data={evidenceLog} />
-          )}
-        </div>
-
-        {/* Raw chunk log */}
-        <div style={{marginTop:24}}>
-          <h3 className="elog-section-title">Raw Evidence Chunks</h3>
-          {loadingChunks ? (
-            <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
-          ) : chunks.length === 0 ? (
-            <Alert type="info">No evidence chunks found. Upload documents above to get started.</Alert>
-          ) : (
-            <EvidenceLog chunks={chunks} />
-          )}
-        </div>
       </div>
 
       {/* ===== Data Room ===== */}
@@ -2059,12 +2306,110 @@ function DashboardView({ user, onSignOut }) {
           </>
         )}
       </div>
+
+      {/* Evidence + Upload */}
+      <div className="section-card">
+        <h2>Your uploaded evidence</h2>
+        <p style={{color:"#6e6e73",marginBottom:16}}>
+          Documents and data used in your assessment. Sensitive internal files are never shown here.
+        </p>
+
+        {/* Upload zone — hidden when data room is enabled (use Data Room section instead) */}
+        {!dataRoomEnabled && (
+          <>
+            <UploadZone onUpload={handleUpload} disabled={uploading} />
+            {uploading && (
+              <div style={{display:"flex",alignItems:"center",gap:8,marginTop:12,color:"#6e6e73"}}>
+                <Spinner /> Uploading and processing files…
+              </div>
+            )}
+            {uploadResults.length > 0 && (
+              <div style={{marginTop:12}}>
+                {uploadResults.map((r, i) => (
+                  <div key={i} style={{padding:"6px 0",borderBottom:"1px solid var(--border)",fontSize:".88rem",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{color:"#CCCCCC"}}>{r.filename}</span>
+                    {r.error
+                      ? <span style={{color:"#ff453a"}}>{r.error}</span>
+                      : <span style={{color:"var(--green)"}}>✓ {r.chunks_count} chunks</span>
+                    }
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+        {dataRoomEnabled && (
+          <p style={{color:"#6e6e73",fontSize:".85rem",marginBottom:8}}>
+            Upload evidence files via the Data Room section above — check "Also use as AI evidence" when uploading.
+          </p>
+        )}
+
+        {/* Re-evaluate button — only shown if company has prior analysis */}
+        {company && hasAnalysis && (
+          <div style={{marginTop:16,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <button
+              className="btn btn-primary"
+              onClick={handleReEvaluate}
+              disabled={reEvaluating || uploading}
+            >
+              {reEvaluating ? <><Spinner /> Re-evaluating…</> : "Re-evaluate with new evidence"}
+            </button>
+            <label
+              style={{
+                display:"flex",
+                alignItems:"center",
+                gap:6,
+                fontSize:".85rem",
+                color:"#1d1d1f",
+                cursor: reEvaluating ? "not-allowed" : "pointer",
+                userSelect:"none",
+              }}
+              title="When enabled, Stage 2 may call Perplexity to fill gaps where document evidence cannot answer a question."
+            >
+              <input
+                type="checkbox"
+                checked={useWebSearch}
+                onChange={(e) => setUseWebSearch(e.target.checked)}
+                disabled={reEvaluating}
+              />
+              Use web search
+            </label>
+            <span style={{color:"#6e6e73",fontSize:".85rem"}}>
+              Combines all evidence and refreshes your scores.
+            </span>
+          </div>
+        )}
+        {reEvalMsg && <Alert type="info" style={{marginTop:12}}>{reEvalMsg}</Alert>}
+
+        {/* Analysis evidence log (audit-style Q&A + arguments) */}
+        <div style={{marginTop:24}}>
+          <h3 className="elog-section-title">Analysis Evidence</h3>
+          {loadingEvidenceLog ? (
+            <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
+          ) : (
+            <AnalysisEvidenceLog data={evidenceLog} />
+          )}
+        </div>
+
+        {/* Raw chunk log */}
+        <div style={{marginTop:24}}>
+          <h3 className="elog-section-title">Raw Evidence Chunks</h3>
+          {loadingChunks ? (
+            <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
+          ) : chunks.length === 0 ? (
+            <Alert type="info">No evidence chunks found. Upload documents above to get started.</Alert>
+          ) : (
+            <EvidenceLog chunks={chunks} />
+          )}
+        </div>
+      </div>
+
     </div>
   );
 }
 
 // ---------- Debate View ----------
-function DebateView({ debateId, onBack }) {
+function DebateView({ debateId, onBack, readOnly = false }) {
   const [debate, setDebate] = useState(null);
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -2166,12 +2511,12 @@ function DebateView({ debateId, onBack }) {
           <div className="topnav-brand">Debate: {debate?.company_name || "Loading..."}</div>
         </div>
         <div style={{display:"flex",gap:8}}>
-          {status === "active" && (
+          {!readOnly && status === "active" && (
             <button className="btn btn-sm btn-outline-red" onClick={handlePause} disabled={actionLoading}>
               Pause
             </button>
           )}
-          {status === "paused" && (
+          {!readOnly && status === "paused" && (
             <button className="btn btn-sm btn-outline-green" onClick={handleResume} disabled={actionLoading}>
               Resume
             </button>
@@ -2208,6 +2553,67 @@ function DebateView({ debateId, onBack }) {
                 <div className="debate-round-sep">Debate Summary</div>
                 <div className="debate-msg system">
                   <div className="debate-bubble bubble-system"><Markdown text={msg.content} /></div>
+                </div>
+              </div>
+            );
+          }
+
+          // System_note rows = audit events (re-eval ran, VC concluded, etc.)
+          // Render as an inline separator rather than a speaker bubble.
+          if (msg.message_type === "system_note") {
+            return (
+              <div key={msg.id || i}>
+                {showSep && <div className="debate-round-sep">Round {msg.round}</div>}
+                <div className="debate-round-sep" style={{textTransform:"none",fontWeight:500}}>
+                  {msg.content}
+                </div>
+              </div>
+            );
+          }
+
+          // Evidence request = VC agent needs data; render as a distinct
+          // yellow-tinted bubble with the topic / questions / rationale.
+          if (msg.message_type === "evidence_request") {
+            const info = msg.info_request || {};
+            return (
+              <div key={msg.id || i}>
+                {showSep && <div className="debate-round-sep">Round {msg.round}</div>}
+                <div className="debate-msg vc_agent">
+                  <div className="debate-avatar avatar-vc">VC</div>
+                  <div>
+                    <div className="debate-speaker">VC Agent · requested evidence</div>
+                    <div className="debate-evidence-bubble">
+                      {msg.content && <div style={{marginBottom:6}}>{msg.content}</div>}
+                      {info.topic && <div className="debate-request-topic">{info.topic}</div>}
+                      {Array.isArray(info.questions) && info.questions.length > 0 && (
+                        <ul className="debate-request-questions">
+                          {info.questions.map((q, qi) => <li key={qi}>{q}</li>)}
+                        </ul>
+                      )}
+                      {info.rationale && <div className="debate-request-rationale">{info.rationale}</div>}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          // Founder response = founder's answer to an evidence request.
+          if (msg.message_type === "founder_response") {
+            const fType = msg.founder_response_type || "acknowledged";
+            const label = fType === "uploaded"
+              ? "Founder uploaded new evidence"
+              : fType === "unavailable"
+                ? "Founder declined: information not available"
+                : "Founder response";
+            return (
+              <div key={msg.id || i}>
+                {showSep && <div className="debate-round-sep">Round {msg.round}</div>}
+                <div className="debate-msg system" style={{justifyContent:"center"}}>
+                  <div className="debate-founder-bubble">
+                    <div style={{fontWeight:600,marginBottom:4}}>{label}</div>
+                    <div>{msg.content}</div>
+                  </div>
                 </div>
               </div>
             );
@@ -2704,8 +3110,40 @@ function AdminPortal({ user, onSignOut }) {
   const [logAutoScroll, setLogAutoScroll] = React.useState(true);
   const logSinceRef = React.useRef(null);
   const logBottomRef = React.useRef(null);
+  const modalLogBottomRef = React.useRef(null);
   const [error, setError] = React.useState(null);
   const [actionMsg, setActionMsg] = React.useState(null);
+
+  // Analyses monitoring — log modal
+  const [openLogRunId, setOpenLogRunId] = React.useState(null);
+  const [logStream, setLogStream] = React.useState(null);
+  const [logFilterNoise, setLogFilterNoise] = React.useState(true);
+
+  // Pipeline Models editor
+  const [pipelineModels, setPipelineModels] = React.useState(null);
+  const [pipelineModelsSaved, setPipelineModelsSaved] = React.useState(null);
+  const [pipelineModelsCatalog, setPipelineModelsCatalog] = React.useState(null);
+  const [pipelineModelsFactory, setPipelineModelsFactory] = React.useState(null);
+  const [pipelineModelsLabels, setPipelineModelsLabels] = React.useState(null);
+  const [pipelineModelsSaving, setPipelineModelsSaving] = React.useState(false);
+
+  // Currency / money formatter used by the Analyses tab + log modal.
+  function fmtUsd(n) {
+    if (n == null || Number.isNaN(n)) return "—";
+    const v = Number(n);
+    if (v === 0) return "$0.0000";
+    if (Math.abs(v) >= 100) return `$${v.toFixed(2)}`;
+    if (Math.abs(v) >= 1) return `$${v.toFixed(3)}`;
+    return `$${v.toFixed(4)}`;
+  }
+  function fmtInt(n) {
+    if (n == null || Number.isNaN(n)) return "—";
+    return Number(n).toLocaleString();
+  }
+  function shortModelLabel(sel) {
+    if (!sel || typeof sel !== "object") return "—";
+    return sel.model || sel.label || "—";
+  }
 
   function fmt(n) { return n == null ? "—" : typeof n === "number" ? Math.round(n) : n; }
   function fmtDate(s) { return s ? new Date(s).toLocaleString() : "—"; }
@@ -2729,15 +3167,63 @@ function AdminPortal({ user, onSignOut }) {
       vcs: "/api/admin/vc-profiles",
       analyses: "/api/admin/analyses",
       users: "/api/admin/users",
+      pipeline_models: "/api/admin/pipeline-models",
     }[t];
+    if (!ep) { setLoading(false); return; }
     try {
       const d = await api("GET", ep);
       setData(prev => ({...prev, [t]: d}));
+      if (t === "pipeline_models") {
+        setPipelineModels(d.phase_models || null);
+        setPipelineModelsSaved(d.phase_models || null);
+        setPipelineModelsCatalog(d.catalog || null);
+        setPipelineModelsFactory(d.factory_defaults || null);
+        setPipelineModelsLabels(d.labels || null);
+      }
     } catch(e) { setError(e.message); }
     finally { setLoading(false); }
   }
 
   React.useEffect(() => { if (tab !== "logs") loadTab(tab); }, [tab]);
+
+  // Auto-refresh the Analyses tab every 10s so running runs update their
+  // status + live_progress without the admin hitting Refresh.
+  React.useEffect(() => {
+    if (tab !== "analyses") return;
+    const id = setInterval(() => loadTab("analyses"), 10000);
+    return () => clearInterval(id);
+  }, [tab]);
+
+  // Poll the run-log endpoint at 2s while the modal is open for a run.
+  React.useEffect(() => {
+    if (!openLogRunId) { setLogStream(null); return; }
+    let cancelled = false;
+    async function pollOne() {
+      try {
+        const d = await api("GET", `/api/admin/runs/${encodeURIComponent(openLogRunId)}/log`);
+        if (!cancelled) setLogStream(d);
+      } catch (e) {
+        if (!cancelled) setLogStream(s => s || { error: e.message });
+      }
+    }
+    pollOne();
+    const id = setInterval(() => {
+      // Stop polling once the stream is in a terminal state.
+      if (logStream && (logStream.status === "done" || logStream.status === "error")) {
+        clearInterval(id);
+        return;
+      }
+      pollOne();
+    }, 2000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [openLogRunId, logStream && logStream.status]);
+
+  // Keep the modal log view pinned to the bottom as new lines arrive.
+  React.useEffect(() => {
+    if (openLogRunId && modalLogBottomRef.current) {
+      modalLogBottomRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [openLogRunId, logStream && (logStream.progress_log || []).length]);
 
   // Auto-refresh overview every 30s
   React.useEffect(() => {
@@ -2797,6 +3283,7 @@ function AdminPortal({ user, onSignOut }) {
     { key: "matches", label: "Matches" },
     { key: "vcs", label: "VC Profiles" },
     { key: "analyses", label: "Analyses" },
+    { key: "pipeline_models", label: "Pipeline Models" },
     { key: "users", label: "Users" },
     { key: "logs", label: "Live Logs" },
   ];
@@ -2980,38 +3467,465 @@ function AdminPortal({ user, onSignOut }) {
     );
   }
 
+  const PHASE_SHORT = { decomposition: "D", answering: "A", generation: "G", evaluation: "E", ranking: "R" };
+  const PHASE_ORDER = ["decomposition", "answering", "generation", "evaluation", "ranking"];
+
+  function renderModelPills(phase_models) {
+    if (!phase_models || typeof phase_models !== "object") {
+      return <span style={{color:"var(--text-muted)",fontSize:".75rem"}}>default</span>;
+    }
+    return (
+      <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+        {PHASE_ORDER.map(phase => {
+          const sel = phase_models[phase];
+          const model = shortModelLabel(sel);
+          return (
+            <span key={phase} title={`${phase}: ${model}`}
+              style={{fontSize:".68rem",padding:"1px 6px",borderRadius:3,
+                background:"var(--bg-card)",border:"1px solid var(--border)",
+                color:"var(--text)",fontFamily:"monospace"}}>
+              <span style={{color:"var(--accent)",fontWeight:600,marginRight:3}}>{PHASE_SHORT[phase]}</span>
+              {model.length > 18 ? model.slice(0, 17) + "…" : model}
+            </span>
+          );
+        })}
+      </div>
+    );
+  }
+
   function renderAnalyses() {
     return (
       <div style={{overflowX:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:".875rem"}}>
           <thead>
             <tr style={{borderBottom:"2px solid var(--border)",textAlign:"left"}}>
+              <th style={{padding:"8px 12px"}}>Run ID</th>
               <th style={{padding:"8px 12px"}}>Company</th>
+              <th style={{padding:"8px 12px"}}>Started by</th>
+              <th style={{padding:"8px 12px"}}>Models</th>
               <th style={{padding:"8px 12px"}}>Status</th>
+              <th style={{padding:"8px 12px",textAlign:"right"}}>Cost</th>
               <th style={{padding:"8px 12px",textAlign:"center"}}>Score</th>
               <th style={{padding:"8px 12px"}}>Bucket</th>
               <th style={{padding:"8px 12px"}}>Created</th>
-              <th style={{padding:"8px 12px"}}>Error</th>
+              <th style={{padding:"8px 12px"}}></th>
             </tr>
           </thead>
           <tbody>
-            {(d.analyses || []).map(a => (
-              <tr key={a.id} style={{borderBottom:"1px solid var(--border)"}}>
-                <td style={{padding:"8px 12px",fontWeight:500}}>{a.company_name || a.company_id}</td>
-                <td style={{padding:"8px 12px"}}>
-                  <span style={{color:a.status==="done"?"#22c55e":a.status==="error"?"#ef4444":"#f59e0b"}}>
-                    {a.status || "running"}
-                  </span>
-                </td>
-                <td style={{padding:"8px 12px",textAlign:"center"}}>{scorePill(a.composite_score)}</td>
-                <td style={{padding:"8px 12px"}}>{bucketBadge(a.bucket)}</td>
-                <td style={{padding:"8px 12px",color:"var(--text-muted)",fontSize:".8rem"}}>{fmtDate(a.created_at)}</td>
-                <td style={{padding:"8px 12px",color:"#ef4444",fontSize:".8rem",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={a.error||""}>{a.error || ""}</td>
-              </tr>
-            ))}
+            {(d.analyses || []).map((a, idx) => {
+              const cs = a.cost_summary || {};
+              const costTotal = cs.total_usd;
+              const llm = cs.llm_usd;
+              const ppx = cs.perplexity_usd;
+              const costTooltip = cs.status === "unavailable"
+                ? "No cost data recorded for this run"
+                : `LLM: ${fmtUsd(llm)}  ·  Perplexity: ${fmtUsd(ppx)}`;
+              const canViewLog = !!a.job_id_legacy;
+              const startedBy = a.started_by || {};
+              const startedLabel = startedBy.started_by_display_name
+                || startedBy.started_by_email
+                || startedBy.started_by_label
+                || "—";
+              return (
+                <tr key={a.id || a.job_id_legacy || idx} style={{borderBottom:"1px solid var(--border)"}}>
+                  <td style={{padding:"8px 12px",fontFamily:"monospace",fontSize:".75rem",color:"var(--text-muted)"}}>
+                    {a.job_id_legacy || "—"}
+                  </td>
+                  <td style={{padding:"8px 12px",fontWeight:500}}>{a.company_name || a.company_id || "—"}</td>
+                  <td style={{padding:"8px 12px",fontSize:".8rem"}} title={startedBy.started_by_email || ""}>
+                    {startedLabel}
+                  </td>
+                  <td style={{padding:"8px 12px"}}>{renderModelPills(a.phase_models)}</td>
+                  <td style={{padding:"8px 12px"}}>
+                    <span style={{color:a.status==="done"?"#22c55e":a.status==="error"?"#ef4444":"#f59e0b"}}>
+                      {a.status || "running"}
+                    </span>
+                    {a.live_progress && (a.status === "running" || a.status === "pending") && (
+                      <div style={{fontSize:".7rem",color:"var(--text-muted)",maxWidth:240,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}
+                        title={a.live_progress}>
+                        {a.live_progress}
+                      </div>
+                    )}
+                  </td>
+                  <td style={{padding:"8px 12px",textAlign:"right",fontFamily:"monospace",fontSize:".8rem",
+                      color: cs.status === "unavailable" ? "var(--text-muted)" : "var(--text)"}}
+                      title={costTooltip}>
+                    {fmtUsd(costTotal)}
+                  </td>
+                  <td style={{padding:"8px 12px",textAlign:"center"}}>{scorePill(a.composite_score)}</td>
+                  <td style={{padding:"8px 12px"}}>{bucketBadge(a.bucket)}</td>
+                  <td style={{padding:"8px 12px",color:"var(--text-muted)",fontSize:".8rem"}}>{fmtDate(a.created_at)}</td>
+                  <td style={{padding:"8px 12px",textAlign:"right"}}>
+                    {canViewLog && (
+                      <button className="btn btn-ghost"
+                        onClick={() => setOpenLogRunId(a.job_id_legacy)}
+                        style={{fontSize:".72rem",padding:"3px 10px"}}>
+                        View Log
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
         {!(d.analyses||[]).length && <p style={{color:"var(--text-muted)",padding:16}}>No analyses yet.</p>}
+      </div>
+    );
+  }
+
+  // Returns true when a log line is "noise" — Python internals, Pydantic warnings,
+  // raw exception class names — that add no value for pipeline monitoring.
+  function isNoisyLogLine(line) {
+    if (!line || typeof line !== "string") return false;
+    const NOISE_PATTERNS = [
+      /PydanticSerializationUnexpectedValue/,
+      /PydanticDeprecated/,
+      /input_value=Parsed/,
+      /input_type=Parsed/,
+      /serialized value may not be as expected/,
+      /^\s*Traceback \(most recent call last\)/,
+      /^\s*File ".*", line \d+/,
+      /^\s*raise \w+/,
+      /^\s*warnings\.warn\(/,
+      /DeprecationWarning/,
+      /UserWarning/,
+    ];
+    return NOISE_PATTERNS.some(p => p.test(line));
+  }
+
+  function renderLogModal() {
+    if (!openLogRunId) return null;
+    const s = logStream || {};
+    const company = s.company || {};
+    const rc = s.run_costs || null;
+    const status = s.status || "running";
+    const statusColor = status === "done" ? "#22c55e" : status === "error" ? "#ef4444" : "#f59e0b";
+    const live = status !== "done" && status !== "error";
+
+    const llmTokens = rc && rc.llm_tokens ? rc.llm_tokens : {};
+    const ppx = rc && rc.perplexity_search ? rc.perplexity_search : {};
+
+    const allLines = s.progress_log || [];
+    const displayLines = logFilterNoise
+      ? allLines.map((line, i) => ({ line, originalIdx: i })).filter(({ line }) => !isNoisyLogLine(line))
+      : allLines.map((line, i) => ({ line, originalIdx: i }));
+    const hiddenCount = allLines.length - displayLines.length;
+
+    return (
+      <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.75)",zIndex:1000,
+        display:"flex",alignItems:"center",justifyContent:"center",padding:24}}
+        onClick={() => setOpenLogRunId(null)}>
+        <div onClick={e => e.stopPropagation()}
+          style={{width:"min(1100px, 100%)",maxHeight:"90vh",display:"flex",flexDirection:"column",
+            background:"var(--bg)",border:"1px solid var(--border)",borderRadius:10,overflow:"hidden"}}>
+
+          {/* Header */}
+          <div style={{padding:"14px 18px",borderBottom:"1px solid var(--border)",
+            display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:".95rem",fontWeight:600,display:"flex",gap:8,alignItems:"center"}}>
+                <span>{company.name || "—"}</span>
+                <span style={{fontFamily:"monospace",fontSize:".75rem",color:"var(--text-muted)"}}>
+                  {openLogRunId}
+                </span>
+              </div>
+              <div style={{fontSize:".78rem",color:"var(--text-muted)",marginTop:2}}>
+                Started by {(s.started_by && (s.started_by.started_by_display_name || s.started_by.started_by_email)) || "—"}
+                <span style={{marginLeft:10,color:statusColor,fontWeight:600}}>· {status}{live ? " (live)" : ""}</span>
+              </div>
+            </div>
+            <button className="btn btn-ghost" onClick={() => setOpenLogRunId(null)} style={{fontSize:".85rem"}}>
+              ✕ Close
+            </button>
+          </div>
+
+          {/* Cost summary bar */}
+          <div style={{padding:"10px 18px",borderBottom:"1px solid var(--border)",
+            background:"var(--bg-card)",fontSize:".82rem",display:"flex",gap:20,flexWrap:"wrap"}}>
+            {rc && rc.status !== "unavailable" ? (
+              <React.Fragment>
+                <div>
+                  <span style={{color:"var(--text-muted)",marginRight:6}}>Total:</span>
+                  <span style={{fontWeight:600,fontFamily:"monospace"}}>{fmtUsd(rc.total_usd)}</span>
+                  {live && <span style={{color:"var(--text-muted)",marginLeft:6,fontSize:".72rem"}}>(live)</span>}
+                </div>
+                <div>
+                  <span style={{color:"var(--text-muted)",marginRight:6}}>LLM:</span>
+                  <span style={{fontFamily:"monospace"}}>{fmtUsd(rc.llm_usd)}</span>
+                  <span style={{color:"var(--text-muted)",marginLeft:4,fontSize:".72rem"}}>
+                    ({fmtInt(llmTokens.total || 0)} tok)
+                  </span>
+                </div>
+                <div>
+                  <span style={{color:"var(--text-muted)",marginRight:6}}>Perplexity:</span>
+                  <span style={{fontFamily:"monospace"}}>{fmtUsd(rc.perplexity_usd)}</span>
+                  <span style={{color:"var(--text-muted)",marginLeft:4,fontSize:".72rem"}}>
+                    ({fmtInt(ppx.requests || 0)} searches)
+                  </span>
+                </div>
+              </React.Fragment>
+            ) : (
+              <div style={{color:"var(--text-muted)"}}>Costs: —</div>
+            )}
+          </div>
+
+          {/* Per-model breakdown */}
+          {rc && Array.isArray(rc.by_model) && rc.by_model.length > 0 && (
+            <details open style={{borderBottom:"1px solid var(--border)",background:"var(--bg-card)"}}>
+              <summary style={{cursor:"pointer",padding:"8px 18px",fontSize:".8rem",color:"var(--text-muted)"}}>
+                Per-model breakdown ({rc.by_model.length})
+              </summary>
+              <div style={{padding:"0 18px 12px 18px",overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:".78rem"}}>
+                  <thead>
+                    <tr style={{textAlign:"left",color:"var(--text-muted)"}}>
+                      <th style={{padding:"4px 6px"}}>Model</th>
+                      <th style={{padding:"4px 6px",textAlign:"right"}}>Prompt</th>
+                      <th style={{padding:"4px 6px",textAlign:"right"}}>Completion</th>
+                      <th style={{padding:"4px 6px",textAlign:"right"}}>Total</th>
+                      <th style={{padding:"4px 6px",textAlign:"right"}}>Cost USD</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rc.by_model.map((m, i) => (
+                      <tr key={i} style={{borderTop:"1px solid var(--border)"}}>
+                        <td style={{padding:"4px 6px",fontFamily:"monospace"}}>
+                          {m.label || `${m.provider}/${m.model}`}
+                        </td>
+                        <td style={{padding:"4px 6px",textAlign:"right",fontFamily:"monospace"}}>{fmtInt(m.prompt_tokens)}</td>
+                        <td style={{padding:"4px 6px",textAlign:"right",fontFamily:"monospace"}}>{fmtInt(m.completion_tokens)}</td>
+                        <td style={{padding:"4px 6px",textAlign:"right",fontFamily:"monospace"}}>{fmtInt(m.total_tokens)}</td>
+                        <td style={{padding:"4px 6px",textAlign:"right",fontFamily:"monospace"}}
+                          title={m.pricing_available === false ? "No pricing entry for this model" : ""}>
+                          {m.pricing_available === false ? "—" : fmtUsd(m.usd)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          )}
+
+          {/* Progress log */}
+          <div style={{flex:1,overflowY:"auto",background:"#0d0d0d",fontFamily:"monospace",fontSize:".78rem",
+            padding:"10px 0",minHeight:240}}>
+            {displayLines.length === 0 ? (
+              <div style={{color:"#4b5563",padding:"24px",textAlign:"center"}}>
+                {s.error
+                  ? `Error: ${s.error}`
+                  : allLines.length > 0
+                    ? `All ${allLines.length} entries filtered as noise. Toggle "Filter noise" off to see them.`
+                    : "No progress entries yet — waiting for activity…"}
+              </div>
+            ) : displayLines.map(({ line, originalIdx }) => (
+              <div key={originalIdx} style={{padding:"1px 16px",color:"#e5e7eb",whiteSpace:"pre-wrap",wordBreak:"break-word",
+                borderLeft:"2px solid #374151",marginLeft:4}}>
+                <span style={{color:"#4b5563",marginRight:8}}>#{originalIdx + 1}</span>
+                {line}
+              </div>
+            ))}
+            <div ref={modalLogBottomRef} />
+          </div>
+
+          {/* Footer */}
+          <div style={{padding:"10px 18px",borderTop:"1px solid var(--border)",
+            display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,fontSize:".78rem",color:"var(--text-muted)"}}>
+            <span>
+              {displayLines.length} of {allLines.length} entries shown
+              {hiddenCount > 0 && <span style={{color:"#4b5563",marginLeft:6}}>· {hiddenCount} noise lines hidden</span>}
+              {live && <span style={{marginLeft:6}}>· polling 2s</span>}
+            </span>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              <button
+                onClick={() => setLogFilterNoise(f => !f)}
+                style={{padding:"3px 10px",borderRadius:4,border:"1px solid var(--border)",cursor:"pointer",
+                  fontSize:".75rem",background: logFilterNoise ? "var(--accent)" : "var(--bg-card)",
+                  color: logFilterNoise ? "#000" : "var(--text)"}}>
+                {logFilterNoise ? "🔇 Noise filtered" : "🔊 Show all"}
+              </button>
+              <button className="btn btn-ghost" onClick={() => setOpenLogRunId(null)} style={{fontSize:".78rem"}}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function phaseModelsAreDirty() {
+    if (!pipelineModels || !pipelineModelsSaved) return false;
+    return JSON.stringify(pipelineModels) !== JSON.stringify(pipelineModelsSaved);
+  }
+
+  function updatePipelinePhase(phase, patch) {
+    setPipelineModels(prev => {
+      const next = { ...(prev || {}) };
+      next[phase] = { ...(next[phase] || {}), ...patch };
+      return next;
+    });
+  }
+
+  function resetPipelinePhase(phase) {
+    if (!pipelineModelsFactory) return;
+    const factory = pipelineModelsFactory[phase];
+    if (!factory) return;
+    setPipelineModels(prev => ({ ...(prev || {}), [phase]: { ...factory } }));
+  }
+
+  async function savePipelineModels() {
+    if (!pipelineModels) return;
+    setPipelineModelsSaving(true);
+    setError(null);
+    try {
+      const res = await api("PUT", "/api/admin/pipeline-models", { phase_models: pipelineModels });
+      setPipelineModels(res.phase_models);
+      setPipelineModelsSaved(res.phase_models);
+      setActionMsg("Pipeline model defaults saved.");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setPipelineModelsSaving(false);
+    }
+  }
+
+  function renderPipelineModels() {
+    if (!pipelineModels || !pipelineModelsCatalog) {
+      return <p style={{color:"var(--text-muted)"}}>Loading pipeline model defaults…</p>;
+    }
+    const entries = (pipelineModelsCatalog.entries || []);
+    const labels = pipelineModelsLabels || {
+      decomposition: "Decomposition",
+      answering: "Q&A",
+      generation: "Generation",
+      evaluation: "Evaluation",
+      ranking: "Ranking",
+    };
+
+    function entryFor(phase) {
+      const sel = pipelineModels[phase] || {};
+      return entries.find(e => e.provider === sel.provider && e.model === sel.model) || null;
+    }
+
+    const dirty = phaseModelsAreDirty();
+
+    return (
+      <div>
+        <p style={{color:"var(--text-muted)",fontSize:".85rem",marginBottom:16}}>
+          Per-stage model defaults used by the portal <strong>Re-evaluation</strong> flow.
+          The Q&amp;A selection also drives the critique and refinement sub-stages.
+          Changes take effect on the next re-evaluation.
+        </p>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:16,marginBottom:20}}>
+          {PHASE_ORDER.map(phase => {
+            const sel = pipelineModels[phase] || {};
+            const selectedEntry = entryFor(phase);
+            const reasoningOptions = selectedEntry && selectedEntry.reasoning_effort_options
+              ? selectedEntry.reasoning_effort_options : [];
+            const supportsReasoning = !!(selectedEntry && selectedEntry.supports_reasoning_effort_control);
+            const supportsTemp = !!(selectedEntry && selectedEntry.supports_temperature_control);
+            const tempRequiresNone = !!(selectedEntry && selectedEntry.temperature_requires_reasoning_none);
+            const effortValue = sel.reasoning_effort || "auto";
+            const tempDisabled = !supportsTemp || (tempRequiresNone && effortValue !== "none");
+
+            return (
+              <div key={phase} style={{background:"var(--bg-card)",border:"1px solid var(--border)",
+                borderRadius:10,padding:16}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+                  <h4 style={{margin:0,fontSize:"1rem"}}>{labels[phase] || phase}</h4>
+                  <button className="btn btn-ghost" onClick={() => resetPipelinePhase(phase)}
+                    style={{fontSize:".72rem",padding:"3px 8px"}}>
+                    Reset
+                  </button>
+                </div>
+
+                {/* Model dropdown */}
+                <label style={{display:"block",fontSize:".75rem",color:"var(--text-muted)",marginBottom:4}}>Model</label>
+                <select
+                  value={selectedEntry ? `${selectedEntry.provider}::${selectedEntry.model}` : ""}
+                  onChange={e => {
+                    const [provider, model] = e.target.value.split("::");
+                    const next = entries.find(en => en.provider === provider && en.model === model);
+                    const patch = { provider, model };
+                    if (next) {
+                      // Reset incompatible fields on model switch.
+                      if (!next.supports_reasoning_effort_control) patch.reasoning_effort = null;
+                      else if (sel.reasoning_effort && next.reasoning_effort_options
+                        && next.reasoning_effort_options.indexOf(sel.reasoning_effort) < 0) {
+                        patch.reasoning_effort = null;
+                      }
+                      if (!next.supports_temperature_control) patch.temperature = null;
+                    }
+                    updatePipelinePhase(phase, patch);
+                  }}
+                  style={{width:"100%",padding:"6px 8px",background:"var(--bg)",color:"var(--text)",
+                    border:"1px solid var(--border)",borderRadius:6,fontSize:".82rem",marginBottom:10}}>
+                  {entries.map(en => (
+                    <option key={`${en.provider}::${en.model}`} value={`${en.provider}::${en.model}`}>
+                      {en.label || `${en.provider}/${en.model}`}
+                    </option>
+                  ))}
+                </select>
+
+                {/* Reasoning effort */}
+                <label style={{display:"block",fontSize:".75rem",color:"var(--text-muted)",marginBottom:4}}>
+                  Reasoning effort
+                </label>
+                <select
+                  disabled={!supportsReasoning}
+                  value={effortValue}
+                  onChange={e => {
+                    const v = e.target.value;
+                    updatePipelinePhase(phase, { reasoning_effort: v === "auto" ? null : v });
+                  }}
+                  style={{width:"100%",padding:"6px 8px",background:"var(--bg)",color:"var(--text)",
+                    border:"1px solid var(--border)",borderRadius:6,fontSize:".82rem",marginBottom:10,
+                    opacity: supportsReasoning ? 1 : 0.5}}>
+                  <option value="auto">Auto</option>
+                  {["none","minimal","low","medium","high"].filter(o =>
+                    !reasoningOptions.length || reasoningOptions.indexOf(o) >= 0
+                  ).map(o => (
+                    <option key={o} value={o}>{o.charAt(0).toUpperCase() + o.slice(1)}</option>
+                  ))}
+                </select>
+
+                {/* Temperature slider */}
+                <label style={{display:"block",fontSize:".75rem",color:"var(--text-muted)",marginBottom:4}}>
+                  Temperature {sel.temperature != null ? `(${Number(sel.temperature).toFixed(2)})` : "(default)"}
+                </label>
+                <input
+                  type="range"
+                  min={0} max={2} step={0.05}
+                  disabled={tempDisabled}
+                  value={sel.temperature != null ? sel.temperature : 0.7}
+                  onChange={e => updatePipelinePhase(phase, { temperature: Number(e.target.value) })}
+                  style={{width:"100%",opacity: tempDisabled ? 0.4 : 1}} />
+                <div style={{fontSize:".7rem",color:"var(--text-muted)",marginTop:2}}>
+                  {!supportsTemp && "Not supported by this model"}
+                  {supportsTemp && tempRequiresNone && effortValue !== "none"
+                    && "Set reasoning effort to None to adjust temperature"}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          <button className="btn btn-primary"
+            disabled={!dirty || pipelineModelsSaving}
+            onClick={savePipelineModels}
+            style={{opacity: (!dirty || pipelineModelsSaving) ? 0.6 : 1}}>
+            {pipelineModelsSaving ? "Saving…" : dirty ? "Save defaults" : "Saved"}
+          </button>
+          {dirty && (
+            <button className="btn btn-ghost"
+              onClick={() => setPipelineModels(pipelineModelsSaved)}>
+              Discard changes
+            </button>
+          )}
+        </div>
       </div>
     );
   }
@@ -3124,6 +4038,7 @@ function AdminPortal({ user, onSignOut }) {
     matches: renderMatches,
     vcs: renderVCs,
     analyses: renderAnalyses,
+    pipeline_models: renderPipelineModels,
     users: renderUsers,
     logs: renderLogs,
   };
@@ -3176,6 +4091,9 @@ function AdminPortal({ user, onSignOut }) {
             : (tabContent[tab] || (() => null))()
         }
       </main>
+
+      {/* Run log modal overlay (controlled by openLogRunId) */}
+      {renderLogModal()}
     </div>
   );
 }

@@ -108,12 +108,15 @@ from agent.llm_catalog import (
     validate_requested_selection,
 )
 from agent.llm_policy import (
+    PHASE_LABELS,
+    PHASE_SHORT_LABELS,
     build_default_phase_model_policy,
     build_phase_model_policy,
     build_phase_policy_display_label,
     build_pipeline_policy,
     build_tier_display_label,
     coerce_phase_models_payload,
+    default_phase_model_selections,
     normalize_phase_models,
     normalize_premium_phase_models,
     normalize_quality_tier,
@@ -127,6 +130,7 @@ from agent.company_chat import answer_company_question, build_company_chat_store
 from agent.run_context import (
     RunTelemetryCollector,
     build_run_costs_from_model_executions,
+    use_company_context,
     use_run_context,
 )
 
@@ -2706,7 +2710,7 @@ def _get_vc_profile_or_404(user: CurrentUser) -> dict[str, Any]:
     return profile
 
 
-def _blocking_match_for_company(company_id: str) -> int:
+def _blocking_match_for_company(company_id: str, *, force_refresh: bool = False) -> int:
     """Run matching synchronously inside a dedicated thread with its own event loop.
 
     This isolates the matching pipeline (which contains synchronous LLM .invoke()
@@ -2714,6 +2718,11 @@ def _blocking_match_for_company(company_id: str) -> int:
     this isolation, long-running sync LLM calls saturate the default thread pool
     and cause asyncio.to_thread() calls (e.g. Supabase auth) to queue up, making
     login and other endpoints time-out while a matching job is running.
+
+    When ``force_refresh=True``, existing matches are re-scored in place via the
+    upsert in ``db.create_match`` (preserving match ids → preserving debate FK
+    links). Used by the re-evaluation flow so a fresh analysis updates scores
+    without destroying debates.
     """
     import asyncio as _aio  # noqa: PLC0415
     from agent.matching.engine import trigger_matching_for_company  # noqa: PLC0415
@@ -2721,24 +2730,31 @@ def _blocking_match_for_company(company_id: str) -> int:
     loop = _aio.new_event_loop()
     _aio.set_event_loop(loop)
     try:
-        return loop.run_until_complete(trigger_matching_for_company(company_id, db))
+        return loop.run_until_complete(
+            trigger_matching_for_company(company_id, db, force_refresh=force_refresh)
+        )
     finally:
         loop.close()
         _aio.set_event_loop(None)
 
 
-async def _run_matching_background(company_id: str) -> None:
+async def _run_matching_background(company_id: str, *, force_refresh: bool = False) -> None:
     """Background task: run matching for a company against all active VCs.
 
     Delegates to _blocking_match_for_company() via asyncio.to_thread() so the
     matching pipeline runs in an isolated thread, leaving the FastAPI event loop
     free to handle other requests (login, health-checks, etc.).
+
+    ``force_refresh`` is forwarded so the re-evaluation path can update existing
+    matches in place without deleting them (which would cascade-destroy debates).
     """
     try:
-        count = await asyncio.to_thread(_blocking_match_for_company, company_id)
+        count = await asyncio.to_thread(
+            _blocking_match_for_company, company_id, force_refresh=force_refresh
+        )
         import logging  # noqa: PLC0415
         logging.getLogger(__name__).info(
-            "Matching complete for company=%s: %d matches created", company_id, count
+            "Matching complete for company=%s: %d matches created/refreshed", company_id, count
         )
     except Exception as exc:
         import logging  # noqa: PLC0415
@@ -3093,8 +3109,58 @@ async def admin_matches(user: CurrentUser = Depends(_require_admin)) -> dict[str
 
 @app.get("/api/admin/analyses")
 async def admin_analyses(user: CurrentUser = Depends(_require_admin)) -> dict[str, Any]:
-    """Return recent analyses with status and scores."""
+    """Return recent analyses with status, scores, per-stage models, and costs.
+
+    Overlays in-memory ``_jobs`` status so currently-running portal
+    re-evaluations appear with live progress messages even when the DB row
+    is still in ``running`` status from a previous poll.
+
+    Also surfaces active in-memory jobs that have not yet been persisted
+    to the ``analyses`` table (e.g. a just-started re-evaluation) so the
+    admin UI shows them immediately.
+    """
     analyses = await asyncio.to_thread(db.admin_get_recent_analyses, 40)
+
+    by_job_id: dict[str, dict[str, Any]] = {}
+    for row in analyses:
+        jid = row.get("job_id_legacy")
+        if jid:
+            by_job_id[jid] = row
+
+    # Overlay live status + progress from the in-memory job store.
+    for jid, job in list(_jobs.items()):
+        if not jid.startswith("re-"):
+            continue
+        row = by_job_id.get(jid)
+        if row is not None:
+            row["live_progress"] = getattr(job, "progress", None)
+            row["live_progress_log"] = list(getattr(job, "progress_log", []) or [])
+            if job.status in ("running", "pending"):
+                row["status"] = job.status
+        else:
+            analyses.insert(0, {
+                "id": None,
+                "company_id": None,
+                "company_name": None,
+                "job_id_legacy": jid,
+                "status": job.status,
+                "created_at": None,
+                "error": None,
+                "composite_score": None,
+                "bucket": None,
+                "run_config": None,
+                "phase_models": None,
+                "started_by": {
+                    "started_by_user_id": job.started_by_user_id,
+                    "started_by_email": job.started_by_email,
+                    "started_by_display_name": job.started_by_display_name,
+                    "started_by_label": job.started_by_label,
+                },
+                "cost_summary": None,
+                "live_progress": job.progress,
+                "live_progress_log": list(job.progress_log or []),
+            })
+
     return {"analyses": analyses}
 
 
@@ -3213,6 +3279,165 @@ async def admin_logs(
     return {"entries": entries, "total": len(entries)}
 
 
+@app.get("/api/admin/runs/{job_id}/log")
+async def admin_run_log(
+    job_id: str,
+    user: CurrentUser = Depends(_require_admin),
+) -> dict[str, Any]:
+    """Return progress log and cost breakdown for a single pipeline run.
+
+    Resolution order:
+      1. In-memory ``_jobs`` entry (live view for currently-running runs).
+      2. Persisted ``analysis_events`` rows (fallback for completed/old runs).
+
+    Always attempts to include ``run_costs`` via ``db.load_run_costs``.
+    """
+    job = _jobs.get(job_id)
+    payload: dict[str, Any] = {
+        "job_id": job_id,
+        "status": None,
+        "progress": None,
+        "progress_log": [],
+        "run_costs": None,
+        "phase_models": None,
+        "started_by": None,
+        "company": None,
+        "created_at": None,
+        "error": None,
+    }
+
+    if job is not None:
+        payload["status"] = job.status
+        payload["progress"] = job.progress
+        payload["progress_log"] = list(job.progress_log or [])
+        payload["started_by"] = {
+            "started_by_user_id": job.started_by_user_id,
+            "started_by_email": job.started_by_email,
+            "started_by_display_name": job.started_by_display_name,
+            "started_by_label": job.started_by_label,
+        }
+
+    # Enrich with persisted fields (analysis row + run_costs) regardless of
+    # whether the run is still live — live runs benefit from the live cost
+    # snapshot once rows start getting persisted to model_executions.
+    try:
+        run_costs = await asyncio.to_thread(db.load_run_costs, job_id)
+    except Exception:
+        run_costs = None
+    payload["run_costs"] = run_costs
+
+    # Look up the analyses row (if persisted) to fill in company + phase_models
+    # + error fields, and pull the persisted progress log when we don't have a
+    # live in-memory copy.
+    try:
+        all_rows = await asyncio.to_thread(db.admin_get_recent_analyses, 100)
+    except Exception:
+        all_rows = []
+    matching_row = next(
+        (r for r in all_rows if r.get("job_id_legacy") == job_id),
+        None,
+    )
+    if matching_row:
+        payload["company"] = {
+            "id": matching_row.get("company_id"),
+            "name": matching_row.get("company_name"),
+        }
+        payload["phase_models"] = matching_row.get("phase_models")
+        payload["created_at"] = matching_row.get("created_at")
+        payload["error"] = matching_row.get("error")
+        if not payload["status"]:
+            payload["status"] = matching_row.get("status")
+        if not payload["started_by"] and matching_row.get("started_by"):
+            payload["started_by"] = matching_row.get("started_by")
+
+    # Fallback log source when no in-memory job survived.
+    if not payload["progress_log"]:
+        try:
+            persisted = await asyncio.to_thread(db.load_analysis_events, job_id, 500)
+        except Exception:
+            persisted = []
+        payload["progress_log"] = list(persisted or [])
+        if persisted and not payload["progress"]:
+            payload["progress"] = persisted[-1]
+
+    if (
+        job is None
+        and not matching_row
+        and not payload["progress_log"]
+        and not payload["run_costs"]
+    ):
+        raise HTTPException(status_code=404, detail="Run not found.")
+
+    return payload
+
+
+@app.get("/api/admin/pipeline-models")
+async def admin_get_pipeline_models(
+    user: CurrentUser = Depends(_require_admin),
+) -> dict[str, Any]:
+    """Return persisted admin pipeline model defaults + catalog for the editor."""
+    try:
+        stored = await asyncio.to_thread(db.admin_get_pipeline_model_defaults)
+    except Exception:
+        stored = None
+    try:
+        factory = default_phase_model_selections()
+    except Exception:
+        factory = {}
+
+    if isinstance(stored, dict):
+        try:
+            phase_models = coerce_phase_models_payload(stored, require_all=True)
+        except Exception:
+            phase_models = coerce_phase_models_payload(factory, require_all=True)
+    else:
+        phase_models = coerce_phase_models_payload(factory, require_all=True)
+
+    catalog_list = available_models_payload()
+    # Only offer models that are selectable (credentials present + supports
+    # structured output).  Wrap in a dict so the frontend can evolve without
+    # breaking on a bare list.
+    selectable = [m for m in catalog_list if m.get("selectable", False)]
+    return {
+        "phase_models": phase_models,
+        "factory_defaults": coerce_phase_models_payload(factory, require_all=True),
+        "catalog": {"entries": selectable},
+        "labels": PHASE_LABELS,
+        "short_labels": PHASE_SHORT_LABELS,
+    }
+
+
+@app.put("/api/admin/pipeline-models")
+async def admin_put_pipeline_models(
+    payload: dict[str, Any] = Body(default_factory=dict),
+    user: CurrentUser = Depends(_require_admin),
+) -> dict[str, Any]:
+    """Persist new admin pipeline model defaults. Validates all 5 stages."""
+    raw = payload.get("phase_models") if isinstance(payload, dict) else None
+    if not isinstance(raw, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="phase_models (dict) is required.",
+        )
+    try:
+        phase_models = coerce_phase_models_payload(raw, require_all=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    updated_by = user.email or user.display_name or user.id
+    stored = await asyncio.to_thread(
+        db.admin_set_pipeline_model_defaults,
+        phase_models,
+        updated_by=updated_by,
+    )
+    if stored is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to persist pipeline model defaults.",
+        )
+    return {"phase_models": stored}
+
+
 # ---------------------------------------------------------------------------
 # Sprint 3 — Debate engine
 # ---------------------------------------------------------------------------
@@ -3222,6 +3447,11 @@ _active_debate_tasks: dict[str, asyncio.Task] = {}
 
 # WebSocket connections per debate: debate_id → list of WebSocket
 _debate_ws_clients: dict[str, list[WebSocket]] = {}
+
+# Re-evaluation ↔ paused-debate linkage so success/failure system_notes land in
+# the right debates. Keyed by re-eval job_id; value is the list of paused
+# debate ids snapshotted at the start of the re-evaluation run.
+_reeval_debate_links: dict[str, list[str]] = {}
 
 
 def _safe_analysis_for_debate(company_id: str) -> dict[str, Any]:
@@ -3257,12 +3487,17 @@ async def _run_debate_task(
     existing_messages: list[dict[str, Any]],
     current_round: int,
     max_rounds: int,
+    *,
+    context_notes: dict[str, Any] | None = None,
 ) -> None:
     """Background task that drives the debate loop and broadcasts via WebSocket."""
     import logging as _logging  # noqa: PLC0415
     _logger = _logging.getLogger(__name__)
     try:
-        from agent.debate.orchestrator import run_debate  # noqa: PLC0415
+        from agent.debate.orchestrator import (  # noqa: PLC0415
+            DebatePausedForEvidence,
+            run_debate,
+        )
         async for message in run_debate(
             debate_id=debate_id,
             company_name=company_name,
@@ -3273,11 +3508,17 @@ async def _run_debate_task(
             current_round=current_round,
             max_rounds=max_rounds,
             db_module=db,
+            context_notes=context_notes,
         ):
             await _broadcast_debate_message(debate_id, message)
     except asyncio.CancelledError:
         _logger.info("Debate task %s cancelled (paused)", debate_id)
         await asyncio.to_thread(db.pause_debate, debate_id)
+    except DebatePausedForEvidence:
+        # Orchestrator already persisted the evidence_request message and
+        # flipped debates.status='paused' + awaiting_input_from='founder'.
+        # Exit cleanly — this is not an error.
+        _logger.info("Debate %s paused awaiting founder evidence", debate_id)
     except Exception as exc:
         _logger.error("Debate task %s error: %s", debate_id, exc)
     finally:
@@ -3383,12 +3624,20 @@ async def pause_debate(
     return {"debate_id": debate_id, "status": "paused"}
 
 
-@app.post("/api/debates/{debate_id}/resume")
-async def resume_debate(
+async def _spawn_debate_task(
     debate_id: str,
-    user: CurrentUser = Depends(_require_vc),
+    *,
+    context_notes: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Resume a paused debate from where it left off."""
+    """Load debate context and spawn a background ``_run_debate_task``.
+
+    Shared by the VC resume endpoint and the founder respond endpoint so both
+    code paths are guaranteed to hydrate the orchestrator the same way.
+    Returns a dict ``{debate_id, status, current_round}`` on success.
+
+    Raises HTTPException(404) if the debate does not exist, HTTPException(400)
+    if it is already completed.
+    """
     if not db:
         raise HTTPException(status_code=503, detail="Database unavailable.")
 
@@ -3398,11 +3647,16 @@ async def resume_debate(
     if debate.get("status") == "completed":
         raise HTTPException(status_code=400, detail="Debate is already completed.")
 
-    vc_profile = await asyncio.to_thread(_get_vc_profile_or_404, user)
-    vc_thesis: str = vc_profile.get("investment_thesis") or ""
     company_id: str = debate["company_id"]
-    company_name_row = await asyncio.to_thread(db.get_company_by_id, company_id)
-    company_name: str = (company_name_row or {}).get("name") or "Unknown"
+    vc_profile_id: str | None = debate.get("vc_profile_id")
+    vc_thesis: str = ""
+    if vc_profile_id:
+        vc_profile = await asyncio.to_thread(db.get_vc_profile_by_id, vc_profile_id)
+        if vc_profile:
+            vc_thesis = vc_profile.get("investment_thesis") or ""
+
+    company_row = await asyncio.to_thread(db.get_company_by_id, company_id)
+    company_name: str = (company_row or {}).get("name") or "Unknown"
 
     analysis_summary = await asyncio.to_thread(_safe_analysis_for_debate, company_id)
     chunks = await asyncio.to_thread(db.get_company_chunks, company_id)
@@ -3422,11 +3676,21 @@ async def resume_debate(
             existing_messages=existing_messages,
             current_round=current_round,
             max_rounds=max_rounds,
+            context_notes=context_notes,
         )
     )
     _active_debate_tasks[debate_id] = task
 
     return {"debate_id": debate_id, "status": "active", "current_round": current_round}
+
+
+@app.post("/api/debates/{debate_id}/resume")
+async def resume_debate(
+    debate_id: str,
+    user: CurrentUser = Depends(_require_vc),
+) -> dict[str, Any]:
+    """Resume a paused debate from where it left off (VC-initiated)."""
+    return await _spawn_debate_task(debate_id, context_notes=None)
 
 
 @app.get("/api/vc/debates")
@@ -3441,12 +3705,162 @@ async def vc_list_debates(user: CurrentUser = Depends(_require_vc)) -> dict[str,
 
 @app.get("/api/startup/debates")
 async def startup_list_debates(user: CurrentUser = Depends(_require_startup)) -> dict[str, Any]:
-    """Return all debates for the startup's company."""
+    """Return all debates for the startup's company.
+
+    For any debate that is currently paused awaiting founder input, we
+    additionally load the most recent ``evidence_request`` message so the
+    portal can render the topic / questions / rationale without a second
+    round-trip per debate.
+    """
     if not db:
         raise HTTPException(status_code=503, detail="Database unavailable.")
     company_id = await asyncio.to_thread(_first_linked_company_id, user)
     debates = await asyncio.to_thread(db.get_debates_for_company, company_id)
+
+    for debate in debates:
+        if (
+            debate.get("status") == "paused"
+            and debate.get("awaiting_input_from") == "founder"
+        ):
+            try:
+                latest_req = await asyncio.to_thread(
+                    db.get_latest_evidence_request_message, debate["id"]
+                )
+            except Exception:
+                latest_req = None
+            debate["latest_evidence_request"] = latest_req
+
     return {"debates": debates}
+
+
+class StartupDebateResponseRequest(BaseModel):
+    """Payload for the founder's respond endpoint.
+
+    ``response_type='uploaded'`` means the founder uploaded new evidence and
+    (optionally) kicked off a re-evaluation via ``reeval_job_id``. The debate
+    resumes immediately; the VC agent will pick up the new analysis on its
+    next turn.
+
+    ``response_type='unavailable'`` means the founder cannot provide the
+    requested evidence. The debate resumes with a ``gap_note`` injected into
+    the first startup turn so the Startup Agent acknowledges the gap instead
+    of fabricating data.
+    """
+
+    response_type: Literal["uploaded", "unavailable"]
+    reeval_job_id: str | None = None
+    note: str | None = None
+
+
+@app.post("/api/startup/debates/{debate_id}/respond")
+async def startup_respond_to_debate(
+    debate_id: str,
+    body: StartupDebateResponseRequest,
+    user: CurrentUser = Depends(_require_startup),
+) -> dict[str, Any]:
+    """Founder response to an evidence request — resumes the paused debate.
+
+    Authorisation: the debate must belong to the founder's linked company.
+    On a cross-company attempt we return 404 (not 403) so we don't leak
+    existence of other founders' debates.
+
+    Concurrency: we atomically claim the ``awaiting_input_from='founder'``
+    flag via ``db.claim_founder_response`` so a double-click (or a race with
+    upload-complete vs. decline) cannot produce two founder_response messages.
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    debate = await asyncio.to_thread(db.get_debate_by_id, debate_id)
+    if not debate:
+        raise HTTPException(status_code=404, detail="Debate not found.")
+
+    # Auth: the debate must belong to the founder's linked company.
+    founder_company_id = await asyncio.to_thread(_first_linked_company_id, user)
+    if debate.get("company_id") != founder_company_id:
+        # Return 404 instead of 403 — do not leak existence of other debates.
+        raise HTTPException(status_code=404, detail="Debate not found.")
+
+    if debate.get("status") != "paused" or debate.get("awaiting_input_from") != "founder":
+        raise HTTPException(
+            status_code=409,
+            detail="Debate is not currently awaiting founder input.",
+        )
+
+    # Atomic claim: exactly one founder response wins.
+    claimed = await asyncio.to_thread(db.claim_founder_response, debate_id)
+    if not claimed:
+        raise HTTPException(
+            status_code=409,
+            detail="This debate has already been responded to.",
+        )
+
+    # Find the topic from the latest evidence_request so we can pass a gap_note
+    # if the founder declined to provide it.
+    latest_req = await asyncio.to_thread(db.get_latest_evidence_request_message, debate_id)
+    topic: str | None = None
+    if latest_req and isinstance(latest_req.get("info_request"), dict):
+        topic_raw = latest_req["info_request"].get("topic")
+        if isinstance(topic_raw, str) and topic_raw.strip():
+            topic = topic_raw.strip()
+
+    if body.response_type == "uploaded":
+        content = (
+            body.note
+            or "Founder uploaded new evidence"
+            + (f" and kicked off re-evaluation {body.reeval_job_id}"
+               if body.reeval_job_id else "")
+            + "."
+        )
+    else:
+        content = body.note or (
+            f"Founder declined to provide evidence: {topic}." if topic
+            else "Founder stated they cannot provide the requested evidence."
+        )
+
+    current_round = int(debate.get("current_round") or 1)
+
+    saved_msg = await asyncio.to_thread(
+        db.save_debate_message,
+        debate_id=debate_id,
+        round=current_round,
+        speaker="system",
+        content=content,
+        citations=[],
+        message_type="founder_response",
+        founder_response_type=body.response_type,
+        linked_reeval_job_id=body.reeval_job_id,
+    )
+
+    # Broadcast so any live WebSocket subscriber sees the response in real time.
+    if saved_msg:
+        await _broadcast_debate_message(debate_id, saved_msg)
+
+    context_notes: dict[str, Any] | None = None
+    if body.response_type == "unavailable" and topic:
+        context_notes = {"gap_note": topic}
+
+    return await _spawn_debate_task(debate_id, context_notes=context_notes)
+
+
+@app.get("/api/startup/reeval-status/{job_id}")
+async def startup_reeval_status(
+    job_id: str,
+    user: CurrentUser = Depends(_require_startup),
+) -> dict[str, Any]:
+    """Lightweight polling endpoint for a re-evaluation triggered from the
+    founder portal. Returns the in-memory job status when available.
+    """
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    progress_log = getattr(job, "progress_log", None) or []
+    return {
+        "job_id": job_id,
+        "status": getattr(job, "status", None),
+        "progress": getattr(job, "progress", None),
+        "progress_log": progress_log[-20:],  # cap tail for bandwidth
+    }
 
 
 @app.websocket("/ws/debates/{debate_id}")
@@ -3671,6 +4085,7 @@ async def startup_upload(
 @app.post("/api/startup/re-evaluate")
 async def startup_re_evaluate(
     background_tasks: BackgroundTasks,
+    payload: dict[str, Any] = Body(default_factory=dict),
     user: CurrentUser = Depends(_require_startup),
 ) -> dict[str, Any]:
     """Trigger a re-evaluation of the startup's company using all available evidence.
@@ -3681,13 +4096,30 @@ async def startup_re_evaluate(
     question trees are reused. Stages 2-8 are re-run. Old matches are deleted
     and re-computed against all active VCs.
 
+    Optional body: {"use_web_search": bool} — when true, Stage 2 may call the
+    configured web search provider (Perplexity/Brave) to fill gaps where the
+    document evidence does not answer a question.
+
     Returns immediately. Status can be polled via GET /api/startup/profile.
     """
     if not db:
         raise HTTPException(status_code=503, detail="Database unavailable.")
     company_id = await asyncio.to_thread(_first_linked_company_id, user)
-    background_tasks.add_task(_run_re_evaluation, company_id)
-    return {"status": "re_evaluation_started", "company_id": company_id}
+    use_web_search = bool(payload.get("use_web_search", False))
+    job_id = "re-" + uuid.uuid4().hex[:6]
+    background_tasks.add_task(
+        _run_re_evaluation,
+        company_id,
+        use_web_search,
+        triggered_by=user,
+        job_id=job_id,
+    )
+    return {
+        "status": "re_evaluation_started",
+        "company_id": company_id,
+        "use_web_search": use_web_search,
+        "job_id": job_id,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -3787,11 +4219,9 @@ async def startup_data_room_upload(
 
             if raw_items:
                 chunks = smart_chunk_texts(raw_items)
-                evidence_storage = await asyncio.to_thread(
-                    db.upload_startup_file_bytes, company_id, filename, file_bytes,
-                ) or f"startup_uploads/{company_id}/{safe_name}"
+                # Reuse the data_room storage_path — no second upload needed.
                 pitch_deck_id = await asyncio.to_thread(
-                    db.create_pitch_deck_for_upload, company_id, evidence_storage, filename,
+                    db.create_pitch_deck_for_upload, company_id, storage_path, filename,
                 )
                 if pitch_deck_id:
                     chunks_count = await asyncio.to_thread(
@@ -4042,15 +4472,93 @@ def _build_evidence_provenance(
     return qa_provenance_rows, argument_rows
 
 
-async def _run_re_evaluation(company_id: str) -> None:
+async def _run_re_evaluation(
+    company_id: str,
+    use_web_search: bool = False,
+    *,
+    triggered_by: CurrentUser | None = None,
+    job_id: str | None = None,
+) -> None:
     """Background task: re-evaluate a company with all available evidence.
 
     Evidence is additive — combines Specter chunks, original pitch deck chunks,
     and all portal-uploaded chunks. Reuses cached question_trees to skip Stage 1.
+
+    Per-stage models are loaded from admin_settings.pipeline_model_defaults (or
+    factory defaults when absent), and all 8 pipeline stages read them via
+    ``use_run_context(pipeline_policy=...)``.
+
+    A ``RunTelemetryCollector`` captures every LLM call and Perplexity search;
+    results are persisted to ``model_executions`` and the aggregated
+    ``run_costs`` block is embedded in ``results_payload``.
+
+    If ``use_web_search`` is True, Stage 2 may call the configured web search
+    provider (Perplexity) to fill gaps where document evidence is missing.
     """
     import logging as _log_module  # noqa: PLC0415
     _logger = _log_module.getLogger(__name__)
-    _logger.info("Re-evaluation started for company=%s", company_id)
+
+    # 0. Mint a trackable job id and register with the in-memory job store so
+    #    the admin Analyses tab + log modal can poll progress.
+    if not job_id:
+        job_id = "re-" + uuid.uuid4().hex[:6]
+
+    started_by_user_id = getattr(triggered_by, "id", None)
+    started_by_email = getattr(triggered_by, "email", None)
+    started_by_display_name = getattr(triggered_by, "display_name", None)
+    started_by_label = started_by_display_name or started_by_email or "portal"
+
+    _jobs[job_id] = AnalysisStatus(
+        job_id=job_id,
+        status="running",
+        progress="Starting re-evaluation",
+        progress_log=[],
+        started_by_user_id=started_by_user_id,
+        started_by_email=started_by_email,
+        started_by_display_name=started_by_display_name,
+        started_by_label=started_by_label,
+    )
+
+    _logger.info(
+        "Re-evaluation started job=%s company=%s use_web_search=%s user=%s",
+        job_id, company_id, use_web_search, started_by_email or "?",
+    )
+
+    # Load admin-configured per-stage model defaults (fall back to factory).
+    try:
+        stored_defaults = await asyncio.to_thread(db.admin_get_pipeline_model_defaults)
+    except Exception as exc:
+        _logger.warning("Re-evaluation: failed to load admin pipeline defaults: %s", exc)
+        stored_defaults = None
+    try:
+        factory_defaults = default_phase_model_selections()
+    except Exception:
+        factory_defaults = {}
+
+    phase_models_raw = stored_defaults if isinstance(stored_defaults, dict) else factory_defaults
+    try:
+        phase_models = coerce_phase_models_payload(phase_models_raw, require_all=True)
+    except Exception as exc:
+        _logger.warning(
+            "Re-evaluation: stored phase_models invalid (%s); falling back to factory defaults",
+            exc,
+        )
+        phase_models = coerce_phase_models_payload(factory_defaults, require_all=True)
+
+    try:
+        pipeline_policy = build_phase_model_policy(phase_models)
+    except Exception as exc:
+        _logger.warning("Re-evaluation: failed to build pipeline policy: %s", exc)
+        pipeline_policy = None
+
+    # NB: RunTelemetryCollector only takes `selected_llm`; company slug and job
+    # id are propagated through contextvars by `use_company_context` and the
+    # collector+pipeline policy bound inside `use_run_context` below.
+    collector = RunTelemetryCollector()
+
+    run_costs: dict[str, Any] | None = None
+    analysis_id: str | None = None
+    final_state_error: Exception | None = None
 
     try:
         from agent.dataclasses.company import Company  # noqa: PLC0415
@@ -4061,11 +4569,36 @@ async def _run_re_evaluation(company_id: str) -> None:
         from agent.pipeline.graph import graph  # noqa: PLC0415
         from agent.pipeline.state.investment_story import IterativeInvestmentStoryState  # noqa: PLC0415
 
+        _append_progress(job_id, "Loading company and evidence chunks")
+
         # 1. Load company row.
         company_row = await asyncio.to_thread(db.get_company_by_id, company_id)
         if not company_row:
             _logger.error("Re-evaluation: company %s not found", company_id)
+            _append_progress(job_id, f"ERROR: company {company_id} not found")
+            _set_job_status(job_id, "error")
             return
+
+        # 1a. Snapshot paused debates awaiting founder input so success/failure
+        #     system_notes can land in the right rows. Stored in a module-level
+        #     map keyed by job_id so the except block below can reach it too.
+        try:
+            paused_debates_snapshot = await asyncio.to_thread(
+                db.get_paused_debates_for_company, company_id
+            )
+        except Exception as exc:
+            _logger.warning(
+                "Re-evaluation: failed to snapshot paused debates for %s: %s",
+                company_id, exc,
+            )
+            paused_debates_snapshot = []
+        paused_debate_ids = [d.get("id") for d in paused_debates_snapshot if d.get("id")]
+        if paused_debate_ids:
+            _reeval_debate_links[job_id] = paused_debate_ids
+            _logger.info(
+                "Re-evaluation job=%s linked to %d paused debate(s): %s",
+                job_id, len(paused_debate_ids), paused_debate_ids,
+            )
 
         company = Company(
             name=company_row.get("name") or "Unknown",
@@ -4079,6 +4612,8 @@ async def _run_re_evaluation(company_id: str) -> None:
         all_chunk_rows = await asyncio.to_thread(db.get_all_company_chunks, company_id)
         if not all_chunk_rows:
             _logger.warning("Re-evaluation: no chunks found for company=%s — aborting", company_id)
+            _append_progress(job_id, "ERROR: no evidence chunks found for company")
+            _set_job_status(job_id, "error")
             return
 
         store = EvidenceStore(startup_slug=company_id)
@@ -4089,7 +4624,7 @@ async def _run_re_evaluation(company_id: str) -> None:
                 source_file=c.get("source_file") or "",
                 page_or_slide=c.get("page_or_slide") or "N/A",
             ))
-        _logger.info("Re-evaluation: %d total chunks for company=%s", len(store.chunks), company_id)
+        _append_progress(job_id, f"Loaded {len(store.chunks)} evidence chunks")
 
         # 3. Try to load cached question_trees to skip Stage 1.
         cached_trees_raw = await asyncio.to_thread(db.get_analysis_question_trees, company_id)
@@ -4100,9 +4635,9 @@ async def _run_re_evaluation(company_id: str) -> None:
                     aspect: QuestionTree.model_validate(tree_data)
                     for aspect, tree_data in cached_trees_raw.items()
                 }
-                _logger.info(
-                    "Re-evaluation: reusing %d cached question trees for company=%s",
-                    len(question_trees), company_id,
+                _append_progress(
+                    job_id,
+                    f"Stage 1: reusing {len(question_trees)} cached question trees",
                 )
             except Exception as exc:
                 _logger.warning("Re-evaluation: failed to reconstruct question trees: %s", exc)
@@ -4115,64 +4650,122 @@ async def _run_re_evaluation(company_id: str) -> None:
             max_iterations=1,
         )
 
-        if question_trees:
-            # 4a. Re-run Stage 2 (Answering) with combined corpus.
-            _logger.info("Re-evaluation: running Stage 2 (answering) for company=%s", company_id)
-            all_qa_pairs = await answer_all_trees_from_evidence(question_trees, company, store)
+        # Wrap the whole pipeline in a run context so stages read the admin
+        # pipeline policy and the collector captures token usage + perplexity.
+        # `use_run_context` only takes pipeline_policy / telemetry_collector /
+        # llm_selection — company slug is propagated via `use_company_context`
+        # so `get_current_company_slug()` returns the right value inside the
+        # telemetry callback.
+        with use_company_context(company_id), use_run_context(
+            pipeline_policy=pipeline_policy,
+            telemetry_collector=collector,
+        ):
+            if question_trees:
+                _append_progress(
+                    job_id,
+                    f"Stage 2: answering {len(question_trees)} trees against {len(store.chunks)} chunks",
+                )
+                all_qa_pairs = await answer_all_trees_from_evidence(
+                    question_trees, company, store, use_web_search=use_web_search,
+                )
 
-            # 4b. Run Stages 3-8 via graph (enters at argument generation).
-            _logger.info("Re-evaluation: running Stages 3-8 for company=%s", company_id)
-            final_state = await graph.ainvoke(
-                {
-                    "company": company,
-                    "config": config,
-                    "all_qa_pairs": all_qa_pairs,
-                    "vc_context": "",
-                    "slug": company_id,
-                    "prompt_overrides": {},
-                },
-                config={"recursion_limit": 100},
-            )
-        else:
-            # 4c. No cached trees — run full pipeline (Stages 1-8).
-            _logger.info("Re-evaluation: no cached trees, running full pipeline for company=%s", company_id)
-            temp_state = IterativeInvestmentStoryState(
-                company=company,
-                config=config,
-                prompt_overrides={},
-            )
-            decomp_result = await _decompose_questions_safe(temp_state)
-            if not decomp_result:
-                _logger.error("Re-evaluation: decomposition failed for company=%s", company_id)
-                return
+                _append_progress(job_id, "Stages 3-6: argument generation + critique + evaluation + refinement")
+                final_state = await graph.ainvoke(
+                    {
+                        "company": company,
+                        "config": config,
+                        "all_qa_pairs": all_qa_pairs,
+                        "vc_context": "",
+                        "slug": company_id,
+                        "prompt_overrides": {},
+                    },
+                    config={"recursion_limit": 100},
+                )
+            else:
+                _append_progress(job_id, "Stage 1: decomposing investment questions")
+                temp_state = IterativeInvestmentStoryState(
+                    company=company,
+                    config=config,
+                    prompt_overrides={},
+                )
+                decomp_result = await _decompose_questions_safe(temp_state)
+                if not decomp_result:
+                    _append_progress(job_id, "ERROR: decomposition failed")
+                    _set_job_status(job_id, "error")
+                    return
 
-            retrieved_trees = decomp_result.get("question_trees", {})
-            all_qa_pairs = await answer_all_trees_from_evidence(retrieved_trees, company, store)
-            final_state = await graph.ainvoke(
-                {
-                    "company": company,
-                    "config": config,
-                    "all_qa_pairs": all_qa_pairs,
-                    "vc_context": "",
-                    "slug": company_id,
-                    "prompt_overrides": {},
-                },
-                config={"recursion_limit": 100},
-            )
+                retrieved_trees = decomp_result.get("question_trees", {})
+                _append_progress(
+                    job_id,
+                    f"Stage 2: answering {len(retrieved_trees)} trees against {len(store.chunks)} chunks",
+                )
+                all_qa_pairs = await answer_all_trees_from_evidence(
+                    retrieved_trees, company, store, use_web_search=use_web_search,
+                )
+                _append_progress(job_id, "Stages 3-6: argument generation + critique + evaluation + refinement")
+                final_state = await graph.ainvoke(
+                    {
+                        "company": company,
+                        "config": config,
+                        "all_qa_pairs": all_qa_pairs,
+                        "vc_context": "",
+                        "slug": company_id,
+                        "prompt_overrides": {},
+                    },
+                    config={"recursion_limit": 100},
+                )
+
+            _append_progress(job_id, "Stages 7-8: decision + ranking complete")
 
         # 5. Build results_payload from the final state (including evidence provenance).
         ranking = final_state.get("ranking_result")
         ranking_dict = ranking.model_dump() if hasattr(ranking, "model_dump") else (ranking or {})
-        # Pass local all_qa_pairs directly to avoid LangGraph state-merge artefacts.
         qa_provenance_rows, argument_rows = _build_evidence_provenance(
             final_state, all_qa_pairs=all_qa_pairs
         )
+
+        # Drain + persist telemetry BEFORE saving the analysis so that
+        # `results_payload.run_costs` is populated and `model_executions`
+        # rows exist for the join.
+        _append_progress(job_id, "Persisting telemetry and costs")
+        try:
+            execution_rows = collector.drain_model_executions()
+        except Exception as exc:
+            _logger.error("Re-evaluation: drain_model_executions failed: %s", exc, exc_info=True)
+            execution_rows = []
+
+        if execution_rows:
+            try:
+                await asyncio.to_thread(
+                    db.persist_model_executions,
+                    job_id,
+                    execution_rows,
+                    run_config={
+                        "source": "portal_re_evaluate",
+                        "company_id": company_id,
+                        "phase_models": phase_models,
+                    },
+                )
+            except Exception as exc:
+                _logger.error(
+                    "Re-evaluation: persist_model_executions failed: %s", exc, exc_info=True
+                )
+
+        try:
+            run_costs = build_run_costs_from_model_executions(execution_rows)
+        except Exception as exc:
+            _logger.error(
+                "Re-evaluation: build_run_costs_from_model_executions failed: %s", exc
+            )
+            run_costs = None
+
         results_payload = {
             "mode": "single",
             "ranking_result": ranking_dict,
             "qa_provenance_rows": qa_provenance_rows,
             "argument_rows": argument_rows,
             "decision": final_state.get("final_decision"),
+            "run_costs": run_costs,
         }
 
         # 6. Build state snapshot for storage (includes question_trees for future reuse).
@@ -4189,7 +4782,17 @@ async def _run_re_evaluation(company_id: str) -> None:
             "final_decision": final_state.get("final_decision"),
         }
 
-        # 7. Persist new analysis record (old ones are preserved for history).
+        run_config = {
+            "source": "portal_re_evaluate",
+            "use_web_search": use_web_search,
+            "phase_models": phase_models,
+            "started_by_user_id": started_by_user_id,
+            "started_by_email": started_by_email,
+            "started_by_display_name": started_by_display_name,
+            "started_by_label": started_by_label,
+        }
+
+        _append_progress(job_id, "Saving analysis record")
         analysis_id = await asyncio.to_thread(
             db.create_analysis_record,
             company_id=company_id,
@@ -4197,28 +4800,102 @@ async def _run_re_evaluation(company_id: str) -> None:
             state=state_snapshot,
             results_payload=results_payload,
             status="done",
-            run_config={"source": "portal_re_evaluate"},
+            run_config=run_config,
+            job_id_legacy=job_id,
         )
-        _logger.info("Re-evaluation: analysis saved, id=%s for company=%s", analysis_id, company_id)
+        _logger.info(
+            "Re-evaluation: analysis saved, id=%s job_id=%s for company=%s",
+            analysis_id, job_id, company_id,
+        )
 
-        # 8. Delete stale matches and re-trigger matching.
-        deleted = await asyncio.to_thread(db.delete_matches_for_company, company_id)
-        _logger.info("Re-evaluation: deleted %d stale matches for company=%s", deleted, company_id)
-
-        # Only trigger matching if the company has fundraising enabled.
+        # 8. Re-score existing VC matches in place (force_refresh upserts so
+        #    match ids stay stable → debate FK links survive). We DO NOT call
+        #    delete_matches_for_company here any more — doing so would cascade
+        #    through debates.match_id and destroy every debate for the company.
         company_fresh = await asyncio.to_thread(db.get_company_by_id, company_id)
         if company_fresh and company_fresh.get("fundraising"):
-            await _run_matching_background(company_id)
+            _append_progress(job_id, "Re-running VC matching (force_refresh)")
+            await _run_matching_background(company_id, force_refresh=True)
         else:
             _logger.info(
                 "Re-evaluation: fundraising=false for company=%s — matching not triggered", company_id
             )
 
+        # 8a. Post a system_note into every debate that was paused awaiting
+        #     founder input at the start of this run, so founders can see the
+        #     new analysis is ready and return to the debate.
+        if paused_debate_ids:
+            note_content = (
+                f"New analysis {analysis_id} saved (re-evaluation job {job_id}). "
+                f"Founder may return to the debate to confirm."
+            )
+            for debate_id in paused_debate_ids:
+                try:
+                    saved = await asyncio.to_thread(
+                        db.save_debate_message,
+                        debate_id=debate_id,
+                        round=0,
+                        speaker="system",
+                        content=note_content,
+                        citations=[],
+                        message_type="system_note",
+                        linked_reeval_job_id=job_id,
+                    )
+                    if saved:
+                        await _broadcast_debate_message(debate_id, saved)
+                except Exception as exc:
+                    _logger.warning(
+                        "Re-evaluation: failed to post success system_note to debate=%s: %s",
+                        debate_id, exc,
+                    )
+
+        _append_progress(job_id, "Re-evaluation complete")
+        _set_job_status(job_id, "done")
+
     except Exception as exc:
+        final_state_error = exc
         import logging as _lm  # noqa: PLC0415
         _lm.getLogger(__name__).error(
-            "Re-evaluation failed for company=%s: %s", company_id, exc, exc_info=True
+            "Re-evaluation failed for company=%s job=%s: %s",
+            company_id, job_id, exc, exc_info=True,
         )
+        try:
+            _append_progress(job_id, f"ERROR: {exc}", allow_stopped=True)
+        except Exception:
+            pass
+        _set_job_status(job_id, "error")
+
+        # Surface the failure into any paused debates so the founder sees a
+        # retry/decline prompt inside the debate panel instead of the run
+        # hanging silently.
+        failure_debate_ids = _reeval_debate_links.get(job_id, [])
+        if failure_debate_ids:
+            failure_note = (
+                f"Re-evaluation {job_id} failed: {exc}. "
+                f"Please try uploading again, or decline to provide the evidence."
+            )
+            for debate_id in failure_debate_ids:
+                try:
+                    saved = await asyncio.to_thread(
+                        db.save_debate_message,
+                        debate_id=debate_id,
+                        round=0,
+                        speaker="system",
+                        content=failure_note,
+                        citations=[],
+                        message_type="system_note",
+                        linked_reeval_job_id=job_id,
+                    )
+                    if saved:
+                        await _broadcast_debate_message(debate_id, saved)
+                except Exception as note_exc:
+                    _lm.getLogger(__name__).warning(
+                        "Re-evaluation: failed to post failure system_note to debate=%s: %s",
+                        debate_id, note_exc,
+                    )
+    finally:
+        # Drop the job → debates mapping so we don't leak memory over time.
+        _reeval_debate_links.pop(job_id, None)
 
 
 async def _run_full_analysis(company_id: str) -> None:

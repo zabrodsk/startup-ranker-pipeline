@@ -145,13 +145,26 @@ async def run_matching_for_pair(
     return dict(ranking)
 
 
-async def trigger_matching_for_company(company_id: str, db_module: Any) -> int:
+async def trigger_matching_for_company(
+    company_id: str,
+    db_module: Any,
+    *,
+    force_refresh: bool = False,
+) -> int:
     """Match a fundraising company against all active VC profiles.
 
     Called as a FastAPI background task when a startup toggles fundraising ON.
     All synchronous DB calls are dispatched via asyncio.to_thread() so the
     event loop (and thus the web server) is never blocked.
-    Returns the number of new match records created.
+    Returns the number of new match records created (or refreshed, when
+    ``force_refresh=True``).
+
+    ``force_refresh``: when True, existing matches are re-scored and their
+    rows updated in-place via the upsert in ``db.create_match``. This is what
+    the re-evaluation path uses so fresh scores land without deleting the
+    match rows (which would cascade-destroy the associated debate). When
+    False (default), existing matches are skipped — used by the fundraising
+    toggle path where we only want brand-new matches.
     """
     import asyncio  # noqa: PLC0415
 
@@ -207,9 +220,13 @@ async def trigger_matching_for_company(company_id: str, db_module: Any) -> int:
         match_already_exists = await asyncio.to_thread(
             db_module.match_exists, vc_profile_id, company_id
         )
-        if match_already_exists:
+        if match_already_exists and not force_refresh:
             logger.debug("Match already exists: vc=%s company=%s", vc_profile_id, company_id)
             continue
+        if match_already_exists and force_refresh:
+            logger.debug(
+                "Force-refreshing existing match: vc=%s company=%s", vc_profile_id, company_id
+            )
 
         vc_thesis: str = vc_profile.get("investment_thesis") or ""
         min_strategy: float = float(vc_profile.get("min_strategy_fit") or 0)

@@ -1217,16 +1217,19 @@ def insert_analysis_event(
         return
     try:
         job_uuid = _get_job_uuid(client, job_id_legacy)
-        client.table("analysis_events").insert(
-            {
-                "job_id": job_uuid,
-                "job_id_legacy": job_id_legacy,
-                "event_type": event_type,
-                "stage": stage,
-                "message": message,
-                "payload": _serialize(payload or {}),
-            }
-        ).execute()
+        row: dict[str, Any] = {
+            "job_id_legacy": job_id_legacy,
+            "event_type": event_type,
+            "stage": stage,
+            "message": message,
+            "payload": _serialize(payload or {}),
+        }
+        # Only include job_id when we have a real UUID — re-evaluation jobs
+        # (re-XXXXXX) have no row in the jobs table so _get_job_uuid returns
+        # None. Omitting the field lets the nullable FK default to NULL cleanly.
+        if job_uuid is not None:
+            row["job_id"] = job_uuid
+        client.table("analysis_events").insert(row).execute()
     except Exception as exc:
         _log_supabase_error("insert_analysis_event", "analysis_events", exc, job_id_legacy=job_id_legacy)
 
@@ -3316,6 +3319,11 @@ def set_company_fundraising(company_id: str, fundraising: bool) -> dict[str, Any
 def get_company_chunks(company_id: str) -> list[dict[str, Any]]:
     """Return evidence chunks for a company, excluding Specter-sourced files.
 
+    Only chunks from startup-uploaded pitch decks (storage_path starting with
+    'startup_uploads/') are returned. Old pipeline job-based pitch decks
+    (storage_path starting with 'jobs/') are excluded — those were internal
+    pipeline artifacts and would cause massive duplication in the evidence view.
+
     Chunks are joined through pitch_decks → company_id. Rows whose source_file
     matches any Specter file (companies.csv / people.csv) are filtered out at
     the DB query level and never returned to callers.
@@ -3324,11 +3332,12 @@ def get_company_chunks(company_id: str) -> list[dict[str, Any]]:
     if not client or not company_id:
         return []
     try:
-        # Fetch pitch_deck ids for this company first.
+        # Fetch only startup-uploaded pitch decks (exclude old jobs/ pipeline artifacts).
         decks = (
             client.table("pitch_decks")
-            .select("id")
+            .select("id, storage_path")
             .eq("company_id", company_id)
+            .like("storage_path", "startup_uploads/%")
             .execute()
         )
         deck_ids = [d["id"] for d in (decks.data or []) if d.get("id")]
@@ -3689,6 +3698,12 @@ def create_debate(
         return None
 
 
+_DEBATE_COLUMNS = (
+    "id, match_id, company_id, vc_profile_id, status, current_round, max_rounds, "
+    "summary, awaiting_input_from, created_at, updated_at"
+)
+
+
 def get_debate_by_id(debate_id: str) -> dict[str, Any] | None:
     """Return a debates row by id."""
     client = _get_client()
@@ -3697,7 +3712,7 @@ def get_debate_by_id(debate_id: str) -> dict[str, Any] | None:
     try:
         rows = (
             client.table("debates")
-            .select("id, match_id, company_id, vc_profile_id, status, current_round, max_rounds, summary, created_at, updated_at")
+            .select(_DEBATE_COLUMNS)
             .eq("id", debate_id)
             .limit(1)
             .execute()
@@ -3716,7 +3731,7 @@ def get_debate_by_match(match_id: str) -> dict[str, Any] | None:
     try:
         rows = (
             client.table("debates")
-            .select("id, match_id, company_id, vc_profile_id, status, current_round, max_rounds, summary, created_at, updated_at")
+            .select(_DEBATE_COLUMNS)
             .eq("match_id", match_id)
             .limit(1)
             .execute()
@@ -3761,23 +3776,84 @@ def complete_debate(debate_id: str, summary: str) -> bool:
 
 
 def pause_debate(debate_id: str) -> bool:
-    """Set debate status to paused."""
+    """Set debate status to paused, only if not already paused.
+
+    Deliberately does NOT touch ``awaiting_input_from``. When the orchestrator
+    pauses a debate because the VC agent requested evidence, it uses the
+    dedicated :func:`pause_debate_for_evidence` helper, which sets both
+    ``status`` and ``awaiting_input_from`` atomically. This generic pause is
+    used for VC-initiated manual pauses and must not clobber that field.
+    """
     client = _get_client()
     if not client or not debate_id:
         return False
     try:
-        client.table("debates").update({
-            "status": "paused",
-            "updated_at": _utcnow().isoformat(),
-        }).eq("id", debate_id).execute()
+        (
+            client.table("debates")
+            .update({"status": "paused", "updated_at": _utcnow().isoformat()})
+            .eq("id", debate_id)
+            .neq("status", "paused")
+            .execute()
+        )
         return True
     except Exception as exc:
         _log_supabase_error("pause_debate", "debates", exc)
         return False
 
 
+def pause_debate_for_evidence(debate_id: str, topic: str | None = None) -> bool:
+    """Atomic pause + flag debate as awaiting founder evidence.
+
+    ``topic`` is accepted for API symmetry with the orchestrator call site; the
+    topic itself is stored on the paired ``evidence_request`` debate_messages
+    row (in ``info_request``), not duplicated here.
+    """
+    client = _get_client()
+    if not client or not debate_id:
+        return False
+    try:
+        client.table("debates").update({
+            "status": "paused",
+            "awaiting_input_from": "founder",
+            "updated_at": _utcnow().isoformat(),
+        }).eq("id", debate_id).execute()
+        return True
+    except Exception as exc:
+        _log_supabase_error("pause_debate_for_evidence", "debates", exc)
+        return False
+
+
+def claim_founder_response(debate_id: str) -> bool:
+    """Atomically clear ``awaiting_input_from`` so exactly one response wins.
+
+    Returns True iff this call was the one that flipped the flag. If a prior
+    response (from a concurrent click or a background resume) already cleared
+    it, this returns False and the caller must return HTTP 409.
+    """
+    client = _get_client()
+    if not client or not debate_id:
+        return False
+    try:
+        result = (
+            client.table("debates")
+            .update({"awaiting_input_from": None, "updated_at": _utcnow().isoformat()})
+            .eq("id", debate_id)
+            .eq("awaiting_input_from", "founder")
+            .execute()
+        )
+        return bool(result.data)
+    except Exception as exc:
+        _log_supabase_error("claim_founder_response", "debates", exc)
+        return False
+
+
 def resume_debate(debate_id: str) -> bool:
-    """Set debate status back to active."""
+    """Set debate status back to active.
+
+    Leaves ``awaiting_input_from`` alone. The founder-respond endpoint already
+    clears it atomically via :func:`claim_founder_response`; the VC resume
+    endpoint never sets it in the first place.
+    """
     client = _get_client()
     if not client or not debate_id:
         return False
@@ -3799,23 +3875,46 @@ def save_debate_message(
     speaker: str,
     content: str,
     citations: list[dict[str, Any]] | None = None,
+    message_type: str = "argument",
+    info_request: dict[str, Any] | None = None,
+    founder_response_type: str | None = None,
+    linked_reeval_job_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Insert a debate_messages row. Returns the created row or None."""
+    """Insert a debate_messages row. Returns the created row or None.
+
+    ``message_type`` defaults to ``'argument'`` for back-compat with existing
+    callers. Newer callers pass ``'evidence_request'`` / ``'founder_response'``
+    / ``'system_note'`` plus the matching payload fields.
+    """
     client = _get_client()
     if not client or not debate_id:
         return None
     try:
-        rows = client.table("debate_messages").insert({
+        payload: dict[str, Any] = {
             "debate_id": debate_id,
             "round": round,
             "speaker": speaker,
             "content": content,
             "citations": _serialize(citations or []),
-        }).execute()
+            "message_type": message_type,
+        }
+        if info_request is not None:
+            payload["info_request"] = _serialize(info_request)
+        if founder_response_type is not None:
+            payload["founder_response_type"] = founder_response_type
+        if linked_reeval_job_id is not None:
+            payload["linked_reeval_job_id"] = linked_reeval_job_id
+        rows = client.table("debate_messages").insert(payload).execute()
         return rows.data[0] if rows.data else None
     except Exception as exc:
         _log_supabase_error("save_debate_message", "debate_messages", exc)
         return None
+
+
+_DEBATE_MESSAGE_COLUMNS = (
+    "id, debate_id, round, speaker, content, citations, message_type, "
+    "info_request, founder_response_type, linked_reeval_job_id, created_at"
+)
 
 
 def get_debate_messages(debate_id: str) -> list[dict[str, Any]]:
@@ -3826,7 +3925,7 @@ def get_debate_messages(debate_id: str) -> list[dict[str, Any]]:
     try:
         rows = (
             client.table("debate_messages")
-            .select("id, debate_id, round, speaker, content, citations, created_at")
+            .select(_DEBATE_MESSAGE_COLUMNS)
             .eq("debate_id", debate_id)
             .order("created_at", desc=False)
             .execute()
@@ -3837,6 +3936,27 @@ def get_debate_messages(debate_id: str) -> list[dict[str, Any]]:
         return []
 
 
+def get_latest_evidence_request_message(debate_id: str) -> dict[str, Any] | None:
+    """Return the most recent ``evidence_request`` message for a debate."""
+    client = _get_client()
+    if not client or not debate_id:
+        return None
+    try:
+        rows = (
+            client.table("debate_messages")
+            .select(_DEBATE_MESSAGE_COLUMNS)
+            .eq("debate_id", debate_id)
+            .eq("message_type", "evidence_request")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("get_latest_evidence_request_message", "debate_messages", exc)
+        return None
+
+
 def get_debates_for_vc(vc_profile_id: str) -> list[dict[str, Any]]:
     """Return all debates for a VC profile."""
     client = _get_client()
@@ -3845,7 +3965,10 @@ def get_debates_for_vc(vc_profile_id: str) -> list[dict[str, Any]]:
     try:
         rows = (
             client.table("debates")
-            .select("id, match_id, company_id, status, current_round, max_rounds, summary, created_at, companies(id, name, industry)")
+            .select(
+                "id, match_id, company_id, status, current_round, max_rounds, "
+                "summary, awaiting_input_from, created_at, companies(id, name, industry)"
+            )
             .eq("vc_profile_id", vc_profile_id)
             .order("created_at", desc=True)
             .execute()
@@ -3864,7 +3987,10 @@ def get_debates_for_company(company_id: str) -> list[dict[str, Any]]:
     try:
         rows = (
             client.table("debates")
-            .select("id, match_id, vc_profile_id, status, current_round, max_rounds, summary, created_at, vc_profiles(id, firm_name)")
+            .select(
+                "id, match_id, vc_profile_id, status, current_round, max_rounds, "
+                "summary, awaiting_input_from, created_at, vc_profiles(id, firm_name)"
+            )
             .eq("company_id", company_id)
             .order("created_at", desc=True)
             .execute()
@@ -3872,6 +3998,30 @@ def get_debates_for_company(company_id: str) -> list[dict[str, Any]]:
         return list(rows.data or [])
     except Exception as exc:
         _log_supabase_error("get_debates_for_company", "debates", exc)
+        return []
+
+
+def get_paused_debates_for_company(company_id: str) -> list[dict[str, Any]]:
+    """Return debates currently paused awaiting founder input for a company.
+
+    Used by ``_run_re_evaluation`` to snapshot which debates should receive a
+    system_note at the end of the re-eval job (success or failure).
+    """
+    client = _get_client()
+    if not client or not company_id:
+        return []
+    try:
+        rows = (
+            client.table("debates")
+            .select("id, current_round, max_rounds")
+            .eq("company_id", company_id)
+            .eq("status", "paused")
+            .eq("awaiting_input_from", "founder")
+            .execute()
+        )
+        return list(rows.data or [])
+    except Exception as exc:
+        _log_supabase_error("get_paused_debates_for_company", "debates", exc)
         return []
 
 
@@ -4127,11 +4277,16 @@ def create_analysis_record(
     results_payload: dict[str, Any],
     status: str = "done",
     run_config: dict[str, Any] | None = None,
+    job_id_legacy: str = "portal",
 ) -> str | None:
     """Insert a new analyses row for a portal-triggered pipeline run.
 
     Returns the analysis_id UUID or None on error.
     Old analysis rows are preserved for historical comparison.
+
+    ``job_id_legacy`` is required NOT NULL by the schema. Callers that track a
+    real run identifier (e.g. re-evaluation with ``re-xxxxxx``) should pass it
+    so the run can be joined with ``model_executions`` and ``analysis_events``.
     """
     client = _get_client()
     if not client or not company_id:
@@ -4140,6 +4295,7 @@ def create_analysis_record(
         row = client.table("analyses").insert({
             "company_id": company_id,
             "pitch_deck_id": pitch_deck_id,
+            "job_id_legacy": job_id_legacy or "portal",
             "state": _serialize(state),
             "results_payload": _serialize(results_payload),
             "status": status,
@@ -4381,7 +4537,14 @@ def admin_get_all_matches() -> list[dict[str, Any]]:
 
 
 def admin_get_recent_analyses(limit: int = 40) -> list[dict[str, Any]]:
-    """Return recent analyses with company name and key scores for admin overview."""
+    """Return recent analyses with per-run detail for the admin Analyses tab.
+
+    Each row includes:
+      - ``job_id_legacy`` for joining with ``analysis_events``/``model_executions``
+      - ``run_config`` (+ extracted ``phase_models`` and ``started_by``)
+      - ``cost_summary`` extracted from ``results_payload.run_costs`` or rebuilt
+        from ``model_executions`` when the payload is missing the cost block
+    """
     client = _get_client()
     if not client:
         return []
@@ -4389,32 +4552,130 @@ def admin_get_recent_analyses(limit: int = 40) -> list[dict[str, Any]]:
         rows = (
             client.table("analyses")
             .select(
-                "id, company_id, status, created_at, error, "
-                "results_payload, "
+                "id, company_id, job_id_legacy, status, created_at, error, "
+                "results_payload, run_config, "
                 "companies(id, name)"
             )
             .order("created_at", desc=True)
             .limit(limit)
             .execute()
         )
-        results = []
+        results: list[dict[str, Any]] = []
         for a in (rows.data or []):
             payload = a.get("results_payload") or {}
             ranking = payload.get("ranking_result") or {}
+            run_config = a.get("run_config") or {}
+            if not isinstance(run_config, dict):
+                run_config = {}
+
+            phase_models = run_config.get("phase_models") if isinstance(run_config.get("phase_models"), dict) else None
+            started_by = _extract_started_by_fields(run_config)
+
+            # Cost summary: prefer the embedded run_costs block; fall back to
+            # aggregating model_executions rows so in-progress runs still show
+            # a live-ish number.
+            run_costs = payload.get("run_costs") if isinstance(payload.get("run_costs"), dict) else None
+            job_id_legacy = a.get("job_id_legacy")
+            if not run_costs and job_id_legacy and job_id_legacy != "portal":
+                try:
+                    run_costs = load_run_costs(job_id_legacy)
+                except Exception:
+                    run_costs = None
+
+            cost_summary: dict[str, Any] | None = None
+            if isinstance(run_costs, dict):
+                cost_summary = {
+                    "status": run_costs.get("status"),
+                    "currency": run_costs.get("currency") or "USD",
+                    "total_usd": run_costs.get("total_usd"),
+                    "llm_usd": run_costs.get("llm_usd"),
+                    "perplexity_usd": run_costs.get("perplexity_usd"),
+                }
+
             results.append({
                 "id": a.get("id"),
                 "company_id": a.get("company_id"),
                 "company_name": (a.get("companies") or {}).get("name"),
+                "job_id_legacy": job_id_legacy,
                 "status": a.get("status"),
                 "created_at": a.get("created_at"),
                 "error": a.get("error"),
                 "composite_score": ranking.get("composite_score"),
                 "bucket": ranking.get("bucket"),
+                "run_config": run_config,
+                "phase_models": phase_models,
+                "started_by": started_by or None,
+                "cost_summary": cost_summary,
             })
         return results
     except Exception as exc:
         _log_supabase_error("admin_get_recent_analyses", "analyses", exc)
         return []
+
+
+# ---------------------------------------------------------------------------
+# Admin settings (generic JSONB key/value store)
+# ---------------------------------------------------------------------------
+
+_PIPELINE_MODEL_DEFAULTS_KEY = "pipeline_model_defaults"
+
+
+def admin_get_pipeline_model_defaults() -> dict[str, Any] | None:
+    """Return the stored pipeline model defaults (or None if none persisted)."""
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        rows = (
+            client.table("admin_settings")
+            .select("value")
+            .eq("key", _PIPELINE_MODEL_DEFAULTS_KEY)
+            .limit(1)
+            .execute()
+        )
+        if not rows.data:
+            return None
+        value = rows.data[0].get("value")
+        return value if isinstance(value, dict) else None
+    except Exception as exc:
+        _log_supabase_error(
+            "admin_get_pipeline_model_defaults", "admin_settings", exc
+        )
+        return None
+
+
+def admin_set_pipeline_model_defaults(
+    value: dict[str, Any],
+    *,
+    updated_by: str | None = None,
+) -> dict[str, Any] | None:
+    """Upsert the singleton ``pipeline_model_defaults`` row. Returns stored value."""
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        row = (
+            client.table("admin_settings")
+            .upsert(
+                {
+                    "key": _PIPELINE_MODEL_DEFAULTS_KEY,
+                    "value": _serialize(value or {}),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_by": updated_by,
+                },
+                on_conflict="key",
+            )
+            .execute()
+        )
+        if row.data:
+            stored = row.data[0].get("value")
+            return stored if isinstance(stored, dict) else value
+        return value
+    except Exception as exc:
+        _log_supabase_error(
+            "admin_set_pipeline_model_defaults", "admin_settings", exc
+        )
+        return None
 
 
 def admin_get_all_users() -> list[dict[str, Any]]:
