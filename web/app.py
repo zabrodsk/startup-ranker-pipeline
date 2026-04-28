@@ -900,6 +900,7 @@ def _ensure_str(val: Any) -> str:
 
 class AnalyzeRequest(BaseModel):
     use_web_search: bool = False
+    use_specter_mcp: bool = True
     instructions: str | None = None
     input_mode: str = "pitchdeck"  # pitchdeck | specter | original
     run_name: str | None = None
@@ -5439,6 +5440,7 @@ async def start_analysis(
     cache["run_name"] = req.run_name
     cache["vc_investment_strategy"] = req.vc_investment_strategy
     cache["use_web_search"] = req.use_web_search
+    cache["use_specter_mcp"] = req.use_specter_mcp
     cache["instructions"] = req.instructions
     cache["llm_selection"] = llm_selection
     cache["phase_models"] = phase_models if (req.phase_models or pipeline_policy is not None and quality_tier is None) else None
@@ -5453,6 +5455,7 @@ async def start_analysis(
         "vc_investment_strategy": req.vc_investment_strategy,
         "instructions": req.instructions,
         "use_web_search": req.use_web_search,
+        "use_specter_mcp": req.use_specter_mcp,
         "phase_models": phase_models if (req.phase_models or pipeline_policy is not None and quality_tier is None) else None,
         "quality_tier": quality_tier,
         "premium_phase_models": premium_phase_models if quality_tier == "premium" else None,
@@ -5496,6 +5499,7 @@ async def start_analysis(
             _run_analysis(
                 job_id,
                 use_web_search=req.use_web_search,
+                use_specter_mcp=req.use_specter_mcp,
                 instructions=inst,
                 input_mode=req.input_mode,
                 vc_investment_strategy=vc_str,
@@ -6361,6 +6365,7 @@ def _extract_founders_from_company(company: Any, slug: str) -> list[dict[str, An
 async def _run_analysis(
     job_id: str,
     use_web_search: bool = False,
+    use_specter_mcp: bool = True,
     instructions: str | None = None,
     input_mode: str = "pitchdeck",
     vc_investment_strategy: str | None = None,
@@ -6416,6 +6421,7 @@ async def _run_analysis(
                 await _run_document_analysis(
                     job_id, upload_dir, use_web_search, one_company=False,
                     vc_investment_strategy=vc_investment_strategy,
+                    use_specter_mcp=use_specter_mcp,
                 )
 
     except _JobStoppedError:
@@ -6524,12 +6530,49 @@ def _build_single_company_specter_overlay(
     return specter_company, merged_store, parsed_count
 
 
+_GENERIC_DECK_STEMS: frozenset[str] = frozenset(
+    {
+        "deck", "pitch", "pitchdeck", "pitch_deck", "final", "draft",
+        "v1", "v2", "v3", "v4", "v5", "latest", "current",
+        "company", "investor", "investors", "memo", "intro",
+    }
+)
+
+
+def _tentative_name_from_filename(fname: str) -> str | None:
+    """Derive a candidate company name from an uploaded deck filename.
+
+    Heuristic: take the file stem, drop generic deck-ish tokens, and return the
+    longest remaining alphabetic word (>=4 chars). Returns None when nothing
+    plausible remains — the MCP client then falls back to the domain-root check
+    alone, which is still a strong disambiguation safeguard.
+    """
+    try:
+        stem = Path(fname).stem
+    except Exception:
+        return None
+    if not stem:
+        return None
+    # Split on common separators; keep alphabetic word-like tokens.
+    tokens = re.split(r"[\s_\-.()\[\]]+", stem)
+    candidates = [
+        t for t in tokens
+        if t and t.lower() not in _GENERIC_DECK_STEMS and t.isalpha() and len(t) >= 4
+    ]
+    if not candidates:
+        return None
+    # Longest token is most likely the brand; tie-break by first occurrence.
+    best = max(candidates, key=lambda t: (len(t), -tokens.index(t)))
+    return best
+
+
 async def _run_document_analysis(
     job_id: str,
     upload_dir: Path,
     use_web_search: bool,
     one_company: bool = False,
     vc_investment_strategy: str | None = None,
+    use_specter_mcp: bool = False,
 ) -> None:
     """Analyze uploaded documents.
 
@@ -6643,12 +6686,38 @@ async def _run_document_analysis(
                     full_msg = f"{prefix} — {msg}"
                     _append_progress(job_id, full_msg)
 
+                # Optional: pre-ingest the deck and augment with Specter MCP
+                # data extracted via the deck's company URL. Helper never
+                # raises — falls back to deck-only on any failure.
+                seed_store = None
+                seed_company = None
+                if use_specter_mcp:
+                    try:
+                        from agent.ingest import ingest_startup_folder
+                        from agent.ingest.specter_augmentation import (
+                            augment_with_specter,
+                        )
+                        deck_store = ingest_startup_folder(doc_dir)
+                        seed_store, seed_company = augment_with_specter(
+                            deck_store,
+                            slug=doc_dir.name,
+                            expected_name=_tentative_name_from_filename(fname),
+                            fetch_full_team=False,
+                            on_log=lambda m: (_append_progress(job_id, m), print(m)),
+                        )
+                    except Exception as exc:  # noqa: BLE001 — augmentation is best-effort
+                        print(f"specter-augment: pre-ingest failed for {fname}: {exc}")
+                        seed_store = None
+                        seed_company = None
+
                 try:
                     result = await evaluate_startup(
                         doc_dir, k=8, use_web_search=use_web_search,
                         on_progress=make_progress,
                         on_cooperate=lambda: _cooperate_with_job_control(job_id),
                         vc_investment_strategy=vc_investment_strategy,
+                        initial_store=seed_store,
+                        initial_company=seed_company,
                     )
                     await _cooperate_with_job_control(job_id)
                     results_list.append(result)
