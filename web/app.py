@@ -6601,6 +6601,35 @@ async def _run_document_analysis(
                     job_id,
                     "Multi-file mode stays enabled. Structured Specter overlay was skipped because the export contains multiple companies.",
                 )
+
+        # Pitch-deck single-file path: augment with Specter MCP via the deck's URL.
+        # Skipped when one_company=True (Original mode is out of scope) and when a
+        # CSV Specter overlay already populated seed_store/seed_company above.
+        if (
+            use_specter_mcp
+            and not one_company
+            and seed_store is None
+            and seed_company is None
+        ):
+            try:
+                from agent.ingest import ingest_startup_folder
+                from agent.ingest.specter_augmentation import augment_with_specter
+                tentative_name = None
+                if files:
+                    tentative_name = _tentative_name_from_filename(files[0].get("name") or "")
+                deck_store = ingest_startup_folder(upload_dir)
+                seed_store, seed_company = augment_with_specter(
+                    deck_store,
+                    slug=upload_dir.name,
+                    expected_name=tentative_name,
+                    fetch_full_team=False,
+                    on_log=lambda m: (_append_progress(job_id, m), print(m)),
+                )
+            except Exception as exc:  # noqa: BLE001 — augmentation is best-effort
+                print(f"specter-augment: pre-ingest failed for {upload_dir.name}: {exc}")
+                seed_store = None
+                seed_company = None
+
         result = await evaluate_startup(
             upload_dir, k=8, use_web_search=use_web_search,
             on_progress=_make_progress_callback(job_id),
