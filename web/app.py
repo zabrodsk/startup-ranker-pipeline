@@ -6532,9 +6532,22 @@ def _build_single_company_specter_overlay(
 
 _GENERIC_DECK_STEMS: frozenset[str] = frozenset(
     {
-        "deck", "pitch", "pitchdeck", "pitch_deck", "final", "draft",
-        "v1", "v2", "v3", "v4", "v5", "latest", "current",
-        "company", "investor", "investors", "memo", "intro",
+        # Deck-type words
+        "deck", "pitch", "pitchdeck", "pitchdeckextended", "pitch_deck",
+        "presentation", "slides", "slidedeck", "slide_deck",
+        # Lifecycle / version words
+        "final", "draft", "latest", "current", "updated",
+        "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10",
+        # Audience / purpose words
+        "company", "investor", "investors", "memo", "intro", "introduction",
+        "overview", "summary", "executive", "exec",
+        # Variant / scope qualifiers
+        "extended", "extension", "long", "short", "full", "brief",
+        "public", "private", "redacted", "anonymized", "sanitized",
+        "teaser", "teaserdeck", "teaser_deck",
+        "confidential", "nda",
+        # Date-y words
+        "year", "annual", "quarter", "q1", "q2", "q3", "q4",
     }
 )
 
@@ -6543,9 +6556,12 @@ def _tentative_name_from_filename(fname: str) -> str | None:
     """Derive a candidate company name from an uploaded deck filename.
 
     Heuristic: take the file stem, drop generic deck-ish tokens, and return the
-    longest remaining alphabetic word (>=4 chars). Returns None when nothing
-    plausible remains — the MCP client then falls back to the domain-root check
-    alone, which is still a strong disambiguation safeguard.
+    FIRST remaining alphabetic word (>=3 chars). Brand names lead deck
+    filenames in the overwhelming majority of cases (e.g. ``Zaitra PitchDeck
+    Extended.pdf`` → "Zaitra"), so first-position beats longest-token. Returns
+    None when nothing plausible remains — the MCP client then falls back to
+    the domain-root check alone, which is still a strong disambiguation
+    safeguard.
     """
     try:
         stem = Path(fname).stem
@@ -6555,15 +6571,15 @@ def _tentative_name_from_filename(fname: str) -> str | None:
         return None
     # Split on common separators; keep alphabetic word-like tokens.
     tokens = re.split(r"[\s_\-.()\[\]]+", stem)
-    candidates = [
-        t for t in tokens
-        if t and t.lower() not in _GENERIC_DECK_STEMS and t.isalpha() and len(t) >= 4
-    ]
-    if not candidates:
-        return None
-    # Longest token is most likely the brand; tie-break by first occurrence.
-    best = max(candidates, key=lambda t: (len(t), -tokens.index(t)))
-    return best
+    for t in tokens:
+        if (
+            t
+            and t.lower() not in _GENERIC_DECK_STEMS
+            and t.isalpha()
+            and len(t) >= 3
+        ):
+            return t
+    return None
 
 
 async def _run_document_analysis(
