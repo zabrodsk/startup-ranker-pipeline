@@ -16,6 +16,11 @@ from typing import Any
 
 from agent.batch import evaluate_from_specter
 from agent.ingest.specter_ingest import ingest_specter_company
+from agent.ingest.specter_mcp_client import (
+    SpecterDisambiguationError,
+    SpecterMCPError,
+    fetch_specter_company,
+)
 from agent.llm_catalog import serialize_selection
 from agent.llm_policy import (
     build_phase_model_policy,
@@ -111,11 +116,22 @@ async def _process_company(args: argparse.Namespace) -> int:
 
     _init_worker_cache(job_id, run_config, versions)
 
-    company, store = ingest_specter_company(
-        args.specter_companies,
-        args.specter_people,
-        company_index=args.company_index,
-    )
+    if args.specter_url:
+        company, store = fetch_specter_company(
+            args.specter_url,
+            expected_name=args.expected_name or None,
+        )
+    else:
+        if not args.specter_companies or args.company_index is None:
+            raise ValueError(
+                "specter_company_worker requires either --specter-url or "
+                "--specter-companies + --company-index"
+            )
+        company, store = ingest_specter_company(
+            args.specter_companies,
+            args.specter_people,
+            company_index=args.company_index,
+        )
     collector = RunTelemetryCollector(selected_llm=llm_selection)
     web_app._results_cache[job_id]["telemetry_collector"] = collector
 
@@ -221,9 +237,14 @@ async def _process_company(args: argparse.Namespace) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--job-id", required=True)
-    parser.add_argument("--specter-companies", required=True)
+    parser.add_argument("--specter-companies")
     parser.add_argument("--specter-people")
-    parser.add_argument("--company-index", type=int, required=True)
+    parser.add_argument("--company-index", type=int)
+    parser.add_argument("--specter-url", help="URL or domain for MCP-based intake")
+    parser.add_argument(
+        "--expected-name",
+        help="Expected company name; used to verify Specter MCP disambiguation",
+    )
     parser.add_argument("--absolute-index", type=int, required=True)
     parser.add_argument("--config-path", required=True)
     parser.add_argument("--vc-investment-strategy")

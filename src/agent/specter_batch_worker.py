@@ -21,7 +21,13 @@ import tempfile
 import traceback
 from typing import Any
 
-from agent.ingest.specter_ingest import ingest_specter_company, list_specter_companies
+from agent.dataclasses.company import Company
+from agent.ingest.specter_ingest import (
+    _company_slug,
+    ingest_specter_company,
+    list_specter_companies,
+)
+from agent.ingest.store import EvidenceStore
 from web import app as web_app
 import web.db as db
 
@@ -40,6 +46,92 @@ def _worker_id() -> str:
 
 def _normalize_company_key(name: str | None, slug: str | None) -> str:
     return f"{(slug or name or 'unknown').strip().lower()}"
+
+
+def _domain_root(value: str | None) -> str:
+    if not value:
+        return ""
+    s = value.strip().lower().lstrip("@").strip("'\"")
+    if "://" in s:
+        s = s.split("://", 1)[1]
+    if s.startswith("www."):
+        s = s[4:]
+    return s.split("/", 1)[0]
+
+
+def _slug_from_url(url: str) -> str:
+    root = _domain_root(url)
+    if not root:
+        return "unknown"
+    return _company_slug(root.replace(".", "-"))
+
+
+def _normalize_specter_urls(run_config: dict[str, Any]) -> list[dict[str, str]]:
+    raw = run_config.get("specter_urls") or []
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if isinstance(item, dict):
+            url = (item.get("url") or "").strip()
+            expected_name = (item.get("name") or "").strip() or None
+        else:
+            url = str(item or "").strip()
+            expected_name = None
+        if not url:
+            continue
+        domain_key = _domain_root(url) or url.lower()
+        if domain_key in seen:
+            continue
+        seen.add(domain_key)
+        out.append(
+            {
+                "url": url,
+                "domain": domain_key,
+                "expected_name": expected_name or "",
+                "slug": _slug_from_url(url),
+                "name": expected_name or domain_key,
+            }
+        )
+    return out
+
+
+def _build_company_tasks(
+    run_config: dict[str, Any],
+    companies_csv: Path | None,
+) -> list[dict[str, Any]]:
+    """Unified company task list across CSV and URL sources, dedup'd by domain.
+
+    Each task is one of two shapes::
+
+        {"mode": "csv", "index": int, "name": str, "slug": str, "domain": str | None}
+        {"mode": "url", "url": str, "name": str, "slug": str, "domain": str, "expected_name": str}
+
+    Dedup rule: when a CSV row and a URL share the same domain root, the CSV
+    task wins (richer data for the hybrid path). URLs that don't collide are
+    appended after CSV tasks.
+    """
+    tasks: list[dict[str, Any]] = []
+    seen_domains: set[str] = set()
+
+    if companies_csv is not None:
+        descriptors = list_specter_companies(companies_csv)
+        for d in descriptors:
+            domain = _domain_root(d.get("domain"))
+            if domain:
+                seen_domains.add(domain)
+            tasks.append({"mode": "csv", **d, "domain": domain or None})
+
+    for url_task in _normalize_specter_urls(run_config):
+        if url_task["domain"] in seen_domains:
+            _log(
+                f"deduping URL task {url_task['url']!r} — already covered by CSV row "
+                f"with same domain root"
+            )
+            continue
+        seen_domains.add(url_task["domain"])
+        tasks.append({"mode": "url", **url_task})
+
+    return tasks
 
 
 def _final_job_outcome(
@@ -107,13 +199,24 @@ def _specter_files_from_run_config(
     return companies_storage_path, people_storage_path
 
 
-def _download_worker_inputs(job_id: str, run_config: dict[str, Any]) -> tuple[Path, Path, Path | None]:
+def _download_worker_inputs(
+    job_id: str, run_config: dict[str, Any]
+) -> tuple[Path, Path | None, Path | None]:
+    """Materialize CSV inputs (if any) into a fresh temp work_dir.
+
+    Returns (work_dir, companies_csv | None, people_csv | None). The CSV pair
+    is None when the run is URL-only — the work_dir is still created because
+    the per-company subprocess needs a place for its config.json.
+    """
+    work_dir = Path(tempfile.mkdtemp(prefix=f"specter-worker-{job_id}-"))
+
     source_files = db.load_source_files(job_id)
     companies_storage_path, people_storage_path = _specter_files_from_run_config(run_config, source_files)
     if not companies_storage_path:
-        raise RuntimeError("Missing shared Specter company export for worker-backed job.")
+        # URL-only batch (or hybrid with no CSV side). That's allowed when
+        # run_config.specter_urls is non-empty.
+        return work_dir, None, None
 
-    work_dir = Path(tempfile.mkdtemp(prefix=f"specter-worker-{job_id}-"))
     companies_path = work_dir / "companies.csv"
     if not db.download_source_file_to_path(companies_storage_path, companies_path):
         raise RuntimeError("Failed to download shared Specter company export.")
@@ -150,14 +253,27 @@ def _failure_result(
 def _persist_subprocess_failure(
     job_id: str,
     *,
-    companies_csv: Path,
+    task: dict[str, Any],
+    companies_csv: Path | None,
     people_csv: Path | None,
-    company_index: int,
     run_config: dict[str, Any],
     versions: dict[str, Any],
     error_message: str,
 ) -> None:
-    company, store = ingest_specter_company(companies_csv, people_csv, company_index=company_index)
+    if task.get("mode") == "csv":
+        if companies_csv is None:
+            raise RuntimeError("CSV task encountered without a downloaded CSV file")
+        company, store = ingest_specter_company(
+            companies_csv, people_csv, company_index=int(task["index"])
+        )
+    else:
+        # URL task failed before producing real evidence — synthesize a minimal
+        # Company/EvidenceStore so the failure is persisted with stable identity.
+        slug = task.get("slug") or "unknown"
+        domain = task.get("domain") or None
+        name = task.get("expected_name") or task.get("name") or domain or "Unknown"
+        company = Company(name=name, domain=domain)
+        store = EvidenceStore(startup_slug=slug, chunks=[])
     status = "error"
     payload = _failure_result(
         job_id,
@@ -201,7 +317,7 @@ async def _run_company_subprocess(
     *,
     job_id: str,
     work_dir: Path,
-    companies_csv: Path,
+    companies_csv: Path | None,
     people_csv: Path | None,
     company_descriptor: dict[str, Any],
     absolute_index: int,
@@ -214,6 +330,7 @@ async def _run_company_subprocess(
     completed_companies: int,
     failed_companies: int,
 ) -> tuple[int, int]:
+    mode = company_descriptor.get("mode", "csv")
     company_name = str(company_descriptor.get("name") or company_descriptor.get("slug") or "company")
     prefix = f"Worker evaluating {company_name} ({absolute_index}/{total_companies})"
     _log(f"{job_id}: starting company {absolute_index}/{total_companies} ({company_name})")
@@ -248,17 +365,30 @@ async def _run_company_subprocess(
         "agent.specter_company_worker",
         "--job-id",
         job_id,
-        "--specter-companies",
-        str(companies_csv),
-        "--company-index",
-        str(int(company_descriptor["index"])),
         "--absolute-index",
         str(absolute_index),
         "--config-path",
         str(config_path),
     ]
-    if people_csv:
-        cmd.extend(["--specter-people", str(people_csv)])
+    if mode == "csv":
+        if companies_csv is None:
+            raise RuntimeError(
+                f"CSV company task {company_name!r} but no CSV input was downloaded"
+            )
+        cmd.extend(["--specter-companies", str(companies_csv)])
+        cmd.extend(["--company-index", str(int(company_descriptor["index"]))])
+        if people_csv:
+            cmd.extend(["--specter-people", str(people_csv)])
+    elif mode == "url":
+        url = str(company_descriptor.get("url") or "").strip()
+        if not url:
+            raise RuntimeError(f"URL task missing url field: {company_descriptor!r}")
+        cmd.extend(["--specter-url", url])
+        expected = str(company_descriptor.get("expected_name") or "").strip()
+        if expected:
+            cmd.extend(["--expected-name", expected])
+    else:
+        raise RuntimeError(f"Unknown company task mode: {mode!r}")
     if use_web_search:
         cmd.append("--use-web-search")
     if vc_investment_strategy:
@@ -370,9 +500,9 @@ async def _run_company_subprocess(
             _log(f"{job_id}: company {absolute_index}/{total_companies} worker exited with code {return_code}")
             _persist_subprocess_failure(
                 job_id,
+                task=company_descriptor,
                 companies_csv=companies_csv,
                 people_csv=people_csv,
-                company_index=int(company_descriptor["index"]),
                 run_config=run_config,
                 versions=versions,
                 error_message=error_message,
@@ -422,19 +552,23 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
     work_dir: Path | None = None
     try:
         work_dir, companies_csv, people_csv = _download_worker_inputs(job_id, run_config)
-        _log(f"{job_id}: downloaded worker inputs")
-        descriptors = list_specter_companies(companies_csv)
+        _log(f"{job_id}: downloaded worker inputs (csv={companies_csv is not None})")
+        tasks = _build_company_tasks(run_config, companies_csv)
         max_startups = web_app._parse_max_startups_from_instructions(run_config.get("instructions"))
         if max_startups is not None:
-            descriptors = descriptors[:max_startups]
+            tasks = tasks[:max_startups]
 
         completed_keys, completed_companies, failed_companies = _load_completed_company_keys(job_id)
-        total_companies = len(descriptors)
+        total_companies = len(tasks)
         if total_companies <= 0:
-            raise RuntimeError("No companies found in Specter data.")
+            raise RuntimeError(
+                "No companies found — neither CSV exports nor URL list were provided."
+            )
         _log(
-            f"{job_id}: loaded {total_companies} company descriptors "
-            f"(already_completed={len(completed_keys)}, failed={failed_companies})"
+            f"{job_id}: loaded {total_companies} company tasks "
+            f"({sum(1 for t in tasks if t['mode'] == 'csv')} csv, "
+            f"{sum(1 for t in tasks if t['mode'] == 'url')} url; "
+            f"already_completed={len(completed_keys)}, failed={failed_companies})"
         )
 
         if completed_keys:
@@ -451,8 +585,8 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
                 worker_id=worker_id,
             )
 
-        for absolute_index, descriptor in enumerate(descriptors, start=1):
-            company_key = _normalize_company_key(descriptor.get("name"), descriptor.get("slug"))
+        for absolute_index, task in enumerate(tasks, start=1):
+            company_key = _normalize_company_key(task.get("name"), task.get("slug"))
             if company_key in completed_keys:
                 _log(f"{job_id}: skipping already persisted company {absolute_index}/{total_companies}")
                 continue
@@ -461,7 +595,7 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
                 work_dir=work_dir,
                 companies_csv=companies_csv,
                 people_csv=people_csv,
-                company_descriptor=descriptor,
+                company_descriptor=task,
                 absolute_index=absolute_index,
                 total_companies=total_companies,
                 run_config=run_config,
