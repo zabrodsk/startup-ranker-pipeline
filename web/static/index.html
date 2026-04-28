@@ -6103,7 +6103,10 @@ async function ensureSupabaseClient() {
   if (!config?.configured) return null;
   if (supabaseClient) return supabaseClient;
   if (!supabaseClientPromise) {
-    supabaseClientPromise = import('https://esm.sh/@supabase/supabase-js@2')
+    // Switched from esm.sh to jsdelivr's +esm bundle — esm.sh chains imports
+    // across multiple submodules (auth-js, postgrest-js, etc.) which Safari's
+    // ITP can block; jsdelivr serves a single bundled module that loads cleanly.
+    supabaseClientPromise = import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm')
       .then((mod) => {
         supabaseClient = mod.createClient(config.url, config.anon_key, {
           auth: {
