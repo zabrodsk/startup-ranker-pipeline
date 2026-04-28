@@ -4684,7 +4684,7 @@
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px;vertical-align:middle;margin-right:6px"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
               Fetch deep team profiles (Specter)
             </span>
-            <span class="toggle-desc">Pulls full LinkedIn-grade career history, education, and seniority for every founder and key person. Adds ~60% more MCP calls per company; recommended only when the deck's team data is sparse. Requires Specter MCP augmentation (above) to be on.</span>
+            <span class="toggle-desc">Pulls full LinkedIn-grade career history, education, and seniority for every founder and key person via Specter MCP. Adds ~60% more MCP calls per company. Most valuable when no deck text is available (URL-list mode) or when the deck's team data is sparse. In pitch-deck mode, requires the Specter MCP augmentation toggle above to also be on.</span>
           </div>
         </label>
       </div>
@@ -9064,9 +9064,14 @@ function setInputMode(mode) {
   // Specter MCP augmentation toggle is only meaningful in pitch-deck mode.
   const specterMcpToggle = $('#specter-mcp-toggle');
   if (specterMcpToggle) specterMcpToggle.style.display = mode === 'pitchdeck' ? 'block' : 'none';
-  // Deep team profiles toggle — also pitch-deck only; child of specter MCP.
+  // Deep team profiles toggle — applies to any MCP-backed run, so both
+  // pitch-deck (URL extracted from deck) and specter (URL-list) modes.
+  // CSV-only Specter intake ignores it server-side.
   const fetchFullTeamToggle = $('#fetch-full-team-toggle');
-  if (fetchFullTeamToggle) fetchFullTeamToggle.style.display = mode === 'pitchdeck' ? 'block' : 'none';
+  if (fetchFullTeamToggle) {
+    fetchFullTeamToggle.style.display =
+      (mode === 'pitchdeck' || mode === 'specter') ? 'block' : 'none';
+  }
   // URLs only count for Specter mode — re-render input section so the
   // web-search toggle + Analyze button hide when leaving Specter with URLs entered.
   renderFiles();

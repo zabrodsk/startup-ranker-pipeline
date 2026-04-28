@@ -120,6 +120,7 @@ async def _process_company(args: argparse.Namespace) -> int:
         company, store = fetch_specter_company(
             args.specter_url,
             expected_name=args.expected_name or None,
+            fetch_full_team=bool(args.fetch_full_team),
         )
     else:
         if not args.specter_companies or args.company_index is None:
@@ -249,6 +250,15 @@ def main() -> int:
     parser.add_argument("--config-path", required=True)
     parser.add_argument("--vc-investment-strategy")
     parser.add_argument("--use-web-search", action="store_true")
+    parser.add_argument(
+        "--fetch-full-team",
+        action="store_true",
+        help=(
+            "When set, fan out to get_person_profile per founder/key person "
+            "for full LinkedIn-grade career history. Adds ~60%% more MCP "
+            "calls per company. Only affects URL-based intake."
+        ),
+    )
     args = parser.parse_args()
 
     return asyncio.run(_process_company(args))

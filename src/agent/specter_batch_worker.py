@@ -325,6 +325,7 @@ async def _run_company_subprocess(
     run_config: dict[str, Any],
     versions: dict[str, Any],
     use_web_search: bool,
+    fetch_full_team: bool,
     vc_investment_strategy: str | None,
     worker_id: str,
     completed_companies: int,
@@ -387,6 +388,8 @@ async def _run_company_subprocess(
         expected = str(company_descriptor.get("expected_name") or "").strip()
         if expected:
             cmd.extend(["--expected-name", expected])
+        if fetch_full_team:
+            cmd.append("--fetch-full-team")
     else:
         raise RuntimeError(f"Unknown company task mode: {mode!r}")
     if use_web_search:
@@ -547,6 +550,7 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
         "schema_version": run_config.get("schema_version"),
     }
     use_web_search = bool(run_config.get("use_web_search"))
+    fetch_full_team = bool(run_config.get("fetch_full_team"))
     vc_investment_strategy = run_config.get("vc_investment_strategy")
 
     work_dir: Path | None = None
@@ -601,6 +605,7 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
                 run_config=run_config,
                 versions=versions,
                 use_web_search=use_web_search,
+                fetch_full_team=fetch_full_team,
                 vc_investment_strategy=vc_investment_strategy,
                 worker_id=worker_id,
                 completed_companies=completed_companies,
