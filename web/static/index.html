@@ -8916,12 +8916,26 @@ function formatSize(bytes) {
 function renderFiles() {
   const section = $('#files-section');
   const list = $('#files-list');
-  if (uploadedFiles.length === 0) {
+  const header = section?.querySelector('.files-header');
+  const haveFiles = uploadedFiles.length > 0;
+  // URLs only feed the Specter MCP path. If the user types URLs but then
+  // switches to Pitch deck / Multi-file, the URLs are ignored, so we treat
+  // them as absent for visibility purposes.
+  const haveUrls = inputMode === 'specter' && specterUrls.length > 0;
+  if (!haveFiles && !haveUrls) {
     section.style.display = 'none';
     updateAnalyzeButtonState();
     return;
   }
   section.style.display = 'block';
+  // URL-only run: hide the file-list and "Uploaded files" header (they only
+  // describe file uploads). The web-search toggle + Analyze button remain.
+  if (header) header.style.display = haveFiles ? 'flex' : 'none';
+  if (list) list.style.display = haveFiles ? 'block' : 'none';
+  if (!haveFiles) {
+    updateAnalyzeButtonState();
+    return;
+  }
   list.innerHTML = uploadedFiles.map((f, i) => {
     const ext = getExt(f.name);
     const color = fileColors[ext] || '#808080';
@@ -9012,6 +9026,9 @@ function setInputMode(mode) {
   // Show the URL textarea section only in Specter mode
   const urlsSection = $('#specter-urls-section');
   if (urlsSection) urlsSection.style.display = mode === 'specter' ? 'block' : 'none';
+  // URLs only count for Specter mode — re-render input section so the
+  // web-search toggle + Analyze button hide when leaving Specter with URLs entered.
+  renderFiles();
   updateRunNameVisibility();
   updateAnalyzeButtonState();
 }
@@ -9044,6 +9061,10 @@ if (_specterUrlsInput) {
   _specterUrlsInput.addEventListener('input', () => {
     specterUrls = parseSpecterUrls(_specterUrlsInput.value);
     updateSpecterUrlsCounter();
+    // renderFiles handles showing/hiding #files-section, which contains the
+    // web-search toggle AND the Analyze & Rank button. Without this call,
+    // a URL-only batch would have no way to submit.
+    renderFiles();
     updateAnalyzeButtonState();
   });
 }
