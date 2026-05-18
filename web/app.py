@@ -127,6 +127,7 @@ from agent.llm_policy import (
     resolve_effective_phase_models,
 )
 from agent.company_chat import answer_company_question, build_company_chat_store
+from agent.pipeline.scoring_signals import build_scoring_signals
 from agent.run_context import (
     RunTelemetryCollector,
     build_run_costs_from_model_executions,
@@ -2270,13 +2271,15 @@ def _parse_max_startups_from_instructions(instructions: str | None) -> int | Non
 
 
 @app.get("/", response_class=HTMLResponse)
-async def root():
+async def root(response: Response):
+    _set_no_store_headers(response)
     return (STATIC_DIR / "index.html").read_text()
 
 
 @app.get("/portal", response_class=HTMLResponse)
-async def portal():
+async def portal(response: Response):
     """Serve the startup / VC self-service portal (separate from the internal tool)."""
+    _set_no_store_headers(response)
     return (STATIC_DIR / "portal.html").read_text()
 
 
@@ -4881,6 +4884,11 @@ async def _run_re_evaluation(
                         "company": company,
                         "config": config,
                         "all_qa_pairs": all_qa_pairs,
+                        "scoring_signals": build_scoring_signals(
+                            company,
+                            evidence_store=store,
+                            all_qa_pairs=all_qa_pairs,
+                        ),
                         "vc_context": "",
                         "slug": company_id,
                         "prompt_overrides": {},
@@ -4914,6 +4922,11 @@ async def _run_re_evaluation(
                         "company": company,
                         "config": config,
                         "all_qa_pairs": all_qa_pairs,
+                        "scoring_signals": build_scoring_signals(
+                            company,
+                            evidence_store=store,
+                            all_qa_pairs=all_qa_pairs,
+                        ),
                         "vc_context": "",
                         "slug": company_id,
                         "prompt_overrides": {},
@@ -5187,6 +5200,11 @@ async def _run_full_analysis(company_id: str) -> None:
                 "company": company,
                 "config": config,
                 "all_qa_pairs": all_qa_pairs,
+                "scoring_signals": build_scoring_signals(
+                    company,
+                    evidence_store=store,
+                    all_qa_pairs=all_qa_pairs,
+                ),
                 "vc_context": "",
                 "slug": company_id,
                 "prompt_overrides": {},
@@ -5820,8 +5838,18 @@ def _compose_results_payload(
                 dimension_scores_payload.append(
                     {
                         "dimension": d.dimension,
+                        "raw_score": d.raw_score,
                         "adjusted_score": display_score,
                         "confidence": d.confidence,
+                        "evidence_count": d.evidence_count,
+                        "top_qa_indices": list(d.top_qa_indices or []),
+                        "sub_scores": dict(getattr(d, "sub_scores", {}) or {}),
+                        "founder_archetype": getattr(d, "founder_archetype", "") or "",
+                        "stage_context": getattr(d, "stage_context", "") or "",
+                        "adjustment_policy": getattr(d, "adjustment_policy", "") or "",
+                        "upside_ceiling_score": getattr(d, "upside_ceiling_score", None),
+                        "risk_adjusted_potential_score": getattr(d, "risk_adjusted_potential_score", None),
+                        "scoring_signal_refs": list(getattr(d, "scoring_signal_refs", []) or []),
                         "evidence_snippets": d.evidence_snippets,
                         "critical_gaps": d.critical_gaps,
                     }
@@ -5833,6 +5861,8 @@ def _compose_results_payload(
                 "strategy_fit_score": ranking.strategy_fit_score,
                 "team_score": ranking.team_score,
                 "upside_score": ranking.upside_score,
+                "upside_ceiling_score": getattr(ranking, "upside_ceiling_score", None),
+                "risk_adjusted_potential_score": getattr(ranking, "risk_adjusted_potential_score", None),
                 "bucket": ranking.bucket,
                 "strategy_fit_summary": getattr(ranking, "strategy_fit_summary", "") or "",
                 "team_summary": getattr(ranking, "team_summary", "") or "",
@@ -5840,6 +5870,11 @@ def _compose_results_payload(
                 "key_points": getattr(ranking, "key_points", []) or [],
                 "red_flags": getattr(ranking, "red_flags", []) or [],
                 "dimension_scores": dimension_scores_payload,
+                "team_subscores": getattr(ranking, "team_subscores", {}) or {},
+                "potential_subscores": getattr(ranking, "potential_subscores", {}) or {},
+                "founder_archetype": getattr(ranking, "founder_archetype", "") or "",
+                "stage_context": getattr(ranking, "stage_context", "") or "",
+                "scoring_signals_used": getattr(ranking, "scoring_signals_used", {}) or {},
             }
 
         payload = {

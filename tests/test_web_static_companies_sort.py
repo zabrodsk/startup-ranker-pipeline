@@ -26,3 +26,15 @@ def test_specter_url_mode_shows_deep_team_profiles_toggle() -> None:
     assert "(inputMode === 'pitchdeck' || haveSpecterUrls) ? 'block' : 'none'" in html
     assert "syncUploadOptionToggles();\n    updateAnalyzeButtonState();" in html
     assert "fetch_full_team: fetchFullTeam" in html
+
+
+def test_scoring_signals_are_summarized_not_dumped() -> None:
+    html = (Path(__file__).resolve().parents[1] / "web" / "static" / "index.html").read_text()
+
+    assert "function buildStructuredSignalsSummary(signals)" in html
+    assert "<ul>${rows.join('')}</ul>" in html
+    assert "Client / traction:" in html
+    assert "Founder archetype evidence:" in html
+    assert "Specter team highlights:" in html
+    assert "duplicate Specter highlights hidden" not in html
+    assert "signals.specter_highlights.map(h => h.label || h).join(', ')" not in html

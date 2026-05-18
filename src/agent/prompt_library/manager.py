@@ -227,10 +227,29 @@ def _load_values_from_disk() -> dict[str, Any]:
             loaded = {}
         for key, value in loaded.items():
             values[key] = value
+        _ensure_scoring_prompt_compat(values)
         _validate_values(values)
         return values
     except Exception:
         return get_default_values()
+
+
+def _ensure_scoring_prompt_compat(values: dict[str, Any]) -> None:
+    """Upgrade pre-redesign ranking prompts in-place.
+
+    Runtime prompt catalogs and run-level prompt overrides can lag behind code
+    defaults. The scoring redesign adds structured-signal placeholders and new
+    output fields; old ranking prompts would silently bypass the new schema.
+    """
+    defaults = get_default_values()
+    if "{scoring_signals}" not in str(values.get("ranking.team.user", "")):
+        values["ranking.team.user"] = defaults["ranking.team.user"]
+    if "{scoring_signals}" not in str(values.get("ranking.upside.user", "")):
+        values["ranking.upside.user"] = defaults["ranking.upside.user"]
+    if "founder_archetype" not in str(values.get("ranking.team.system", "")):
+        values["ranking.team.system"] = defaults["ranking.team.system"]
+    if "risk_adjusted_potential_score" not in str(values.get("ranking.upside.system", "")):
+        values["ranking.upside.system"] = defaults["ranking.upside.system"]
 
 
 def _write_catalog(catalog: dict[str, Any]) -> None:
@@ -245,6 +264,7 @@ def _resolve_values(run_overrides: dict[str, Any] | None = None) -> dict[str, An
     override_values = _extract_overrides(run_overrides)
     for key, value in override_values.items():
         values[key] = value
+    _ensure_scoring_prompt_compat(values)
     _validate_values(values)
     return values
 

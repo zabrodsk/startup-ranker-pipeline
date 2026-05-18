@@ -11,6 +11,7 @@ if str(ROOT / "src") not in sys.path:
 from agent.dataclasses.argument import Argument
 from agent.dataclasses.company import Company
 from agent.dataclasses.config import Config
+from agent.dataclasses.ranking import CompanyRankingResult
 from agent.ingest.store import Chunk, EvidenceStore
 from agent.llm_policy import build_phase_model_policy, build_pipeline_policy
 from agent.pipeline.state.decomposition import DecompositionInput, DecompositionNode, DecompositionTree
@@ -23,10 +24,35 @@ from agent.pipeline.state.schemas import (
     ExecutiveSummaryOutput,
     IndividualRefinedArgumentOutput,
     SingleArgumentScore,
+    SubScoreOutput,
 )
 from agent.pipeline.stages import critique, decomposition, evaluation, generation, ranking, refinement
 from agent.run_context import get_current_llm_selection, get_current_stage_name, use_run_context
 import agent.evidence_answering as evidence_answering
+
+
+def _dimension_score_output(**overrides):
+    values = {
+        "raw_score": 80,
+        "confidence": 0.8,
+        "evidence_count": 1,
+        "top_qa_indices": [0],
+        "evidence_snippets": ["evidence"],
+        "critical_gaps": [],
+        "sub_scores": [],
+        "founder_archetype": "",
+        "stage_context": "",
+        "upside_ceiling_score": None,
+        "risk_adjusted_potential_score": None,
+        "scoring_signal_refs": [],
+    }
+    values.update(overrides)
+    if isinstance(values["sub_scores"], dict):
+        values["sub_scores"] = [
+            SubScoreOutput(name=name, score=score)
+            for name, score in values["sub_scores"].items()
+        ]
+    return DimensionScoreOutput(**values)
 
 
 class _FakeRunnable:
@@ -109,7 +135,7 @@ class _RankingSelectionRunnable:
                 key_points=["k1"],
                 red_flags=["r1"],
             )
-        return DimensionScoreOutput(
+        return _dimension_score_output(
             raw_score=80,
             confidence=0.8,
             evidence_count=1,
@@ -137,7 +163,7 @@ class _RankingRunnable:
                 key_points=["k1"],
                 red_flags=["r1"],
             )
-        return DimensionScoreOutput(
+        return _dimension_score_output(
             raw_score=80,
             confidence=0.8,
             evidence_count=1,
@@ -477,7 +503,7 @@ def test_ranking_falls_back_from_claude_to_gpt5_on_auth_error(monkeypatch):
         ranking,
         "get_llm",
         lambda temperature=0.0, reasoning_effort=None: _AuthFallbackRunnable(
-            DimensionScoreOutput(
+            _dimension_score_output(
                 raw_score=82,
                 confidence=0.9,
                 evidence_count=1,
@@ -563,7 +589,7 @@ def test_ranking_keeps_only_valid_top_qa_indices_for_dimension(monkeypatch):
         ranking,
         "get_llm",
         lambda temperature=0.0, reasoning_effort=None: _FakeRunnable(
-            DimensionScoreOutput(
+            _dimension_score_output(
                 raw_score=82,
                 confidence=0.9,
                 evidence_count=2,
@@ -618,18 +644,24 @@ def test_ranking_uses_raw_upside_score_and_potential_specific_stage(monkeypatch)
             seen_stages.append(stage)
             if stage == "ranking_upside_score":
                 seen_temperatures.append((stage, 0.7))
-                return DimensionScoreOutput(
-                    raw_score=95,
+                return _dimension_score_output(
+                    raw_score=88,
                     confidence=0.1,
+                    upside_ceiling_score=95,
+                    risk_adjusted_potential_score=88,
+                    sub_scores={"traction_relative_to_stage": 70},
                     evidence_count=1,
                     top_qa_indices=[0],
                     evidence_snippets=["huge upside"],
                     critical_gaps=["execution risk"],
                 )
             seen_temperatures.append((stage, 0.0))
-            return DimensionScoreOutput(
+            return _dimension_score_output(
                 raw_score=80,
                 confidence=0.5,
+                sub_scores={"founder_market_fit": 80},
+                founder_archetype="serial founder with exit",
+                stage_context="Seed-stage team with sparse governance signals",
                 evidence_count=1,
                 top_qa_indices=[0],
                 evidence_snippets=["evidence"],
@@ -662,8 +694,12 @@ def test_ranking_uses_raw_upside_score_and_potential_specific_stage(monkeypatch)
         result = ranking.score_company_dimensions(state)["ranking_result"]
 
     assert result.strategy_fit_score == 68.0
-    assert result.team_score == 68.0
+    assert result.team_score == 74.0
+    assert result.founder_archetype == "serial founder with exit"
+    assert result.stage_context == "Seed-stage team with sparse governance signals"
     assert result.upside_score == 95
+    assert result.upside_ceiling_score == 95
+    assert result.risk_adjusted_potential_score == 88
     assert seen_stages == [
         "ranking_dimension_score",
         "ranking_dimension_score",
@@ -674,6 +710,23 @@ def test_ranking_uses_raw_upside_score_and_potential_specific_stage(monkeypatch)
         ("ranking_dimension_score", 0.0),
         ("ranking_upside_score", 0.7),
     ]
+
+
+def test_composite_rank_uses_risk_adjusted_potential_score():
+    result = CompanyRankingResult(
+        company_name="Acme",
+        strategy_fit_score=60,
+        team_score=70,
+        upside_score=95,
+        upside_ceiling_score=95,
+        risk_adjusted_potential_score=50,
+    )
+    state = IterativeInvestmentStoryState(company=Company(name="Acme"), ranking_result=result)
+
+    out = ranking.compute_composite_rank(state)["ranking_result"]
+
+    assert out.composite_score == 60.0
+    assert out.min_dimension_score == 50
 
 
 def test_pipeline_policy_can_route_five_user_selected_models(monkeypatch):

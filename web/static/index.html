@@ -3761,6 +3761,9 @@
     .evidence-dim { margin-bottom: 8px; }
     .executive-summary-container { margin: 12px 0 16px; font-size: 13px; }
     .executive-summary-block .dim-summary { margin-bottom: 8px; line-height: 1.5; }
+    .executive-summary-block .structured-signals-summary ul { margin: 6px 0 0 18px; padding: 0; }
+    .executive-summary-block .structured-signals-summary li { margin: 3px 0; }
+    .executive-summary-block .muted { color: var(--muted); }
     .executive-summary-block .audit-section-title {
       color: var(--green);
     }
@@ -7122,10 +7125,12 @@ function getCompanyDimScores(company) {
   // 2. Flat keys on ranking_result (batch-mode runs)
   if (dimScores.strategy_fit == null && ranking.strategy_fit_score != null) dimScores.strategy_fit = ranking.strategy_fit_score;
   if (dimScores.team == null && ranking.team_score != null) dimScores.team = ranking.team_score;
+  if (dimScores.upside == null && ranking.risk_adjusted_potential_score != null) dimScores.upside = ranking.risk_adjusted_potential_score;
   if (dimScores.upside == null && ranking.upside_score != null) dimScores.upside = ranking.upside_score;
   // 3. Fallback to summary_rows[0]
   if (dimScores.strategy_fit == null && summary.strategy_fit_score != null) dimScores.strategy_fit = summary.strategy_fit_score;
   if (dimScores.team == null && summary.team_score != null) dimScores.team = summary.team_score;
+  if (dimScores.upside == null && summary.risk_adjusted_potential_score != null) dimScores.upside = summary.risk_adjusted_potential_score;
   if (dimScores.upside == null && summary.upside_score != null) dimScores.upside = summary.upside_score;
   return dimScores;
 }
@@ -7651,13 +7656,15 @@ function renderCompanyDetail(company, run) {
         ? [
             { dimension: 'strategy_fit', adjusted_score: summary.strategy_fit_score },
             { dimension: 'team', adjusted_score: summary.team_score },
-            { dimension: 'upside', adjusted_score: summary.upside_score },
+            { dimension: 'upside', adjusted_score: summary.risk_adjusted_potential_score ?? summary.upside_score },
           ]
         : []));
   const dimBars = detailDimScores.length
     ? buildDimensionBars(detailDimScores, typeof composite === 'number' ? composite : null, companySlug)
     : '';
-  const executiveSummaryBlock = buildExecutiveSummaryBlock(Object.keys(ranking).length ? ranking : summary);
+  const rankingForDisplay = Object.keys(ranking).length ? ranking : summary;
+  const executiveSummaryBlock = buildExecutiveSummaryBlock(rankingForDisplay);
+  const scoringDetailsBlock = buildScoringDetailsBlock(rankingForDisplay);
   const proHtml = getCompanyDetailArgumentHtml(result, 'pro');
   const contraHtml = getCompanyDetailArgumentHtml(result, 'contra');
   const personIntelHtml = renderPersonIntelSection(
@@ -7681,6 +7688,7 @@ function renderCompanyDetail(company, run) {
         </div>
         ${dimBars ? `<div class="dim-bars-container">${dimBars}</div>` : ''}
         ${executiveSummaryBlock ? `<div class="executive-summary-container">${executiveSummaryBlock}</div>` : ''}
+        ${scoringDetailsBlock ? `<div class="executive-summary-container">${scoringDetailsBlock}</div>` : ''}
         ${SHOW_PRO_CONTRA_ARGUMENTS && (proHtml || contraHtml) ? `<div class="args-row">
           <div class="args-col">
             <div class="title pro">TOP PRO ARGUMENTS</div>
@@ -10098,6 +10106,115 @@ function buildDimensionBars(dimScores, compositeScore = null, auditSlug = '') {
   return rows;
 }
 
+function buildSubscoreList(title, values) {
+  if (!values || typeof values !== 'object' || Array.isArray(values)) return '';
+  const entries = Object.entries(values).filter(([, value]) => value !== null && value !== undefined && value !== '');
+  if (!entries.length) return '';
+  return `<div class="dim-summary"><strong>${escapeHtml(title)}:</strong> ${entries.map(([key, value]) => `${escapeHtml(key.replace(/_/g, ' '))} ${escapeHtml(String(value))}`).join(' · ')}</div>`;
+}
+
+function uniqueSignalLabels(values, mapper = null) {
+  if (!Array.isArray(values)) return [];
+  const seen = new Set();
+  const labels = [];
+  values.forEach((item) => {
+    const raw = mapper ? mapper(item) : item;
+    const label = String(raw || '').trim();
+    if (!label) return;
+    const key = label.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    labels.push(label);
+  });
+  return labels;
+}
+
+function normalizeSignalLabel(label) {
+  return String(label || '')
+    .replace(/\bVc\b/g, 'VC')
+    .replace(/\bAi\b/g, 'AI')
+    .replace(/_/g, ' ')
+    .trim();
+}
+
+function buildStructuredSignalsSummary(signals) {
+  if (!signals || typeof signals !== 'object') return '';
+
+  const rows = [];
+  const reportedClients = uniqueSignalLabels(signals.reported_clients);
+  const youngFounderSignals = uniqueSignalLabels(signals.young_founder_signals, normalizeSignalLabel);
+  const archetypeEvidence = uniqueSignalLabels(signals.founder_archetype_evidence, normalizeSignalLabel);
+  const marketPull = uniqueSignalLabels(signals.market_pull_signals, normalizeSignalLabel);
+  const enterpriseReadiness = uniqueSignalLabels(signals.enterprise_readiness_signals, normalizeSignalLabel);
+  const highlights = uniqueSignalLabels(signals.specter_highlights, (item) => normalizeSignalLabel(item?.label || item));
+  const investors = uniqueSignalLabels(signals.investors, (item) => {
+    const name = item?.name || item;
+    const tier = item?.tier ? ` (${String(item.tier).replace(/^tier_/, 'Tier ').replace(/_/g, ' ')})` : '';
+    return `${name || ''}${tier}`;
+  });
+  const investorInterest = uniqueSignalLabels(signals.investor_interest_signals, (item) => {
+    if (!item || typeof item !== 'object') return item;
+    return [item.date, item.recency_weight].filter(Boolean).join(' ');
+  });
+
+  if (reportedClients.length) {
+    rows.push(`<li><strong>Client / traction:</strong> ${escapeHtml(reportedClients.join(', '))} <span class="muted">(reported; not independently verified as paid revenue)</span></li>`);
+  }
+  if (youngFounderSignals.length) {
+    rows.push(`<li><strong>Young-founder evidence:</strong> ${escapeHtml(youngFounderSignals.join(', '))}</li>`);
+  }
+  if (archetypeEvidence.length) {
+    rows.push(`<li><strong>Founder archetype evidence:</strong> ${escapeHtml(archetypeEvidence.join(', '))}</li>`);
+  }
+  if (highlights.length) {
+    rows.push(`<li><strong>Specter team highlights:</strong> ${escapeHtml(highlights.join(', '))}</li>`);
+  }
+  if (marketPull.length) {
+    rows.push(`<li><strong>Market-pull signals:</strong> ${escapeHtml(marketPull.join(', '))}</li>`);
+  }
+  if (enterpriseReadiness.length) {
+    rows.push(`<li><strong>Enterprise readiness:</strong> ${escapeHtml(enterpriseReadiness.join(', '))}</li>`);
+  }
+  if (investors.length) {
+    rows.push(`<li><strong>Investor validation:</strong> ${escapeHtml(investors.slice(0, 8).join(', '))}${investors.length > 8 ? escapeHtml(` + ${investors.length - 8} more`) : ''}</li>`);
+  }
+  if (investorInterest.length) {
+    rows.push(`<li><strong>Investor interest freshness:</strong> ${escapeHtml(investorInterest.join(', '))}</li>`);
+  }
+  if (signals.stage || signals.stage_context) {
+    rows.push(`<li><strong>Stage / scale:</strong> ${escapeHtml([signals.stage, signals.stage_context].filter(Boolean).join(' · '))}</li>`);
+  }
+  if (signals.employee_count != null && signals.employee_count !== '') {
+    rows.push(`<li><strong>Employee count:</strong> ${escapeHtml(String(signals.employee_count))}</li>`);
+  }
+  if (signals.department_mix) {
+    rows.push(`<li><strong>Department mix:</strong> ${escapeHtml(String(signals.department_mix))}</li>`);
+  }
+  if (!rows.length) return '';
+  return `<div class="dim-summary structured-signals-summary"><strong>Structured signals used:</strong><ul>${rows.join('')}</ul></div>`;
+}
+
+function buildScoringDetailsBlock(rr) {
+  if (!rr) return '';
+  const bits = [];
+  if (rr.upside_ceiling_score != null || rr.risk_adjusted_potential_score != null) {
+    bits.push(`<div class="dim-summary"><strong>Potential split:</strong> Upside Ceiling ${escapeHtml(String(rr.upside_ceiling_score ?? rr.upside_score ?? '—'))} · Risk-Adjusted ${escapeHtml(String(rr.risk_adjusted_potential_score ?? '—'))}</div>`);
+  }
+  if (rr.founder_archetype) bits.push(`<div class="dim-summary"><strong>Founder archetype:</strong> ${escapeHtml(rr.founder_archetype)}</div>`);
+  if (rr.stage_context) bits.push(`<div class="dim-summary"><strong>Stage context:</strong> ${escapeHtml(rr.stage_context)}</div>`);
+  const teamSubscores = buildSubscoreList('Team sub-scores', rr.team_subscores);
+  if (teamSubscores) bits.push(teamSubscores);
+  const potentialSubscores = buildSubscoreList('Potential sub-scores', rr.potential_subscores);
+  if (potentialSubscores) bits.push(potentialSubscores);
+  const signals = rr.scoring_signals_used && typeof rr.scoring_signals_used === 'object' ? rr.scoring_signals_used : null;
+  if (signals) {
+    const structuredSignals = buildStructuredSignalsSummary(signals);
+    if (structuredSignals) bits.push(structuredSignals);
+  }
+  if (!bits.length) return '';
+  return `<div class="executive-summary-block"><div class="audit-section-title">Scoring Detail</div>${bits.join('')}</div>`;
+}
+
 function buildEvidenceSnippets(dimScores) {
   if (!dimScores || !dimScores.length) return '';
   let html = '<div class="ranking-evidence-section"><div class="audit-section-title">Evidence snippets</div>';
@@ -10265,6 +10382,7 @@ function renderSingleResult(r) {
 
   const dimBars = r.ranking_result?.dimension_scores ? buildDimensionBars(r.ranking_result.dimension_scores, composite !== undefined ? composite : r.total_score, r.startup_slug || r.company_name || '') : '';
   const executiveSummaryBlock = buildExecutiveSummaryBlock(r.ranking_result);
+  const scoringDetailsBlock = buildScoringDetailsBlock(r.ranking_result);
   const personIntelHtml = renderPersonIntelSection(
     (r.startup_slug || r.company_name || ''),
     r.team_members || r.founders || []
@@ -10290,6 +10408,7 @@ function renderSingleResult(r) {
       </div>
       ${dimBars ? `<div class="dim-bars-container">${dimBars}</div>` : ''}
       ${executiveSummaryBlock ? `<div class="executive-summary-container">${executiveSummaryBlock}</div>` : ''}
+      ${scoringDetailsBlock ? `<div class="executive-summary-container">${scoringDetailsBlock}</div>` : ''}
       ${scoreRowHtml ? `<div class="score-row">${scoreRowHtml}</div>` : ''}
       ${SHOW_PRO_CONTRA_ARGUMENTS ? `<div class="args-row">
         <div class="args-col">
@@ -10347,13 +10466,14 @@ function renderBatchResults(r) {
         ? [
             { dimension: 'strategy_fit', adjusted_score: row.strategy_fit_score },
             { dimension: 'team', adjusted_score: row.team_score },
-            { dimension: 'upside', adjusted_score: row.upside_score },
+            { dimension: 'upside', adjusted_score: row.risk_adjusted_potential_score ?? row.upside_score },
           ]
         : []);
     const dimBars = rowDimScores.length
       ? buildDimensionBars(rowDimScores, composite, row.startup_slug || row.company_name || '')
       : '';
     const executiveSummaryBlock = buildExecutiveSummaryBlock(row);
+    const scoringDetailsBlock = buildScoringDetailsBlock(row);
     const personIntelHtml = renderPersonIntelSection(
       (row.startup_slug || row.company_name || ''),
       row.team_members || row.founders || []
@@ -10392,6 +10512,7 @@ function renderBatchResults(r) {
         </div>
         ${dimBars ? `<div class="dim-bars-container">${dimBars}</div>` : ''}
         ${executiveSummaryBlock ? `<div class="executive-summary-container">${executiveSummaryBlock}</div>` : ''}
+        ${scoringDetailsBlock ? `<div class="executive-summary-container">${scoringDetailsBlock}</div>` : ''}
         ${scoreRowHtml ? `<div class="score-row">${scoreRowHtml}</div>` : ''}
         ${SHOW_PRO_CONTRA_ARGUMENTS ? `<div class="args-row">
           <div class="args-col">
@@ -10541,7 +10662,9 @@ function getAuditDimensionScores(context) {
   if (summaryScores.length) return summaryScores;
   const fallback = ['strategy_fit', 'team', 'upside']
     .map((dimension) => {
-      const value = context.summary?.[getDimensionScoreKey(dimension)] ?? context.ranking?.[getDimensionScoreKey(dimension)];
+      const value = dimension === 'upside'
+        ? (context.summary?.risk_adjusted_potential_score ?? context.ranking?.risk_adjusted_potential_score ?? context.summary?.upside_score ?? context.ranking?.upside_score)
+        : (context.summary?.[getDimensionScoreKey(dimension)] ?? context.ranking?.[getDimensionScoreKey(dimension)]);
       return value == null ? null : { dimension, adjusted_score: value };
     })
     .filter(Boolean);

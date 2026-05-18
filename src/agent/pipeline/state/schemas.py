@@ -62,6 +62,13 @@ class ExecutiveSummaryOutput(BaseModel):
     red_flags: list[str] = Field(description="1-5 critical risks or deal-breakers")
 
 
+class SubScoreOutput(BaseModel):
+    """Named sub-factor score for a ranking dimension."""
+
+    name: str = Field(description="Sub-factor key, e.g. founder_market_fit")
+    score: float = Field(ge=0, le=100, description="Sub-factor score 0-100")
+
+
 class DimensionScoreOutput(BaseModel):
     """LLM output for a single ranking dimension (strategy_fit, team, upside)."""
 
@@ -69,16 +76,35 @@ class DimensionScoreOutput(BaseModel):
     confidence: float = Field(ge=0, le=1, description="Evidence confidence 0-1")
     evidence_count: int = Field(ge=0, description="Number of Q&A pairs that contributed")
     top_qa_indices: list[int] = Field(
-        default_factory=list,
         description="Global Q&A indices that most influenced the score, ordered by impact",
     )
     evidence_snippets: list[str] = Field(
-        default_factory=list,
         description="2-3 short supporting quotes",
     )
     critical_gaps: list[str] = Field(
-        default_factory=list,
         description="Missing high-impact facts",
+    )
+    sub_scores: list[SubScoreOutput] = Field(
+        description="Named sub-factor scores from 0-100 for the dimension",
+    )
+    founder_archetype: str = Field(
+        description="Team-only founder archetype classification",
+    )
+    stage_context: str = Field(
+        description="Stage context that should be surfaced in rationale",
+    )
+    upside_ceiling_score: float | None = Field(
+        ge=0,
+        le=100,
+        description="Upside-only best credible upside ceiling",
+    )
+    risk_adjusted_potential_score: float | None = Field(
+        ge=0,
+        le=100,
+        description="Upside-only prioritization score adjusted for evidence/risk",
+    )
+    scoring_signal_refs: list[str] = Field(
+        description="Structured scoring signals that influenced the score",
     )
 
 

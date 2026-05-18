@@ -225,6 +225,8 @@ def _company_payload_from_result(
             "strategy_fit_score": summary_row.get("strategy_fit_score"),
             "team_score": summary_row.get("team_score"),
             "upside_score": summary_row.get("upside_score"),
+            "upside_ceiling_score": summary_row.get("upside_ceiling_score"),
+            "risk_adjusted_potential_score": summary_row.get("risk_adjusted_potential_score"),
             "bucket": summary_row.get("bucket"),
             "strategy_fit_summary": summary_row.get("strategy_fit_summary"),
             "team_summary": summary_row.get("team_summary"),
@@ -232,6 +234,11 @@ def _company_payload_from_result(
             "key_points": summary_row.get("key_points"),
             "red_flags": summary_row.get("red_flags"),
             "dimension_scores": _serialize(summary_row.get("dimension_scores") or []),
+            "team_subscores": _serialize(summary_row.get("team_subscores") or {}),
+            "potential_subscores": _serialize(summary_row.get("potential_subscores") or {}),
+            "founder_archetype": summary_row.get("founder_archetype"),
+            "stage_context": summary_row.get("stage_context"),
+            "scoring_signals_used": _serialize(summary_row.get("scoring_signals_used") or {}),
         } if summary_row else None,
     }
 
@@ -369,11 +376,18 @@ def _compose_results_payload_from_company_runs(
             "strategy_fit_score",
             "team_score",
             "upside_score",
+            "upside_ceiling_score",
+            "risk_adjusted_potential_score",
             "bucket",
             "strategy_fit_summary",
             "team_summary",
             "potential_summary",
             "dimension_scores",
+            "team_subscores",
+            "potential_subscores",
+            "founder_archetype",
+            "stage_context",
+            "scoring_signals_used",
         ):
             if key in ranking:
                 summary_row[key] = _serialize(ranking.get(key))
@@ -2747,6 +2761,8 @@ def _compact_company_run_payload(payload: dict[str, Any] | None) -> dict[str, An
             "strategy_fit_score": ranking.get("strategy_fit_score") or summary_row.get("strategy_fit_score"),
             "team_score": ranking.get("team_score") or summary_row.get("team_score"),
             "upside_score": ranking.get("upside_score") or summary_row.get("upside_score"),
+            "upside_ceiling_score": ranking.get("upside_ceiling_score") or summary_row.get("upside_ceiling_score"),
+            "risk_adjusted_potential_score": ranking.get("risk_adjusted_potential_score") or summary_row.get("risk_adjusted_potential_score"),
             "bucket": ranking.get("bucket") or summary_row.get("bucket"),
             "strategy_fit_summary": ranking.get("strategy_fit_summary") or summary_row.get("strategy_fit_summary"),
             "team_summary": ranking.get("team_summary") or summary_row.get("team_summary"),
@@ -2754,6 +2770,11 @@ def _compact_company_run_payload(payload: dict[str, Any] | None) -> dict[str, An
             "key_points": ranking.get("key_points") or summary_row.get("key_points"),
             "red_flags": ranking.get("red_flags") or summary_row.get("red_flags"),
             "dimension_scores": _serialize(ranking.get("dimension_scores") or summary_row.get("dimension_scores") or []),
+            "team_subscores": _serialize(ranking.get("team_subscores") or summary_row.get("team_subscores") or {}),
+            "potential_subscores": _serialize(ranking.get("potential_subscores") or summary_row.get("potential_subscores") or {}),
+            "founder_archetype": ranking.get("founder_archetype") or summary_row.get("founder_archetype"),
+            "stage_context": ranking.get("stage_context") or summary_row.get("stage_context"),
+            "scoring_signals_used": _serialize(ranking.get("scoring_signals_used") or summary_row.get("scoring_signals_used") or {}),
         },
     }
 

@@ -42,6 +42,7 @@ class InputState(BaseModel):
     )
     # Values may be str, list[str] (chunk_ids), or None (web_search_query/results)
     all_qa_pairs: list[Dict[str, Any]] = Field(default_factory=list)
+    scoring_signals: Dict[str, Any] = Field(default_factory=dict)
     prompt_overrides: Dict[str, Any] = Field(default_factory=dict)
     vc_context: str = ""
     slug: str = ""
@@ -87,6 +88,7 @@ class IterativeInvestmentStoryState(BaseModel):
     # Combined Q&A pairs from all trees (populated after answering stage).
     # Each dict has question/answer (str), chunk_ids (list[str]), web_search_* (str|None).
     all_qa_pairs: list[Dict[str, Any]] = Field(default_factory=list)
+    scoring_signals: Dict[str, Any] = Field(default_factory=dict)
     prompt_overrides: Dict[str, Any] = Field(default_factory=dict)
     vc_context: str = ""
     slug: str = ""

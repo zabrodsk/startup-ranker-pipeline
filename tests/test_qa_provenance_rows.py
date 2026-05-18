@@ -97,23 +97,21 @@ def test_argument_and_summary_rows_include_dimension_metadata() -> None:
     summary_rows = build_summary_rows(results)
 
     assert argument_rows[0]["dimensions"] == ["strategy_fit", "team"]
-    assert summary_rows[0]["dimension_scores"] == [
-        {
-            "dimension": "strategy_fit",
-            "raw_score": 90.0,
-            "adjusted_score": 84.6,
-            "confidence": 0.8,
-            "evidence_count": 3,
-            "evidence_snippets": ["Strong ICP match"],
-            "critical_gaps": ["Need deeper pricing proof"],
-        },
-        {
-            "dimension": "team",
-            "raw_score": 75.0,
-            "adjusted_score": 66.0,
-            "confidence": 0.6,
-            "evidence_count": 2,
-            "evidence_snippets": ["Repeat founder signal"],
-            "critical_gaps": [],
-        },
-    ]
+    dimension_scores = summary_rows[0]["dimension_scores"]
+    assert dimension_scores[0]["dimension"] == "strategy_fit"
+    assert dimension_scores[0]["raw_score"] == 90.0
+    assert dimension_scores[0]["adjusted_score"] == 84.6
+    assert dimension_scores[0]["confidence"] == 0.8
+    assert dimension_scores[0]["evidence_count"] == 3
+    assert dimension_scores[0]["evidence_snippets"] == ["Strong ICP match"]
+    assert dimension_scores[0]["critical_gaps"] == ["Need deeper pricing proof"]
+    assert "sub_scores" in dimension_scores[0]
+    assert "adjustment_policy" in dimension_scores[0]
+
+    assert dimension_scores[1]["dimension"] == "team"
+    assert dimension_scores[1]["raw_score"] == 75.0
+    assert dimension_scores[1]["adjusted_score"] == 66.0
+    assert dimension_scores[1]["confidence"] == 0.6
+    assert dimension_scores[1]["evidence_count"] == 2
+    assert dimension_scores[1]["evidence_snippets"] == ["Repeat founder signal"]
+    assert dimension_scores[1]["critical_gaps"] == []
