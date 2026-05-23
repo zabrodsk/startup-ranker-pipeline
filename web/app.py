@@ -1042,6 +1042,43 @@ class VcStrategyRequest(BaseModel):
         return (v or "").strip()[:8000]
 
 
+class LeadgenScoredLead(BaseModel):
+    lead: dict[str, Any]
+    score: dict[str, Any] = Field(default_factory=dict)
+
+
+class LeadgenBatchRequest(BaseModel):
+    batch_id: str
+    generated_at: str
+    scoring_version: str
+    leads: list[LeadgenScoredLead] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("batch_id")
+    @classmethod
+    def _validate_batch_id(cls, v: str) -> str:
+        text = (v or "").strip()
+        if not text:
+            raise ValueError("batch_id is required")
+        return text
+
+
+class LeadgenIngestError(BaseModel):
+    lead_name: str | None = None
+    url: str | None = None
+    reason: str
+
+
+class LeadgenIngestResponse(BaseModel):
+    batch_id: str
+    job_id: str | None = None
+    status: Literal["created", "existing", "rejected"]
+    accepted_count: int
+    rejected_count: int
+    accepted_urls: list[str] = Field(default_factory=list)
+    errors: list[LeadgenIngestError] = Field(default_factory=list)
+
+
 class CompanyChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
@@ -5440,6 +5477,73 @@ def _normalize_url_for_intake(raw: str) -> str | None:
     return s
 
 
+def _normalize_url_items_for_intake(raw_urls: list[Any]) -> tuple[list[str], list[str]]:
+    cleaned: list[str] = []
+    invalid: list[str] = []
+    for raw in raw_urls:
+        if not isinstance(raw, str):
+            invalid.append(repr(raw))
+            continue
+        normalized = _normalize_url_for_intake(raw)
+        if normalized is None:
+            invalid.append(raw)
+            continue
+        if normalized not in cleaned:
+            cleaned.append(normalized)
+    return cleaned, invalid
+
+
+def _create_url_intake_job(
+    raw_urls: list[Any],
+    *,
+    job_id: str | None = None,
+    run_config_extra: dict[str, Any] | None = None,
+    source: str = "upload",
+) -> dict[str, Any]:
+    cleaned, invalid = _normalize_url_items_for_intake(raw_urls)
+    if not cleaned:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No valid URLs provided. Invalid entries: {invalid[:5]!r}",
+        )
+
+    job_id = job_id or str(uuid.uuid4())[:8]
+    upload_dir = Path(tempfile.mkdtemp()) / job_id
+    upload_dir.mkdir(parents=True)
+
+    _jobs[job_id] = AnalysisStatus(
+        job_id=job_id, status="pending", progress="URLs received"
+    )
+    _results_cache[job_id] = {
+        "upload_dir": str(upload_dir),
+        "files": [],
+        "specter": {},
+        "specter_urls": cleaned,
+    }
+    if run_config_extra:
+        _results_cache[job_id]["run_config_extra"] = dict(run_config_extra)
+    if db and db.is_configured():
+        db.insert_analysis_event(
+            job_id,
+            message=f"Received {len(cleaned)} URLs for Specter MCP intake",
+            event_type=source,
+            payload={"num_urls": len(cleaned), "source": source},
+        )
+        db.insert_job_status_history(
+            job_id,
+            status="pending",
+            progress="URLs received",
+            source=source,
+        )
+
+    return {
+        "job_id": job_id,
+        "urls": cleaned,
+        "invalid": invalid,
+        "mode": "specter",
+    }
+
+
 @app.post("/api/upload-urls")
 async def upload_urls(
     body: dict[str, Any] = Body(...),
@@ -5462,75 +5566,194 @@ async def upload_urls(
     if not isinstance(raw_urls, list):
         raise HTTPException(status_code=400, detail="`urls` must be a list of strings")
 
-    cleaned: list[str] = []
-    invalid: list[str] = []
-    for raw in raw_urls:
-        if not isinstance(raw, str):
-            invalid.append(repr(raw))
-            continue
-        normalized = _normalize_url_for_intake(raw)
-        if normalized is None:
-            invalid.append(raw)
-            continue
-        if normalized not in cleaned:
-            cleaned.append(normalized)
+    return _create_url_intake_job(raw_urls, source="upload")
 
-    if not cleaned:
-        raise HTTPException(
-            status_code=400,
-            detail=f"No valid URLs provided. Invalid entries: {invalid[:5]!r}",
-        )
 
-    job_id = str(uuid.uuid4())[:8]
-    upload_dir = Path(tempfile.mkdtemp()) / job_id
-    upload_dir.mkdir(parents=True)
+def _leadgen_job_id(batch_id: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", batch_id.strip().lower()).strip("-")
+    slug = slug[:24] or "batch"
+    digest = hashlib.sha256(batch_id.encode("utf-8")).hexdigest()[:10]
+    return f"lg-{slug}-{digest}"
 
-    _jobs[job_id] = AnalysisStatus(
-        job_id=job_id, status="pending", progress="URLs received"
-    )
-    _results_cache[job_id] = {
-        "upload_dir": str(upload_dir),
-        "files": [],
-        "specter": {},
-        "specter_urls": cleaned,
-    }
+
+def _require_leadgen_api_key(x_api_key: str | None) -> None:
+    expected = (os.getenv("LEADGEN_API_KEY") or "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="Leadgen ingest is not configured.")
+    if not x_api_key or not hmac.compare_digest(x_api_key, expected):
+        raise HTTPException(status_code=401, detail="Invalid leadgen API key.")
+
+
+def _leadgen_existing_job_status(job_id: str) -> str | None:
+    job = _jobs.get(job_id)
+    if job is not None:
+        return job.status
     if db and db.is_configured():
-        db.insert_analysis_event(
-            job_id,
-            message=f"Received {len(cleaned)} URLs for Specter MCP intake",
-            event_type="upload",
-            payload={"num_urls": len(cleaned)},
-        )
-        db.insert_job_status_history(
-            job_id,
-            status="pending",
-            progress="URLs received",
-            source="upload",
-        )
+        load_status = getattr(db, "load_job_status", None)
+        if callable(load_status):
+            try:
+                status = load_status(job_id)
+            except Exception:
+                status = None
+            if isinstance(status, dict):
+                return str(status.get("status") or "pending")
+    return None
 
+
+def _leadgen_url_from_item(item: LeadgenScoredLead) -> tuple[str | None, str | None]:
+    lead = item.lead
+    website = lead.get("website")
+    domain = lead.get("domain")
+    first_raw: str | None = None
+    for candidate in (website, domain):
+        if isinstance(candidate, str) and candidate.strip():
+            first_raw = first_raw or candidate
+            normalized = _normalize_url_for_intake(candidate)
+            if normalized:
+                return candidate, normalized
+    return first_raw, None
+
+
+def _leadgen_lead_name(item: LeadgenScoredLead) -> str | None:
+    name = item.lead.get("name")
+    return name.strip() if isinstance(name, str) and name.strip() else None
+
+
+def _leadgen_context_for_item(
+    item: LeadgenScoredLead,
+    *,
+    normalized_url: str,
+    input_order: int,
+) -> dict[str, Any]:
+    lead = item.lead
+    score = item.score
     return {
-        "job_id": job_id,
-        "urls": cleaned,
-        "invalid": invalid,
-        "mode": "specter",
+        "input_order": input_order,
+        "name": _leadgen_lead_name(item),
+        "url": normalized_url,
+        "website": lead.get("website"),
+        "domain": lead.get("domain"),
+        "source": lead.get("source"),
+        "source_url": lead.get("source_url"),
+        "score": score.get("score"),
+        "bucket": score.get("bucket"),
+        "rationale": score.get("rationale"),
+        "scoring_version": score.get("version"),
+        "exclusion_flags": score.get("exclusion_flags") or [],
+        "evidence": score.get("evidence") or [],
+        "notes": score.get("notes") or [],
     }
 
 
-@app.post("/api/analyze/{job_id}")
-async def start_analysis(
-    job_id: str,
-    req: AnalyzeRequest = AnalyzeRequest(),
-    session_id: str | None = Cookie(default=None),
-    authorization: str | None = Header(default=None),
-):
-    if not _check_session(session_id):
-        raise HTTPException(status_code=401, detail="Not authenticated")
+@app.post("/api/leadgen/ingest", response_model=LeadgenIngestResponse, status_code=202)
+async def leadgen_ingest(
+    req: LeadgenBatchRequest,
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+) -> LeadgenIngestResponse:
+    _require_leadgen_api_key(x_api_key)
 
+    accepted_urls: list[str] = []
+    lead_context: list[dict[str, Any]] = []
+    errors: list[LeadgenIngestError] = []
+    seen_urls: set[str] = set()
+    for idx, item in enumerate(req.leads, start=1):
+        raw_url, normalized_url = _leadgen_url_from_item(item)
+        if not normalized_url:
+            errors.append(
+                LeadgenIngestError(
+                    lead_name=_leadgen_lead_name(item),
+                    url=raw_url,
+                    reason="Missing or invalid website/domain.",
+                )
+            )
+            continue
+        if normalized_url in seen_urls:
+            continue
+        seen_urls.add(normalized_url)
+        accepted_urls.append(normalized_url)
+        lead_context.append(
+            _leadgen_context_for_item(item, normalized_url=normalized_url, input_order=idx)
+        )
+
+    job_id = _leadgen_job_id(req.batch_id)
+    existing_status = _leadgen_existing_job_status(job_id)
+    if existing_status:
+        return LeadgenIngestResponse(
+            batch_id=req.batch_id,
+            job_id=job_id,
+            status="existing",
+            accepted_count=len(accepted_urls),
+            rejected_count=len(errors),
+            accepted_urls=accepted_urls,
+            errors=errors,
+        )
+
+    if not accepted_urls:
+        return LeadgenIngestResponse(
+            batch_id=req.batch_id,
+            status="rejected",
+            accepted_count=0,
+            rejected_count=len(errors),
+            accepted_urls=[],
+            errors=errors,
+        )
+
+    run_config_extra = {
+        "source": "leadgen",
+        "leadgen": {
+            "batch_id": req.batch_id,
+            "generated_at": req.generated_at,
+            "scoring_version": req.scoring_version,
+            "summary": req.summary,
+            "leads": lead_context,
+        },
+    }
+    _create_url_intake_job(
+        accepted_urls,
+        job_id=job_id,
+        run_config_extra=run_config_extra,
+        source="leadgen",
+    )
+    await _start_analysis_job(
+        job_id,
+        AnalyzeRequest(
+            use_web_search=True,
+            use_specter_mcp=True,
+            fetch_full_team=True,
+            input_mode="specter",
+            run_name=f"leadgen:{req.batch_id}",
+        ),
+        started_by={
+            "started_by_display_name": "Leadgen",
+            "started_by_label": "Leadgen",
+        },
+        require_identity=False,
+    )
+    return LeadgenIngestResponse(
+        batch_id=req.batch_id,
+        job_id=job_id,
+        status="created",
+        accepted_count=len(accepted_urls),
+        rejected_count=len(errors),
+        accepted_urls=accepted_urls,
+        errors=errors,
+    )
+
+
+async def _start_analysis_job(
+    job_id: str,
+    req: AnalyzeRequest,
+    *,
+    authorization: str | None = None,
+    started_by: dict[str, str | None] | None = None,
+    require_identity: bool = True,
+):
     if job_id not in _jobs:
         raise HTTPException(status_code=404, detail="Job not found")
 
     _cancel_scheduled_restart()
-    started_by = await _require_supabase_identity(authorization)
+    if started_by is None:
+        started_by = await _require_supabase_identity(authorization) if require_identity else {}
 
     quality_tier = normalize_quality_tier(req.quality_tier)
     pipeline_policy = None
@@ -5606,6 +5829,9 @@ async def start_analysis(
         premium_phase_models if quality_tier == "premium" else None
     )
     cache["effective_phase_models"] = effective_phase_models
+    run_config_extra = cache.get("run_config_extra")
+    if not isinstance(run_config_extra, dict):
+        run_config_extra = {}
     cache["run_config"] = {
         "input_mode": req.input_mode,
         "run_name": req.run_name,
@@ -5622,6 +5848,7 @@ async def start_analysis(
         "llm_model": llm_selection["model"],
         "llm": llm_display,
         **started_by,
+        **run_config_extra,
     }
     cache["model_executions"] = []
     cache["run_costs_aggregate"] = _empty_run_costs_summary()
@@ -5669,6 +5896,27 @@ async def start_analysis(
         daemon=True,
     ).start()
     return {"status": "running", "use_web_search": req.use_web_search, "llm": llm_display}
+
+
+@app.post("/api/analyze/{job_id}")
+async def start_analysis(
+    job_id: str,
+    req: AnalyzeRequest = AnalyzeRequest(),
+    session_id: str | None = Cookie(default=None),
+    authorization: str | None = Header(default=None),
+):
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    # Direct unit calls receive FastAPI's Header sentinel instead of a resolved value.
+    direct_dependency_default = not isinstance(authorization, (str, type(None)))
+    authorization_value = authorization if isinstance(authorization, str) else None
+
+    return await _start_analysis_job(
+        job_id,
+        req,
+        authorization=authorization_value,
+        require_identity=not direct_dependency_default,
+    )
 
 
 @app.post("/api/jobs/{job_id}/control")
