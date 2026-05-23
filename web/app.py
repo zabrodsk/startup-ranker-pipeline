@@ -1079,6 +1079,15 @@ class LeadgenIngestResponse(BaseModel):
     errors: list[LeadgenIngestError] = Field(default_factory=list)
 
 
+for _leadgen_model in (
+    LeadgenScoredLead,
+    LeadgenBatchRequest,
+    LeadgenIngestError,
+    LeadgenIngestResponse,
+):
+    _leadgen_model.model_rebuild()
+
+
 class CompanyChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
