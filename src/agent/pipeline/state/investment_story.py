@@ -5,7 +5,7 @@ This module defines the state classes for the investment analysis pipeline:
 - IterativeInvestmentStoryState: The full state tracking all pipeline data
 """
 
-from typing import Any, Dict, Literal
+from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -42,9 +42,15 @@ class InputState(BaseModel):
     )
     # Values may be str, list[str] (chunk_ids), or None (web_search_query/results)
     all_qa_pairs: list[Dict[str, Any]] = Field(default_factory=list)
+    scoring_signals: Dict[str, Any] = Field(default_factory=dict)
     prompt_overrides: Dict[str, Any] = Field(default_factory=dict)
     vc_context: str = ""
     slug: str = ""
+
+    # VC matching optimisation: pre-computed from a prior full analysis.
+    # When both are provided, the graph skips Stages 1-7 and enters at Stage 8 only.
+    final_arguments: list[Any] = Field(default_factory=list)
+    final_decision: Optional[str] = None
 
 
 class IterativeInvestmentStoryState(BaseModel):
@@ -82,6 +88,7 @@ class IterativeInvestmentStoryState(BaseModel):
     # Combined Q&A pairs from all trees (populated after answering stage).
     # Each dict has question/answer (str), chunk_ids (list[str]), web_search_* (str|None).
     all_qa_pairs: list[Dict[str, Any]] = Field(default_factory=list)
+    scoring_signals: Dict[str, Any] = Field(default_factory=dict)
     prompt_overrides: Dict[str, Any] = Field(default_factory=dict)
     vc_context: str = ""
     slug: str = ""

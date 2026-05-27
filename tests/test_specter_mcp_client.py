@@ -134,6 +134,9 @@ def test_fetch_falls_back_to_brand_stem_when_domain_lookup_fails():
     )
     assert company.name == "AdSpawn"
     assert company.domain == "adspawn.io"
+    assert company.company_url == "https://adspawn.io"
+    assert company.specter_company_id == "abc123"
+    assert company.specter_profile_url == "https://app.tryspecter.com/signals/company/feed/abc123"
     # Two find_company calls: failed domain, then brand stem fallback
     assert client.calls == ["adspawn.com", "adspawn"]
 

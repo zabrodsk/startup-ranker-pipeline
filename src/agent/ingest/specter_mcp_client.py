@@ -38,6 +38,8 @@ from agent.dataclasses.person import Education, Experience, Person
 from agent.ingest.specter_ingest import _company_slug
 from agent.ingest.store import Chunk, EvidenceStore
 
+SPECTER_PROFILE_BASE_URL = "https://app.tryspecter.com/signals/company/feed/"
+
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------
@@ -425,6 +427,16 @@ def _domain_root(value: str | None) -> str:
     s = re.sub(r"^www\.", "", s)
     s = s.split("/", 1)[0]
     return s
+
+
+def _company_url_from_domain(value: str | None) -> str | None:
+    root = _domain_root(value)
+    return f"https://{root}" if root else None
+
+
+def _specter_profile_url(specter_company_id: str | None) -> str | None:
+    value = (specter_company_id or "").strip()
+    return f"{SPECTER_PROFILE_BASE_URL}{value}" if value else None
 
 
 def _brand_stem(value: str | None) -> str:
@@ -973,6 +985,9 @@ def fetch_specter_company(
         about=profile.get("short_description"),
         team=team_persons or None,
         domain=domain,
+        company_url=_company_url_from_domain(domain),
+        specter_company_id=company_id,
+        specter_profile_url=_specter_profile_url(company_id),
     )
 
     chunks: list[Chunk] = []

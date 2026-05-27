@@ -31,6 +31,7 @@ from agent.llm import create_llm, get_llm_runtime_settings
 from agent.prompt_library.manager import get_prompt
 from agent.pipeline.stages.parallel_decomposition import decompose_all_questions
 from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
+from agent.pipeline.scoring_signals import build_scoring_signals
 from agent.run_context import (
     get_current_collector,
     get_current_company_slug,
@@ -38,6 +39,8 @@ from agent.run_context import (
     use_company_context,
     use_stage_context,
 )
+
+SPECTER_PROFILE_BASE_URL = "https://app.tryspecter.com/signals/company/feed/"
 
 
 def _read_positive_int_env(name: str, default: int) -> int:
@@ -57,6 +60,38 @@ DECOMPOSITION_TIMEOUT_SECONDS = _read_positive_int_env("DECOMPOSITION_TIMEOUT_SE
 DECOMPOSITION_HEARTBEAT_SECONDS = _read_positive_int_env("DECOMPOSITION_HEARTBEAT_SECONDS", 20)
 QA_TIMEOUT_SECONDS = _read_positive_int_env("QA_TIMEOUT_SECONDS", 1800)
 QA_HEARTBEAT_SECONDS = _read_positive_int_env("QA_HEARTBEAT_SECONDS", 20)
+
+
+def _company_url_from_domain(domain: str | None) -> str | None:
+    text = (domain or "").strip()
+    if not text:
+        return None
+    if text.startswith(("http://", "https://")):
+        return text
+    text = text.lower()
+    text = text.removeprefix("www.")
+    text = text.split("/", 1)[0]
+    return f"https://{text}" if "." in text else None
+
+
+def _company_link_metadata(company: Company) -> dict[str, str]:
+    domain = (getattr(company, "domain", None) or "").strip()
+    company_url = (
+        (getattr(company, "company_url", None) or "").strip()
+        or _company_url_from_domain(domain)
+        or ""
+    )
+    specter_company_id = (getattr(company, "specter_company_id", None) or "").strip()
+    specter_profile_url = (
+        (getattr(company, "specter_profile_url", None) or "").strip()
+        or (f"{SPECTER_PROFILE_BASE_URL}{specter_company_id}" if specter_company_id else "")
+    )
+    return {
+        "domain": domain,
+        "company_url": company_url,
+        "specter_company_id": specter_company_id,
+        "specter_profile_url": specter_profile_url,
+    }
 
 
 async def _await_with_heartbeat(
@@ -489,6 +524,11 @@ async def evaluate_startup(
                             "company": company,
                             "config": config,
                             "all_qa_pairs": all_qa_pairs,
+                            "scoring_signals": build_scoring_signals(
+                                company,
+                                evidence_store=store,
+                                all_qa_pairs=all_qa_pairs,
+                            ),
                             "prompt_overrides": prompt_overrides or {},
                             "vc_context": _ensure_str(vc_investment_strategy).strip() or "",
                             "slug": slug,
@@ -826,6 +866,11 @@ async def evaluate_from_specter(
                             "company": company,
                             "config": config,
                             "all_qa_pairs": all_qa_pairs,
+                            "scoring_signals": build_scoring_signals(
+                                company,
+                                evidence_store=store,
+                                all_qa_pairs=all_qa_pairs,
+                            ),
                             "prompt_overrides": prompt_overrides or {},
                             "vc_context": _ensure_str(vc_investment_strategy).strip() or "",
                             "slug": slug,
@@ -1015,6 +1060,14 @@ def _serialize_dimension_scores(ranking: CompanyRankingResult | None) -> list[di
             "adjusted_score": d.adjusted_score,
             "confidence": d.confidence,
             "evidence_count": d.evidence_count,
+            "top_qa_indices": list(d.top_qa_indices or []),
+            "sub_scores": dict(d.sub_scores or {}),
+            "founder_archetype": d.founder_archetype,
+            "stage_context": d.stage_context,
+            "adjustment_policy": d.adjustment_policy,
+            "upside_ceiling_score": d.upside_ceiling_score,
+            "risk_adjusted_potential_score": d.risk_adjusted_potential_score,
+            "scoring_signal_refs": list(d.scoring_signal_refs or []),
             "evidence_snippets": list(d.evidence_snippets or []),
             "critical_gaps": list(d.critical_gaps or []),
         }
@@ -1051,6 +1104,7 @@ def build_summary_rows(results: List[Dict[str, Any]]) -> List[Dict]:
             "total_score": round(total_score, 2),
             "avg_pro": round(avg_pro, 2),
             "avg_contra": round(avg_contra, 2),
+            **_company_link_metadata(company),
         }
 
         if ranking:
@@ -1060,8 +1114,18 @@ def build_summary_rows(results: List[Dict[str, Any]]) -> List[Dict]:
             row["strategy_fit_score"] = round(ranking.strategy_fit_score, 2)
             row["team_score"] = round(ranking.team_score, 2)
             row["upside_score"] = round(ranking.upside_score, 2)
+            row["upside_ceiling_score"] = round(ranking.upside_ceiling_score or ranking.upside_score, 2)
+            row["risk_adjusted_potential_score"] = round(
+                ranking.risk_adjusted_potential_score or ranking.upside_score,
+                2,
+            )
             row["bucket"] = ranking.bucket
             row["critical_gaps_count"] = ranking.critical_gaps_count
+            row["team_subscores"] = ranking.team_subscores
+            row["potential_subscores"] = ranking.potential_subscores
+            row["founder_archetype"] = ranking.founder_archetype
+            row["stage_context"] = ranking.stage_context
+            row["scoring_signals_used"] = ranking.scoring_signals_used
             strat_snippets = next(
                 (d.evidence_snippets for d in ranking.dimension_scores if d.dimension == "strategy_fit"),
                 [],
@@ -1090,8 +1154,15 @@ def build_summary_rows(results: List[Dict[str, Any]]) -> List[Dict]:
             row["strategy_fit_score"] = ""
             row["team_score"] = ""
             row["upside_score"] = ""
+            row["upside_ceiling_score"] = ""
+            row["risk_adjusted_potential_score"] = ""
             row["bucket"] = ""
             row["critical_gaps_count"] = ""
+            row["team_subscores"] = {}
+            row["potential_subscores"] = {}
+            row["founder_archetype"] = ""
+            row["stage_context"] = ""
+            row["scoring_signals_used"] = {}
             row["top_evidence_strategy"] = ""
             row["top_evidence_team"] = ""
             row["top_evidence_upside"] = ""
@@ -1256,6 +1327,13 @@ def build_ranking_rows(results: List[Dict[str, Any]]) -> List[Dict]:
                 "confidence": dim_score.confidence,
                 "evidence_count": dim_score.evidence_count,
                 "top_qa_indices": ",".join(str(i) for i in dim_score.top_qa_indices),
+                "sub_scores": dim_score.sub_scores,
+                "founder_archetype": dim_score.founder_archetype,
+                "stage_context": dim_score.stage_context,
+                "adjustment_policy": dim_score.adjustment_policy,
+                "upside_ceiling_score": dim_score.upside_ceiling_score,
+                "risk_adjusted_potential_score": dim_score.risk_adjusted_potential_score,
+                "scoring_signal_refs": " | ".join(dim_score.scoring_signal_refs),
                 "evidence_snippets": " | ".join(dim_score.evidence_snippets),
                 "critical_gaps": "; ".join(dim_score.critical_gaps),
             })

@@ -497,6 +497,55 @@
       margin: 8px 0;
     }
 
+    /* Founder-portal debate request cards (paused debates awaiting founder). */
+    .debate-request-card {
+      background: rgba(255,255,255,0.02);
+      border: 1px solid var(--border-card);
+      border-radius: var(--radius-md);
+      padding: 16px 18px;
+      margin-bottom: 12px;
+    }
+    .debate-request-card.awaiting {
+      background: rgba(255,200,60,0.04);
+      border-color: rgba(255,200,60,0.35);
+    }
+    .debate-request-card.completed { opacity: 0.78; }
+    .debate-request-header {
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 10px; margin-bottom: 10px;
+    }
+    .debate-request-firm { font-weight: 600; color: var(--text-white); font-size: 1rem; }
+    .debate-request-topic {
+      font-weight: 600; color: var(--text-white);
+      font-size: .95rem; margin: 4px 0;
+    }
+    .debate-request-questions {
+      margin: 8px 0 10px 0; padding-left: 20px;
+      color: var(--text-light); font-size: .88rem; line-height: 1.55;
+    }
+    .debate-request-rationale {
+      font-size: .82rem; color: var(--text-dim);
+      margin-top: 6px; font-style: italic;
+    }
+    .debate-request-actions {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px;
+    }
+    .debate-evidence-bubble {
+      background: rgba(255,200,60,0.05);
+      border: 1px solid rgba(255,200,60,0.3);
+      color: var(--text-light);
+      border-radius: var(--radius-md);
+      padding: 12px 14px; max-width: 90%;
+    }
+    .debate-founder-bubble {
+      background: rgba(100,180,255,0.05);
+      border: 1px solid rgba(100,180,255,0.3);
+      color: var(--text-light);
+      border-radius: var(--radius-md);
+      padding: 10px 14px; max-width: 90%;
+      font-size: .88rem;
+    }
+
     .citation-list { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
     .citation-chip {
       background: rgba(0,210,106,0.08);
@@ -828,20 +877,40 @@ function clearToken() { localStorage.removeItem(TOKEN_KEY); }
 // ============================================================
 // API helper — always sends the stored Bearer token
 // ============================================================
-async function api(method, path, body) {
+async function api(method, path, body, { timeoutMs = 15000 } = {}) {
   const headers = { "Content-Type": "application/json" };
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const res = await fetch(path, {
-    method,
-    headers,
-    body: body != null ? JSON.stringify(body) : undefined,
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  let res;
+  try {
+    res = await fetch(path, {
+      method,
+      headers,
+      body: body != null ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    // Network error or timeout — do NOT clear the token, the server may just be busy.
+    const msg = err?.name === "AbortError" ? "Request timed out. Please try again." : "Network error. Please check your connection.";
+    throw Object.assign(new Error(msg), { isNetworkError: true });
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!res.ok) {
+    if (res.status === 401) {
+      clearToken();
+      navigate("/login");
+      throw new Error("Session expired. Please log in again.");
+    }
     const err = await res.json().catch(() => ({}));
-    throw new Error(err?.detail || `HTTP ${res.status}`);
+    const apiErr = new Error(err?.detail || `HTTP ${res.status}`);
+    apiErr.status = res.status;
+    throw apiErr;
   }
   return res.json();
 }
@@ -1250,6 +1319,222 @@ function EvidenceCard({ chunk }) {
   );
 }
 
+// ---------- Re-evaluation progress card ----------
+//
+// The server emits free-form progress strings via _append_progress in
+// _run_re_evaluation. We map them to a fixed set of 6 visible stages so the
+// founder sees a stable progress bar instead of arbitrary text. The mapping
+// is intentionally tolerant — unknown messages stay on whatever step we last
+// matched, so a future server-side rename does not blank the UI.
+const REEVAL_STAGES = [
+  { key: "loading",   label: "Loading evidence",        hint: "Fetching all uploaded chunks for your company" },
+  { key: "answering", label: "Re-answering questions",  hint: "The AI re-asks every investment question against the new evidence" },
+  { key: "arguing",   label: "Generating arguments",    hint: "Building pro/contra arguments and stress-testing them with a critic" },
+  { key: "scoring",   label: "Scoring & decision",      hint: "Composite score, dimension scores, and final invest/pass decision" },
+  { key: "saving",    label: "Saving results",          hint: "Persisting the new analysis row and cost telemetry" },
+  { key: "matching",  label: "Updating VC matches",     hint: "Re-scoring your matches with the new analysis (matches are preserved, scores refresh)" },
+];
+
+function reevalStageIndexFromProgress(progress) {
+  if (!progress) return 0;
+  const p = progress.toLowerCase();
+  if (p.startsWith("error")) return -1;
+  if (p.includes("re-evaluation complete")) return REEVAL_STAGES.length;
+  if (p.includes("re-running vc matching") || p.includes("matching")) return 5;
+  if (p.includes("saving analysis") || p.includes("persisting")) return 4;
+  if (p.includes("stages 7-8") || p.includes("ranking") || p.includes("decision")) return 3;
+  if (p.includes("stages 3-6") || p.includes("argument") || p.includes("critique") || p.includes("refinement")) return 2;
+  if (p.includes("stage 2") || p.includes("answering") || p.includes("decomposing") || p.includes("stage 1")) return 1;
+  if (p.includes("loading") || p.includes("evidence chunks")) return 0;
+  return 0;
+}
+
+function fmtElapsed(ms) {
+  if (!ms || ms < 0) return "0s";
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const ss = s % 60;
+  return m > 0 ? `${m}m ${ss}s` : `${ss}s`;
+}
+
+function ReevalProgressCard({ job, showLog, onToggleLog, onRetry, onDismiss }) {
+  // Tick once a second so the elapsed-time display stays current even when
+  // the server has not emitted a new progress event in a while.
+  const [, forceTick] = React.useState(0);
+  React.useEffect(() => {
+    if (!job || job.status === "done" || job.status === "error") return;
+    const iv = setInterval(() => forceTick(t => t + 1), 1000);
+    return () => clearInterval(iv);
+  }, [job?.status]);
+
+  if (!job) return null;
+  const status = job.status || "running";
+  const isDone = status === "done";
+  const isError = status === "error";
+  const stepIdx = reevalStageIndexFromProgress(job.progress);
+  const totalSteps = REEVAL_STAGES.length;
+  const completedSteps = isDone
+    ? totalSteps
+    : isError
+      ? Math.max(0, stepIdx)
+      : Math.min(stepIdx, totalSteps - 1);
+  const currentStage = isDone || isError ? null : REEVAL_STAGES[completedSteps];
+  const elapsed = job.started_at ? Date.now() - job.started_at : 0;
+  const pct = isDone ? 100 : Math.round((completedSteps / totalSteps) * 100);
+
+  // Border + accent color follow status.
+  const accent = isError ? "#ff453a" : isDone ? "#22c55e" : "#0a84ff";
+  const bg = isError ? "rgba(255,69,58,0.06)" : isDone ? "rgba(34,197,94,0.06)" : "rgba(10,132,255,0.04)";
+
+  return (
+    <div style={{
+      marginTop:14,
+      border:`1px solid ${accent}`,
+      background:bg,
+      borderRadius:10,
+      padding:"14px 16px",
+    }}>
+      {/* Header row */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          {!isDone && !isError && <Spinner />}
+          {isDone && <span style={{color:accent,fontSize:"1.1rem",fontWeight:600}}>✓</span>}
+          {isError && <span style={{color:accent,fontSize:"1.1rem",fontWeight:600}}>!</span>}
+          <div>
+            <div style={{fontWeight:600,color:"#1d1d1f"}}>
+              {isDone   && "Re-evaluation complete"}
+              {isError  && "Re-evaluation failed"}
+              {!isDone && !isError && (currentStage?.label || "Re-evaluating…")}
+            </div>
+            <div style={{fontSize:".78rem",color:"#6e6e73",marginTop:2}}>
+              Job <code style={{fontSize:".78rem"}}>{job.job_id}</code>
+              {" · "}
+              {isDone || isError ? `Took ${fmtElapsed(elapsed)}` : `Elapsed ${fmtElapsed(elapsed)}`}
+              {isDone   && " — your evidence and matches below are now refreshed."}
+              {!isDone && !isError && currentStage?.hint && (
+                <span> · {currentStage.hint}</span>
+              )}
+            </div>
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:6}}>
+          {(isDone || isError) && (
+            <button
+              onClick={onDismiss}
+              style={{
+                background:"transparent",
+                border:"1px solid var(--border)",
+                color:"#1d1d1f",
+                padding:"4px 10px",
+                borderRadius:6,
+                fontSize:".78rem",
+                cursor:"pointer",
+              }}>
+              Dismiss
+            </button>
+          )}
+          {isError && (
+            <button
+              onClick={onRetry}
+              style={{
+                background:accent,
+                border:"none",
+                color:"white",
+                padding:"4px 10px",
+                borderRadius:6,
+                fontSize:".78rem",
+                cursor:"pointer",
+              }}>
+              Try again
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Progress bar */}
+      {!isError && (
+        <div style={{marginTop:12}}>
+          <div style={{
+            height:6,
+            background:"rgba(0,0,0,0.08)",
+            borderRadius:3,
+            overflow:"hidden",
+          }}>
+            <div style={{
+              height:"100%",
+              width:`${pct}%`,
+              background:accent,
+              transition:"width .4s ease",
+            }}/>
+          </div>
+          <div style={{
+            display:"flex",
+            justifyContent:"space-between",
+            marginTop:6,
+            fontSize:".7rem",
+            color:"#6e6e73",
+          }}>
+            {REEVAL_STAGES.map((s, i) => (
+              <span key={s.key} style={{
+                color: i < completedSteps ? accent : (i === completedSteps && !isDone ? "#1d1d1f" : "#9e9ea3"),
+                fontWeight: i === completedSteps && !isDone ? 600 : 400,
+                whiteSpace:"nowrap",
+                overflow:"hidden",
+                textOverflow:"ellipsis",
+                maxWidth:"15%",
+                textAlign:"center",
+              }} title={s.label}>
+                {i < completedSteps ? "✓ " : ""}{s.label.split(" ")[0]}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Error message */}
+      {isError && job.progress && (
+        <div style={{marginTop:10,fontSize:".82rem",color:"#1d1d1f"}}>
+          {job.progress}
+        </div>
+      )}
+
+      {/* Technical log (collapsible) */}
+      {Array.isArray(job.progress_log) && job.progress_log.length > 0 && (
+        <div style={{marginTop:10}}>
+          <button
+            onClick={onToggleLog}
+            style={{
+              background:"transparent",
+              border:"none",
+              color:"#0a84ff",
+              fontSize:".72rem",
+              padding:0,
+              cursor:"pointer",
+            }}>
+            {showLog ? "Hide technical log" : `Show technical log (${job.progress_log.length} entries)`}
+          </button>
+          {showLog && (
+            <pre style={{
+              marginTop:6,
+              padding:8,
+              background:"rgba(0,0,0,0.04)",
+              border:"1px solid var(--border)",
+              borderRadius:6,
+              fontSize:".72rem",
+              maxHeight:160,
+              overflow:"auto",
+              whiteSpace:"pre-wrap",
+              color:"#1d1d1f",
+            }}>
+              {job.progress_log.slice(-20).join("\n")}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------- Analysis Evidence Log (Audit-style) ----------
 function QaPairCard({ qa }) {
   const [showPreview, setShowPreview] = React.useState(false);
@@ -1517,7 +1802,14 @@ function DashboardView({ user, onSignOut }) {
   const [uploading, setUploading] = React.useState(false);
   const [uploadResults, setUploadResults] = React.useState([]);
   const [reEvaluating, setReEvaluating] = React.useState(false);
-  const [reEvalMsg, setReEvalMsg] = React.useState(null);
+  const [reEvalError, setReEvalError] = React.useState(null);
+  const [useWebSearch, setUseWebSearch] = React.useState(false);
+  // Live re-evaluation status: { job_id, status, progress, progress_log,
+  // started_at, finished_at, use_web_search } | null. Polled every 3s while
+  // running so the founder sees actual stage progress instead of a static
+  // "refresh in a few minutes" toast.
+  const [reevalJob, setReevalJob] = React.useState(null);
+  const [reevalShowLog, setReevalShowLog] = React.useState(false);
 
   // Full analysis state (for new companies)
   const [analyzing, setAnalyzing] = React.useState(false);
@@ -1530,12 +1822,34 @@ function DashboardView({ user, onSignOut }) {
   const [evidenceLog, setEvidenceLog] = React.useState(null);
   const [loadingEvidenceLog, setLoadingEvidenceLog] = React.useState(true);
 
+  // Data room state
+  const [dataRoomEnabled, setDataRoomEnabled] = React.useState(false);
+  const [dataRoomFiles, setDataRoomFiles] = React.useState([]);
+  const [drLoading, setDrLoading] = React.useState(false);
+  const [drUploading, setDrUploading] = React.useState(false);
+  const [drCategory, setDrCategory] = React.useState("other");
+  const [drAlsoEvidence, setDrAlsoEvidence] = React.useState(false);
+  const [drUploadResult, setDrUploadResult] = React.useState(null);
+
+  // Debates section state (founder-side visibility + pause/resume loop)
+  const [debates, setDebates] = React.useState([]);
+  const [loadingDebates, setLoadingDebates] = React.useState(false);
+  const [uploadingForDebate, setUploadingForDebate] = React.useState({});   // debateId -> bool
+  const [pendingJobId, setPendingJobId] = React.useState({});               // debateId -> job_id
+  const [jobStatus, setJobStatus] = React.useState({});                     // job_id -> {status, progress}
+  const [respondingForDebate, setRespondingForDebate] = React.useState({}); // debateId -> bool
+  const [debateActionError, setDebateActionError] = React.useState({});     // debateId -> string
+  const [viewingDebateId, setViewingDebateId] = React.useState(null);
+
   function loadProfile() {
     setLoadingProfile(true);
     api("GET", "/api/startup/profile")
       .then(data => {
         setProfile(data);
         setFundraising(data?.company?.fundraising ?? false);
+        const drEnabled = data?.company?.data_room_enabled ?? false;
+        setDataRoomEnabled(drEnabled);
+        if (drEnabled) loadDataRoomFiles();
         if (!data?.company) setNoCompany(true);
       })
       .catch(err => setError(err.message))
@@ -1566,12 +1880,179 @@ function DashboardView({ user, onSignOut }) {
       .finally(() => setLoadingEvidenceLog(false));
   }
 
+  function loadDataRoomFiles() {
+    setDrLoading(true);
+    api("GET", "/api/startup/data-room/files")
+      .then(data => setDataRoomFiles(data?.files || []))
+      .catch(() => setDataRoomFiles([]))
+      .finally(() => setDrLoading(false));
+  }
+
+  async function handleDrToggle() {
+    const newVal = !dataRoomEnabled;
+    try {
+      await api("PUT", "/api/startup/data-room/toggle", { enabled: newVal });
+      setDataRoomEnabled(newVal);
+      if (newVal) loadDataRoomFiles();
+    } catch (err) { setError(err.message); }
+  }
+
+  async function handleDrUpload(files) {
+    if (!files || files.length === 0) return;
+    setDrUploading(true);
+    setDrUploadResult(null);
+    try {
+      const formData = new FormData();
+      formData.append("file", files[0]);
+      formData.append("category", drCategory);
+      formData.append("also_evidence", drAlsoEvidence ? "true" : "false");
+      const token = getToken();
+      const resp = await fetch("/api/startup/data-room/upload", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.detail || resp.statusText); }
+      const data = await resp.json();
+      setDrUploadResult(data);
+      loadDataRoomFiles();
+      if (data.evidence_created) { loadChunks(); loadEvidenceLog(); }
+    } catch (err) { setError(err.message); }
+    finally { setDrUploading(false); }
+  }
+
+  async function handleDrDelete(fileId) {
+    if (!confirm("Delete this file from the data room?")) return;
+    try {
+      await api("DELETE", `/api/startup/data-room/files/${fileId}`);
+      setDataRoomFiles(prev => prev.filter(f => f.id !== fileId));
+    } catch (err) { setError(err.message); }
+  }
+
+  async function handleDrDownload(fileId, filename) {
+    try {
+      const data = await api("GET", `/api/data-room/download/${fileId}`);
+      if (data.download_url) {
+        const a = document.createElement("a"); a.href = data.download_url; a.target = "_blank"; a.download = filename || "download"; a.click();
+      }
+    } catch (err) { setError(err.message); }
+  }
+
+  function loadDebates() {
+    setLoadingDebates(true);
+    api("GET", "/api/startup/debates")
+      .then(data => setDebates(data?.debates || []))
+      .catch(() => setDebates([]))
+      .finally(() => setLoadingDebates(false));
+  }
+
   React.useEffect(() => {
     loadProfile();
     loadChunks();
     loadMatches();
     loadEvidenceLog();
+    loadDebates();
+    // Poll debates every 30s so founder sees new evidence requests in near-real-time.
+    const poll = setInterval(loadDebates, 30000);
+    return () => clearInterval(poll);
   }, []);
+
+  // Poll any in-flight re-evaluation job statuses tied to a debate.
+  React.useEffect(() => {
+    const entries = Object.entries(pendingJobId).filter(([, jobId]) => !!jobId);
+    if (entries.length === 0) return;
+    let cancelled = false;
+    async function tick() {
+      for (const [debateId, jobId] of entries) {
+        try {
+          const data = await api("GET", `/api/startup/reeval-status/${jobId}`);
+          if (cancelled) return;
+          setJobStatus(prev => ({ ...prev, [jobId]: data }));
+          if (data?.status === "done" || data?.status === "error") {
+            // Stop polling this one but keep the record so the UI renders
+            // "Return to debate" / "Try again".
+          }
+        } catch (_) {}
+      }
+    }
+    tick();
+    const iv = setInterval(tick, 5000);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [pendingJobId]);
+
+  async function handleDebateEvidenceUpload(debateId, files) {
+    if (!files || files.length === 0) return;
+    setUploadingForDebate(prev => ({ ...prev, [debateId]: true }));
+    setDebateActionError(prev => ({ ...prev, [debateId]: null }));
+    try {
+      // 1. Upload file(s) as AI evidence (not data room).
+      const formData = new FormData();
+      for (const f of files) formData.append("files", f);
+      const token = getToken();
+      const resp = await fetch("/api/startup/upload", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+        throw new Error(err.detail || "Upload failed");
+      }
+      // 2. Kick off re-evaluation. The endpoint mints a job_id; we read it from
+      //    the response so we can poll status + pass it through when the
+      //    founder returns to the debate.
+      const reevalResp = await api("POST", "/api/startup/re-evaluate", { use_web_search: false });
+      const jobId = reevalResp?.job_id || null;
+      if (jobId) {
+        setPendingJobId(prev => ({ ...prev, [debateId]: jobId }));
+        setJobStatus(prev => ({ ...prev, [jobId]: { status: "running", progress: "Queued" } }));
+      }
+      // Refresh chunks/evidence panels so the uploaded file is visible in the list.
+      loadChunks();
+      loadEvidenceLog();
+    } catch (err) {
+      setDebateActionError(prev => ({ ...prev, [debateId]: err.message }));
+    } finally {
+      setUploadingForDebate(prev => ({ ...prev, [debateId]: false }));
+    }
+  }
+
+  async function handleDebateReturnAfterUpload(debateId) {
+    const jobId = pendingJobId[debateId] || null;
+    setRespondingForDebate(prev => ({ ...prev, [debateId]: true }));
+    setDebateActionError(prev => ({ ...prev, [debateId]: null }));
+    try {
+      await api("POST", `/api/startup/debates/${debateId}/respond`, {
+        response_type: "uploaded",
+        reeval_job_id: jobId,
+      });
+      // Clear pending state, refresh debates list, and open the debate read-only.
+      setPendingJobId(prev => { const n = { ...prev }; delete n[debateId]; return n; });
+      loadDebates();
+      setViewingDebateId(debateId);
+    } catch (err) {
+      setDebateActionError(prev => ({ ...prev, [debateId]: err.message }));
+    } finally {
+      setRespondingForDebate(prev => ({ ...prev, [debateId]: false }));
+    }
+  }
+
+  async function handleDebateDecline(debateId) {
+    if (!confirm("This will tell the VC agent you cannot provide the requested evidence. The debate will resume without it. Continue?")) return;
+    setRespondingForDebate(prev => ({ ...prev, [debateId]: true }));
+    setDebateActionError(prev => ({ ...prev, [debateId]: null }));
+    try {
+      await api("POST", `/api/startup/debates/${debateId}/respond`, {
+        response_type: "unavailable",
+      });
+      loadDebates();
+      setViewingDebateId(debateId);
+    } catch (err) {
+      setDebateActionError(prev => ({ ...prev, [debateId]: err.message }));
+    } finally {
+      setRespondingForDebate(prev => ({ ...prev, [debateId]: false }));
+    }
+  }
 
   async function handleToggle() {
     setToggleLoading(true);
@@ -1618,17 +2099,96 @@ function DashboardView({ user, onSignOut }) {
 
   async function handleReEvaluate() {
     setReEvaluating(true);
-    setReEvalMsg(null);
+    setReEvalError(null);
     setError(null);
+    setReevalShowLog(false);
     try {
-      await api("POST", "/api/startup/re-evaluate");
-      setReEvalMsg("Re-evaluation started in the background. Your scores will update shortly — refresh the page in a few minutes.");
+      const resp = await api("POST", "/api/startup/re-evaluate", { use_web_search: useWebSearch });
+      const jobId = resp?.job_id || null;
+      if (!jobId) {
+        // Should not happen — endpoint always returns one — but degrade gracefully.
+        setReEvalError("Re-evaluation queued, but the server did not return a job id. Refresh in a few minutes.");
+        return;
+      }
+      setReevalJob({
+        job_id: jobId,
+        status: "running",
+        progress: "Queued",
+        progress_log: [],
+        started_at: Date.now(),
+        finished_at: null,
+        use_web_search: useWebSearch,
+      });
     } catch (err) {
-      setError(err.message);
+      setReEvalError(err.message);
     } finally {
       setReEvaluating(false);
     }
   }
+
+  // Poll the re-evaluation status while a standalone re-eval is in flight.
+  // Stops as soon as the server reports done/error and then auto-refreshes
+  // the evidence log, matches, and chunks so the founder sees the new
+  // analysis without having to reload the page. A 15-minute hard timeout
+  // protects against runaway polling if the worker dies silently.
+  React.useEffect(() => {
+    const job = reevalJob;
+    if (!job?.job_id) return;
+    if (job.status === "done" || job.status === "error") return;
+
+    let cancelled = false;
+    const POLL_INTERVAL_MS = 3000;
+    const HARD_TIMEOUT_MS = 15 * 60 * 1000;
+
+    async function tick() {
+      if (cancelled) return;
+      // Hard timeout — surface a recoverable error so the founder can retry.
+      if (Date.now() - job.started_at > HARD_TIMEOUT_MS) {
+        setReevalJob(prev => prev && prev.job_id === job.job_id
+          ? { ...prev, status: "error", progress: "Timed out after 15 minutes — the run may still be in progress on the server.", finished_at: Date.now() }
+          : prev);
+        return;
+      }
+      try {
+        const data = await api("GET", `/api/startup/reeval-status/${job.job_id}`);
+        if (cancelled) return;
+        setReevalJob(prev => prev && prev.job_id === job.job_id
+          ? {
+              ...prev,
+              status: data?.status || prev.status,
+              progress: data?.progress || prev.progress,
+              progress_log: data?.progress_log || prev.progress_log,
+              finished_at: (data?.status === "done" || data?.status === "error") ? Date.now() : prev.finished_at,
+            }
+          : prev);
+
+        // Terminal status: refresh the data the founder cares about so the
+        // page reflects the new analysis without a manual reload.
+        if (data?.status === "done") {
+          loadEvidenceLog();
+          loadMatches();
+          loadChunks();
+          loadProfile();
+        }
+      } catch (err) {
+        // 404 = the job is no longer in the in-memory _jobs dict (worker
+        // restarted or job was cleaned up). Treat as a soft error and stop
+        // polling so we don't hammer the endpoint.
+        if (cancelled) return;
+        const msg = String(err?.message || "");
+        if (msg.includes("404") || msg.toLowerCase().includes("not found")) {
+          setReevalJob(prev => prev && prev.job_id === job.job_id
+            ? { ...prev, status: "error", progress: "Lost track of the job (server restart?). Please refresh the page to see whether it finished.", finished_at: Date.now() }
+            : prev);
+        }
+        // Network blip — keep polling.
+      }
+    }
+
+    tick();
+    const iv = setInterval(tick, POLL_INTERVAL_MS);
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [reevalJob?.job_id, reevalJob?.status]);
 
   async function handleAnalyze() {
     setAnalyzing(true);
@@ -1675,6 +2235,18 @@ function DashboardView({ user, onSignOut }) {
         {error && <Alert type="error">{error}</Alert>}
         <CreateCompanyForm onCreated={handleCompanyCreated} />
       </div>
+    );
+  }
+
+  // Read-only debate view (founder drilldown). Takes over the dashboard render
+  // tree so the founder can watch the debate stream without losing their place.
+  if (viewingDebateId) {
+    return (
+      <DebateView
+        debateId={viewingDebateId}
+        readOnly
+        onBack={() => { setViewingDebateId(null); loadDebates(); }}
+      />
     );
   }
 
@@ -1747,6 +2319,134 @@ function DashboardView({ user, onSignOut }) {
         </div>
       )}
 
+      {/* Debates */}
+      {company && (
+        <div className="section-card">
+          <h2>Debates</h2>
+          {loadingDebates && debates.length === 0 ? (
+            <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
+          ) : debates.length === 0 ? (
+            <Alert type="info">No active debates yet. A debate is kicked off when a VC invites your company into a structured discussion.</Alert>
+          ) : (
+            debates.map(d => {
+              const awaiting = d.status === "paused" && d.awaiting_input_from === "founder";
+              const req = d.latest_evidence_request || null;
+              const info = req?.info_request || null;
+              const jobId = pendingJobId[d.id];
+              const job = jobId ? jobStatus[jobId] : null;
+              const isUploading = !!uploadingForDebate[d.id];
+              const isResponding = !!respondingForDebate[d.id];
+              const errMsg = debateActionError[d.id];
+              const reevalRunning = job && job.status === "running";
+              const reevalDone = job && job.status === "done";
+              const reevalErrored = job && job.status === "error";
+              return (
+                <div key={d.id} className={`debate-request-card ${awaiting ? "awaiting" : (d.status === "completed" ? "completed" : "")}`}>
+                  <div className="debate-request-header">
+                    <div className="debate-request-firm">
+                      {(d.vc_profiles && d.vc_profiles.firm_name) || d.firm_name || "VC debate"}
+                    </div>
+                    <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                      <span className={`badge ${d.status === "active" ? "badge-green" : ""}`} style={{textTransform:"capitalize"}}>{d.status}</span>
+                      {d.status !== "completed" && (
+                        <span style={{fontSize:".8rem",color:"var(--text-dim)"}}>Round {d.current_round || 1}/{d.max_rounds || 3}</span>
+                      )}
+                    </div>
+                  </div>
+
+                  {awaiting && info && (
+                    <div>
+                      <Alert type="info">The VC agent is asking for additional evidence before continuing.</Alert>
+                      {info.topic && <div className="debate-request-topic">{info.topic}</div>}
+                      {Array.isArray(info.questions) && info.questions.length > 0 && (
+                        <ul className="debate-request-questions">
+                          {info.questions.map((q, qi) => <li key={qi}>{q}</li>)}
+                        </ul>
+                      )}
+                      {info.rationale && <div className="debate-request-rationale">{info.rationale}</div>}
+                    </div>
+                  )}
+
+                  {errMsg && <Alert type="error" style={{marginTop:10}}>{errMsg}</Alert>}
+
+                  {awaiting && reevalRunning && (
+                    <Alert type="info" style={{marginTop:10}}>
+                      <Spinner /> Re-evaluation in progress — {job.progress || "running"}…
+                    </Alert>
+                  )}
+                  {awaiting && reevalErrored && (
+                    <Alert type="error" style={{marginTop:10}}>
+                      Re-evaluation failed: {job?.progress || "unknown error"}. Try uploading again, or decline to provide the evidence.
+                    </Alert>
+                  )}
+
+                  {awaiting && (
+                    <div className="debate-request-actions">
+                      {!reevalDone && (
+                        <label className="btn btn-primary" style={{cursor: (isUploading || reevalRunning) ? "not-allowed" : "pointer", opacity: (isUploading || reevalRunning) ? 0.6 : 1}}>
+                          {isUploading ? <Spinner /> : (reevalRunning ? "Uploading…" : "Upload evidence & re-evaluate")}
+                          <input
+                            type="file"
+                            multiple
+                            accept=".pdf,.pptx,.docx,.txt,.md,.csv"
+                            disabled={isUploading || reevalRunning || isResponding}
+                            onChange={e => {
+                              const files = Array.from(e.target.files || []);
+                              if (files.length) handleDebateEvidenceUpload(d.id, files);
+                              e.target.value = "";
+                            }}
+                            style={{display:"none"}}
+                          />
+                        </label>
+                      )}
+                      {reevalDone && (
+                        <button
+                          className="btn btn-primary"
+                          disabled={isResponding}
+                          onClick={() => handleDebateReturnAfterUpload(d.id)}
+                        >
+                          {isResponding ? <Spinner /> : "Return to debate"}
+                        </button>
+                      )}
+                      <button
+                        className="btn btn-ghost"
+                        disabled={isUploading || reevalRunning || isResponding}
+                        onClick={() => handleDebateDecline(d.id)}
+                      >
+                        I don't have this information
+                      </button>
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() => setViewingDebateId(d.id)}
+                      >
+                        View debate
+                      </button>
+                    </div>
+                  )}
+
+                  {!awaiting && (
+                    <div className="debate-request-actions">
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() => setViewingDebateId(d.id)}
+                      >
+                        View debate
+                      </button>
+                    </div>
+                  )}
+
+                  {d.status === "completed" && d.summary && (
+                    <div style={{marginTop:10,color:"var(--text-dim)",fontSize:".85rem",lineHeight:1.5}}>
+                      {d.summary.slice(0, 260)}{d.summary.length > 260 ? "…" : ""}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
       {/* VC Matches */}
       {company && (
         <div className="section-card">
@@ -1787,7 +2487,7 @@ function DashboardView({ user, onSignOut }) {
 
       {/* Analysis */}
       <div className="section-card">
-        <h2>Rockaway assessment</h2>
+        <h2>Assessment</h2>
         {loadingProfile ? (
           <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
         ) : (
@@ -1811,6 +2511,100 @@ function DashboardView({ user, onSignOut }) {
         {analyzeMsg && <Alert type="info" style={{marginTop:12}}>{analyzeMsg}</Alert>}
       </div>
 
+      {/* ===== Data Room ===== */}
+      <div className="section-card">
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+          <h2 style={{margin:0}}>Data Room</h2>
+          <label style={{display:"flex",alignItems:"center",gap:8,cursor:"pointer",fontSize:".9rem"}}>
+            <span style={{color:"#6e6e73"}}>{dataRoomEnabled ? "Enabled" : "Disabled"}</span>
+            <div
+              onClick={handleDrToggle}
+              style={{
+                width:44,height:24,borderRadius:12,
+                background:dataRoomEnabled ? "var(--green)" : "#48484a",
+                position:"relative",cursor:"pointer",transition:"background .2s"
+              }}
+            >
+              <div style={{
+                width:20,height:20,borderRadius:10,background:"#fff",
+                position:"absolute",top:2,
+                left:dataRoomEnabled ? 22 : 2,
+                transition:"left .2s"
+              }} />
+            </div>
+          </label>
+        </div>
+        <p style={{color:"#6e6e73",marginBottom:16}}>
+          Share files with matched VCs. Enable the data room to let investors access your documents.
+        </p>
+
+        {dataRoomEnabled && (
+          <>
+            {/* Upload area */}
+            <div style={{border:"1px dashed var(--border)",borderRadius:8,padding:16,marginBottom:16}}>
+              <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap",marginBottom:12}}>
+                <select
+                  className="form-input"
+                  value={drCategory}
+                  onChange={e => setDrCategory(e.target.value)}
+                  style={{width:"auto",minWidth:140}}
+                >
+                  <option value="pitch_deck">Pitch Deck</option>
+                  <option value="financials">Financials</option>
+                  <option value="legal">Legal</option>
+                  <option value="team">Team</option>
+                  <option value="product">Product</option>
+                  <option value="other">Other</option>
+                </select>
+                <label style={{display:"flex",alignItems:"center",gap:6,fontSize:".85rem",color:"#6e6e73",cursor:"pointer"}}>
+                  <input type="checkbox" checked={drAlsoEvidence} onChange={e => setDrAlsoEvidence(e.target.checked)} />
+                  Also use as AI evidence
+                </label>
+              </div>
+              <UploadZone onUpload={handleDrUpload} disabled={drUploading} />
+              {drUploading && (
+                <div style={{display:"flex",alignItems:"center",gap:8,marginTop:8,color:"#6e6e73"}}>
+                  <Spinner /> Uploading…
+                </div>
+              )}
+              {drUploadResult && (
+                <div style={{marginTop:8,fontSize:".88rem",color:"var(--green)"}}>
+                  ✓ {drUploadResult.file?.original_filename} uploaded
+                  {drUploadResult.evidence_created && ` (${drUploadResult.chunks_count} chunks created)`}
+                </div>
+              )}
+            </div>
+
+            {/* File list */}
+            {drLoading ? (
+              <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
+            ) : dataRoomFiles.length === 0 ? (
+              <Alert type="info">No files in your data room yet. Upload documents above.</Alert>
+            ) : (
+              <div style={{display:"flex",flexDirection:"column",gap:0}}>
+                {dataRoomFiles.map(f => (
+                  <div key={f.id} style={{
+                    display:"flex",justifyContent:"space-between",alignItems:"center",
+                    padding:"10px 0",borderBottom:"1px solid var(--border)",fontSize:".88rem",gap:8,flexWrap:"wrap"
+                  }}>
+                    <div style={{display:"flex",alignItems:"center",gap:8,flex:1,minWidth:0}}>
+                      <span style={{color:"#CCCCCC",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.original_filename}</span>
+                      <span className="badge" style={{fontSize:".75rem",textTransform:"capitalize"}}>{(f.category || "other").replace("_"," ")}</span>
+                      {f.also_evidence && <span className="badge badge-green" style={{fontSize:".7rem"}}>Evidence</span>}
+                      {f.file_size_bytes && <span style={{color:"#6e6e73",fontSize:".78rem"}}>{(f.file_size_bytes / 1024).toFixed(0)} KB</span>}
+                    </div>
+                    <div style={{display:"flex",gap:6}}>
+                      <button className="btn btn-sm btn-outline" onClick={() => handleDrDownload(f.id, f.original_filename)}>Download</button>
+                      <button className="btn btn-sm btn-outline-red" onClick={() => handleDrDelete(f.id)}>Delete</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
       {/* Evidence + Upload */}
       <div className="section-card">
         <h2>Your uploaded evidence</h2>
@@ -1818,45 +2612,90 @@ function DashboardView({ user, onSignOut }) {
           Documents and data used in your assessment. Sensitive internal files are never shown here.
         </p>
 
-        {/* Upload zone */}
-        <UploadZone onUpload={handleUpload} disabled={uploading} />
-
-        {uploading && (
-          <div style={{display:"flex",alignItems:"center",gap:8,marginTop:12,color:"#6e6e73"}}>
-            <Spinner /> Uploading and processing files…
-          </div>
-        )}
-
-        {uploadResults.length > 0 && (
-          <div style={{marginTop:12}}>
-            {uploadResults.map((r, i) => (
-              <div key={i} style={{padding:"6px 0",borderBottom:"1px solid var(--border)",fontSize:".88rem",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <span style={{color:"#CCCCCC"}}>{r.filename}</span>
-                {r.error
-                  ? <span style={{color:"#ff453a"}}>{r.error}</span>
-                  : <span style={{color:"var(--green)"}}>✓ {r.chunks_count} chunks</span>
-                }
+        {/* Upload zone — hidden when data room is enabled (use Data Room section instead) */}
+        {!dataRoomEnabled && (
+          <>
+            <UploadZone onUpload={handleUpload} disabled={uploading} />
+            {uploading && (
+              <div style={{display:"flex",alignItems:"center",gap:8,marginTop:12,color:"#6e6e73"}}>
+                <Spinner /> Uploading and processing files…
               </div>
-            ))}
-          </div>
+            )}
+            {uploadResults.length > 0 && (
+              <div style={{marginTop:12}}>
+                {uploadResults.map((r, i) => (
+                  <div key={i} style={{padding:"6px 0",borderBottom:"1px solid var(--border)",fontSize:".88rem",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{color:"#CCCCCC"}}>{r.filename}</span>
+                    {r.error
+                      ? <span style={{color:"#ff453a"}}>{r.error}</span>
+                      : <span style={{color:"var(--green)"}}>✓ {r.chunks_count} chunks</span>
+                    }
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+        {dataRoomEnabled && (
+          <p style={{color:"#6e6e73",fontSize:".85rem",marginBottom:8}}>
+            Upload evidence files via the Data Room section above — check "Also use as AI evidence" when uploading.
+          </p>
         )}
 
-        {/* Re-evaluate button — only shown if company has prior analysis */}
-        {company && hasAnalysis && (
-          <div style={{marginTop:16,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
-            <button
-              className="btn btn-primary"
-              onClick={handleReEvaluate}
-              disabled={reEvaluating || uploading}
-            >
-              {reEvaluating ? <><Spinner /> Re-evaluating…</> : "Re-evaluate with new evidence"}
-            </button>
-            <span style={{color:"#6e6e73",fontSize:".85rem"}}>
-              Combines all evidence and refreshes your scores.
-            </span>
-          </div>
-        )}
-        {reEvalMsg && <Alert type="info" style={{marginTop:12}}>{reEvalMsg}</Alert>}
+        {/* Re-evaluate button — only shown if company has prior analysis.
+            The button is disabled while a re-eval job is in flight so the
+            founder cannot accidentally launch a second concurrent run; the
+            ReevalProgressCard below shows live status until completion. */}
+        {company && hasAnalysis && (() => {
+          const jobInFlight = reevalJob && reevalJob.status !== "done" && reevalJob.status !== "error";
+          const buttonDisabled = reEvaluating || uploading || jobInFlight;
+          return (
+            <div style={{marginTop:16,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+              <button
+                className="btn btn-primary"
+                onClick={handleReEvaluate}
+                disabled={buttonDisabled}
+              >
+                {jobInFlight
+                  ? <><Spinner /> Re-evaluating…</>
+                  : reEvaluating
+                    ? <><Spinner /> Starting…</>
+                    : "Re-evaluate with new evidence"}
+              </button>
+              <label
+                style={{
+                  display:"flex",
+                  alignItems:"center",
+                  gap:6,
+                  fontSize:".85rem",
+                  color:"#1d1d1f",
+                  cursor: buttonDisabled ? "not-allowed" : "pointer",
+                  userSelect:"none",
+                }}
+                title="When enabled, Stage 2 may call Perplexity to fill gaps where document evidence cannot answer a question."
+              >
+                <input
+                  type="checkbox"
+                  checked={useWebSearch}
+                  onChange={(e) => setUseWebSearch(e.target.checked)}
+                  disabled={buttonDisabled}
+                />
+                Use web search
+              </label>
+              <span style={{color:"#6e6e73",fontSize:".85rem"}}>
+                Combines all evidence and refreshes your scores. Live progress is shown below.
+              </span>
+            </div>
+          );
+        })()}
+        {reEvalError && <Alert type="error" style={{marginTop:12}}>{reEvalError}</Alert>}
+        <ReevalProgressCard
+          job={reevalJob}
+          showLog={reevalShowLog}
+          onToggleLog={() => setReevalShowLog(s => !s)}
+          onRetry={() => { setReevalJob(null); handleReEvaluate(); }}
+          onDismiss={() => setReevalJob(null)}
+        />
 
         {/* Analysis evidence log (audit-style Q&A + arguments) */}
         <div style={{marginTop:24}}>
@@ -1880,12 +2719,13 @@ function DashboardView({ user, onSignOut }) {
           )}
         </div>
       </div>
+
     </div>
   );
 }
 
 // ---------- Debate View ----------
-function DebateView({ debateId, onBack }) {
+function DebateView({ debateId, onBack, readOnly = false }) {
   const [debate, setDebate] = useState(null);
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1987,12 +2827,12 @@ function DebateView({ debateId, onBack }) {
           <div className="topnav-brand">Debate: {debate?.company_name || "Loading..."}</div>
         </div>
         <div style={{display:"flex",gap:8}}>
-          {status === "active" && (
+          {!readOnly && status === "active" && (
             <button className="btn btn-sm btn-outline-red" onClick={handlePause} disabled={actionLoading}>
               Pause
             </button>
           )}
-          {status === "paused" && (
+          {!readOnly && status === "paused" && (
             <button className="btn btn-sm btn-outline-green" onClick={handleResume} disabled={actionLoading}>
               Resume
             </button>
@@ -2029,6 +2869,67 @@ function DebateView({ debateId, onBack }) {
                 <div className="debate-round-sep">Debate Summary</div>
                 <div className="debate-msg system">
                   <div className="debate-bubble bubble-system"><Markdown text={msg.content} /></div>
+                </div>
+              </div>
+            );
+          }
+
+          // System_note rows = audit events (re-eval ran, VC concluded, etc.)
+          // Render as an inline separator rather than a speaker bubble.
+          if (msg.message_type === "system_note") {
+            return (
+              <div key={msg.id || i}>
+                {showSep && <div className="debate-round-sep">Round {msg.round}</div>}
+                <div className="debate-round-sep" style={{textTransform:"none",fontWeight:500}}>
+                  {msg.content}
+                </div>
+              </div>
+            );
+          }
+
+          // Evidence request = VC agent needs data; render as a distinct
+          // yellow-tinted bubble with the topic / questions / rationale.
+          if (msg.message_type === "evidence_request") {
+            const info = msg.info_request || {};
+            return (
+              <div key={msg.id || i}>
+                {showSep && <div className="debate-round-sep">Round {msg.round}</div>}
+                <div className="debate-msg vc_agent">
+                  <div className="debate-avatar avatar-vc">VC</div>
+                  <div>
+                    <div className="debate-speaker">VC Agent · requested evidence</div>
+                    <div className="debate-evidence-bubble">
+                      {msg.content && <div style={{marginBottom:6}}>{msg.content}</div>}
+                      {info.topic && <div className="debate-request-topic">{info.topic}</div>}
+                      {Array.isArray(info.questions) && info.questions.length > 0 && (
+                        <ul className="debate-request-questions">
+                          {info.questions.map((q, qi) => <li key={qi}>{q}</li>)}
+                        </ul>
+                      )}
+                      {info.rationale && <div className="debate-request-rationale">{info.rationale}</div>}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          // Founder response = founder's answer to an evidence request.
+          if (msg.message_type === "founder_response") {
+            const fType = msg.founder_response_type || "acknowledged";
+            const label = fType === "uploaded"
+              ? "Founder uploaded new evidence"
+              : fType === "unavailable"
+                ? "Founder declined: information not available"
+                : "Founder response";
+            return (
+              <div key={msg.id || i}>
+                {showSep && <div className="debate-round-sep">Round {msg.round}</div>}
+                <div className="debate-msg system" style={{justifyContent:"center"}}>
+                  <div className="debate-founder-bubble">
+                    <div style={{fontWeight:600,marginBottom:4}}>{label}</div>
+                    <div>{msg.content}</div>
+                  </div>
                 </div>
               </div>
             );
@@ -2149,6 +3050,39 @@ function VCDashboardView({ user, onSignOut, onStartDebate }) {
   const [saveMsg, setSaveMsg] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
+  // Data room expansion per match
+  const [drExpanded, setDrExpanded] = useState({});    // { matchId: true/false }
+  const [drFiles, setDrFiles] = useState({});           // { matchId: [...files] }
+  const [drLoadingFor, setDrLoadingFor] = useState({}); // { matchId: true/false }
+
+  async function toggleDataRoom(matchId) {
+    if (drExpanded[matchId]) {
+      setDrExpanded(prev => ({ ...prev, [matchId]: false }));
+      return;
+    }
+    setDrExpanded(prev => ({ ...prev, [matchId]: true }));
+    if (drFiles[matchId]) return; // already loaded
+    setDrLoadingFor(prev => ({ ...prev, [matchId]: true }));
+    try {
+      const data = await api("GET", `/api/vc/matches/${matchId}/data-room`);
+      setDrFiles(prev => ({ ...prev, [matchId]: data?.files || [] }));
+    } catch (err) {
+      setError(err.message);
+      setDrExpanded(prev => ({ ...prev, [matchId]: false }));
+    } finally {
+      setDrLoadingFor(prev => ({ ...prev, [matchId]: false }));
+    }
+  }
+
+  async function vcDownloadFile(fileId, filename) {
+    try {
+      const data = await api("GET", `/api/data-room/download/${fileId}`);
+      if (data.download_url) {
+        const a = document.createElement("a"); a.href = data.download_url; a.target = "_blank"; a.download = filename || "download"; a.click();
+      }
+    } catch (err) { setError(err.message); }
+  }
+
   function loadProfile() {
     return api("GET", "/api/vc/profile")
       .then(data => {
@@ -2164,12 +3098,22 @@ function VCDashboardView({ user, onSignOut, onStartDebate }) {
       .finally(() => setLoadingProfile(false));
   }
 
+  // Load matches and keep them fresh with background polling.
+  // Polls every 30 s so new matches created by the background engine appear
+  // automatically without the VC having to manually reload the page.
+  const loadMatches = React.useCallback(function loadMatchesFn(showSpinner) {
+    if (showSpinner) setLoadingMatches(true);
+    return api("GET", "/api/vc/matches")
+      .then(data => setMatches(data?.matches || []))
+      .catch(() => {})
+      .finally(() => setLoadingMatches(false));
+  }, []);
+
   useEffect(() => {
     loadProfile();
-    api("GET", "/api/vc/matches")
-      .then(data => setMatches(data?.matches || []))
-      .catch(() => setMatches([]))
-      .finally(() => setLoadingMatches(false));
+    loadMatches(true);
+    const poll = setInterval(() => loadMatches(false), 30000);
+    return () => clearInterval(poll);
   }, []);
 
   async function saveThesis() {
@@ -2229,6 +3173,9 @@ function VCDashboardView({ user, onSignOut, onStartDebate }) {
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
             </svg>
           </button>
+          {user?.role === "admin" && (
+            <button className="btn btn-ghost" onClick={() => navigate("/admin")} style={{fontSize:".82rem"}}>← Admin</button>
+          )}
           <button className="btn btn-ghost" onClick={() => { clearToken(); onSignOut(); }}>Sign out</button>
         </div>
       </div>
@@ -2322,7 +3269,18 @@ function VCDashboardView({ user, onSignOut, onStartDebate }) {
 
       {/* Matches */}
       <div className="section-card">
-        <h2>Matched startups</h2>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+          <h2 style={{margin:0}}>Matched startups</h2>
+          <button
+            className="btn btn-ghost"
+            style={{fontSize:".82rem",padding:"4px 12px"}}
+            onClick={() => loadMatches(true)}
+            disabled={loadingMatches}
+            title="Refresh matches"
+          >
+            {loadingMatches ? "Refreshing…" : "↻ Refresh"}
+          </button>
+        </div>
         {loadingMatches ? (
           <div style={{display:"flex",justifyContent:"center",padding:24}}><Spinner /></div>
         ) : matches.length === 0 ? (
@@ -2359,6 +3317,44 @@ function VCDashboardView({ user, onSignOut, onStartDebate }) {
                       Composite {m.composite_score != null ? Math.round(m.composite_score) : "—"}
                     </span>
                   </div>
+
+                  {/* Data Room */}
+                  {m.data_room_enabled && m.data_room_file_count > 0 && (
+                    <div style={{marginTop:10,width:"100%"}}>
+                      <button
+                        className="btn btn-sm btn-outline"
+                        style={{width:"auto",padding:"5px 14px",fontSize:".82rem"}}
+                        onClick={() => toggleDataRoom(m.id)}
+                      >
+                        {drExpanded[m.id] ? "▾" : "▸"} Data Room ({m.data_room_file_count} file{m.data_room_file_count !== 1 ? "s" : ""})
+                      </button>
+                      {drExpanded[m.id] && (
+                        <div style={{marginTop:8,padding:"10px 14px",background:"rgba(255,255,255,0.03)",borderRadius:8,border:"1px solid var(--border)"}}>
+                          {drLoadingFor[m.id] ? (
+                            <div style={{display:"flex",justifyContent:"center",padding:12}}><Spinner /></div>
+                          ) : (drFiles[m.id] || []).length === 0 ? (
+                            <span style={{color:"#6e6e73",fontSize:".85rem"}}>No files available.</span>
+                          ) : (
+                            (drFiles[m.id] || []).map(f => (
+                              <div key={f.id} style={{
+                                display:"flex",justifyContent:"space-between",alignItems:"center",
+                                padding:"6px 0",borderBottom:"1px solid var(--border)",fontSize:".85rem",gap:8
+                              }}>
+                                <div style={{display:"flex",alignItems:"center",gap:8,flex:1,minWidth:0}}>
+                                  <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.original_filename}</span>
+                                  <span className="badge" style={{fontSize:".7rem",textTransform:"capitalize"}}>{(f.category || "other").replace("_"," ")}</span>
+                                  {f.file_size_bytes && <span style={{color:"#6e6e73",fontSize:".75rem"}}>{(f.file_size_bytes / 1024).toFixed(0)} KB</span>}
+                                </div>
+                                <button className="btn btn-sm btn-outline" onClick={() => vcDownloadFile(f.id, f.original_filename)} style={{padding:"3px 10px",fontSize:".78rem"}}>
+                                  Download
+                                </button>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <div className="match-actions" style={{marginTop:10}}>
                     {m.status !== "interested" && m.status !== "passed" && m.status !== "in_debate" && (
@@ -2417,6 +3413,1007 @@ function LoadingScreen() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Admin portal
+// ---------------------------------------------------------------------------
+function AdminPortal({ user, onSignOut }) {
+  const [tab, setTab] = React.useState("overview");
+  const [data, setData] = React.useState({});
+  const [loading, setLoading] = React.useState(true);
+  const [logEntries, setLogEntries] = React.useState([]);
+  const [logLevel, setLogLevel] = React.useState("INFO");
+  const [logPaused, setLogPaused] = React.useState(false);
+  const [logAutoScroll, setLogAutoScroll] = React.useState(true);
+  const logSinceRef = React.useRef(null);
+  const logBottomRef = React.useRef(null);
+  const modalLogBottomRef = React.useRef(null);
+  const [error, setError] = React.useState(null);
+  const [actionMsg, setActionMsg] = React.useState(null);
+
+  // Analyses monitoring — log modal
+  const [openLogRunId, setOpenLogRunId] = React.useState(null);
+  const [logStream, setLogStream] = React.useState(null);
+  const [logFilterNoise, setLogFilterNoise] = React.useState(true);
+
+  // Pipeline Models editor
+  const [pipelineModels, setPipelineModels] = React.useState(null);
+  const [pipelineModelsSaved, setPipelineModelsSaved] = React.useState(null);
+  const [pipelineModelsCatalog, setPipelineModelsCatalog] = React.useState(null);
+  const [pipelineModelsFactory, setPipelineModelsFactory] = React.useState(null);
+  const [pipelineModelsLabels, setPipelineModelsLabels] = React.useState(null);
+  const [pipelineModelsSaving, setPipelineModelsSaving] = React.useState(false);
+
+  // Currency / money formatter used by the Analyses tab + log modal.
+  function fmtUsd(n) {
+    if (n == null || Number.isNaN(n)) return "—";
+    const v = Number(n);
+    if (v === 0) return "$0.0000";
+    if (Math.abs(v) >= 100) return `$${v.toFixed(2)}`;
+    if (Math.abs(v) >= 1) return `$${v.toFixed(3)}`;
+    return `$${v.toFixed(4)}`;
+  }
+  function fmtInt(n) {
+    if (n == null || Number.isNaN(n)) return "—";
+    return Number(n).toLocaleString();
+  }
+  function shortModelLabel(sel) {
+    if (!sel || typeof sel !== "object") return "—";
+    return sel.model || sel.label || "—";
+  }
+
+  function fmt(n) { return n == null ? "—" : typeof n === "number" ? Math.round(n) : n; }
+  function fmtDate(s) { return s ? new Date(s).toLocaleString() : "—"; }
+  function bucketBadge(b) {
+    if (!b) return null;
+    return <span className={`badge bucket-${b}`} style={{fontSize:".75rem"}}>{b.replace(/_/g," ")}</span>;
+  }
+  function scorePill(n, label) {
+    if (n == null) return <span style={{color:"var(--text-muted)"}}>—</span>;
+    const v = Math.round(n);
+    const color = v >= 70 ? "#22c55e" : v >= 50 ? "#f59e0b" : "#ef4444";
+    return <span style={{color, fontWeight:600}}>{label && <span style={{fontWeight:400,color:"var(--text-muted)",fontSize:".8rem",marginRight:3}}>{label}</span>}{v}</span>;
+  }
+
+  async function loadTab(t) {
+    setLoading(true); setError(null);
+    const ep = {
+      overview: "/api/admin/overview",
+      companies: "/api/admin/companies",
+      matches: "/api/admin/matches",
+      vcs: "/api/admin/vc-profiles",
+      analyses: "/api/admin/analyses",
+      users: "/api/admin/users",
+      pipeline_models: "/api/admin/pipeline-models",
+    }[t];
+    if (!ep) { setLoading(false); return; }
+    try {
+      const d = await api("GET", ep);
+      setData(prev => ({...prev, [t]: d}));
+      if (t === "pipeline_models") {
+        setPipelineModels(d.phase_models || null);
+        setPipelineModelsSaved(d.phase_models || null);
+        setPipelineModelsCatalog(d.catalog || null);
+        setPipelineModelsFactory(d.factory_defaults || null);
+        setPipelineModelsLabels(d.labels || null);
+      }
+    } catch(e) { setError(e.message); }
+    finally { setLoading(false); }
+  }
+
+  React.useEffect(() => { if (tab !== "logs") loadTab(tab); }, [tab]);
+
+  // Auto-refresh the Analyses tab every 10s so running runs update their
+  // status + live_progress without the admin hitting Refresh.
+  React.useEffect(() => {
+    if (tab !== "analyses") return;
+    const id = setInterval(() => loadTab("analyses"), 10000);
+    return () => clearInterval(id);
+  }, [tab]);
+
+  // Poll the run-log endpoint at 2s while the modal is open for a run.
+  React.useEffect(() => {
+    if (!openLogRunId) { setLogStream(null); return; }
+    let cancelled = false;
+    async function pollOne() {
+      try {
+        const d = await api("GET", `/api/admin/runs/${encodeURIComponent(openLogRunId)}/log`);
+        if (!cancelled) setLogStream(d);
+      } catch (e) {
+        if (!cancelled) setLogStream(s => s || { error: e.message });
+      }
+    }
+    pollOne();
+    const id = setInterval(() => {
+      // Stop polling once the stream is in a terminal state.
+      if (logStream && (logStream.status === "done" || logStream.status === "error")) {
+        clearInterval(id);
+        return;
+      }
+      pollOne();
+    }, 2000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [openLogRunId, logStream && logStream.status]);
+
+  // Keep the modal log view pinned to the bottom as new lines arrive.
+  React.useEffect(() => {
+    if (openLogRunId && modalLogBottomRef.current) {
+      modalLogBottomRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [openLogRunId, logStream && (logStream.progress_log || []).length]);
+
+  // Auto-refresh overview every 30s
+  React.useEffect(() => {
+    if (tab !== "overview") return;
+    const id = setInterval(() => loadTab("overview"), 30000);
+    return () => clearInterval(id);
+  }, [tab]);
+
+  async function approveUser(userId, approved) {
+    try {
+      await api("POST", `/api/admin/users/${userId}/approve`, { approved });
+      setActionMsg(`User ${approved ? "approved" : "unapproved"}.`);
+      loadTab("users");
+    } catch(e) { setError(e.message); }
+  }
+
+  async function triggerMatching(companyId, name) {
+    try {
+      await api("POST", `/api/admin/trigger-matching/${companyId}`, {});
+      setActionMsg(`Matching triggered for ${name}.`);
+    } catch(e) { setError(e.message); }
+  }
+
+  // Live log polling — only runs when Logs tab is active and not paused
+  React.useEffect(() => {
+    if (tab !== "logs" || logPaused) return;
+    async function pollLogs() {
+      try {
+        const params = new URLSearchParams({ level: logLevel });
+        if (logSinceRef.current) params.set("since", logSinceRef.current);
+        const res = await api("GET", `/api/admin/logs?${params}`);
+        const entries = res.entries || [];
+        if (entries.length > 0) {
+          logSinceRef.current = entries[entries.length - 1].ts;
+          setLogEntries(prev => {
+            const combined = [...prev, ...entries].slice(-500); // keep last 500
+            return combined;
+          });
+        }
+      } catch (_) {}
+    }
+    pollLogs(); // immediate first fetch
+    const id = setInterval(pollLogs, 2000);
+    return () => clearInterval(id);
+  }, [tab, logLevel, logPaused]);
+
+  // Auto-scroll log to bottom
+  React.useEffect(() => {
+    if (logAutoScroll && logBottomRef.current) {
+      logBottomRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [logEntries, logAutoScroll]);
+
+  const TABS = [
+    { key: "overview", label: "Overview" },
+    { key: "companies", label: "Companies" },
+    { key: "matches", label: "Matches" },
+    { key: "vcs", label: "VC Profiles" },
+    { key: "analyses", label: "Analyses" },
+    { key: "pipeline_models", label: "Pipeline Models" },
+    { key: "users", label: "Users" },
+    { key: "logs", label: "Live Logs" },
+  ];
+
+  const d = data[tab] || {};
+
+  function renderOverview() {
+    const c = d.counts || {};
+    const stats = [
+      { label: "Companies", value: c.companies ?? "—" },
+      { label: "Fundraising", value: c.fundraising ?? "—" },
+      { label: "Analysed", value: c.analysed ?? "—" },
+      { label: "VC Profiles", value: c.vc_profiles ?? "—" },
+      { label: "Matches", value: c.matches ?? "—" },
+      { label: "Running jobs", value: c.running_analyses ?? "—" },
+    ];
+    return (
+      <div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:12,marginBottom:24}}>
+          {stats.map(s => (
+            <div key={s.label} style={{background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:8,padding:"14px 16px",textAlign:"center"}}>
+              <div style={{fontSize:"1.7rem",fontWeight:700,color:"var(--accent)"}}>{s.value}</div>
+              <div style={{fontSize:".8rem",color:"var(--text-muted)",marginTop:2}}>{s.label}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+          <div>
+            <h3 style={{marginBottom:8,fontSize:"1rem"}}>Recent analyses</h3>
+            {(d.recent_analyses || []).length === 0
+              ? <p style={{color:"var(--text-muted)"}}>None yet.</p>
+              : (d.recent_analyses || []).map(a => (
+                <div key={a.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"1px solid var(--border)"}}>
+                  <span style={{flex:1,fontWeight:500}}>{a.company_name || a.company_id}</span>
+                  <span style={{fontSize:".8rem",color: a.status==="done"?"#22c55e":a.status==="error"?"#ef4444":"#f59e0b"}}>{a.status || "running"}</span>
+                  {a.composite_score != null && <span style={{fontSize:".8rem",color:"var(--text-muted)"}}>{Math.round(a.composite_score)}</span>}
+                  {bucketBadge(a.bucket)}
+                  <span style={{fontSize:".75rem",color:"var(--text-muted)"}}>{fmtDate(a.created_at).split(",")[0]}</span>
+                </div>
+              ))
+            }
+          </div>
+          <div>
+            <h3 style={{marginBottom:8,fontSize:"1rem"}}>Recent matches</h3>
+            {(d.recent_matches || []).length === 0
+              ? <p style={{color:"var(--text-muted)"}}>None yet.</p>
+              : (d.recent_matches || []).map(m => (
+                <div key={m.id} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:"1px solid var(--border)"}}>
+                  <span style={{flex:1,fontWeight:500}}>{(m.companies||{}).name || "—"}</span>
+                  <span style={{fontSize:".8rem",color:"var(--text-muted)"}}>→</span>
+                  <span style={{fontSize:".85rem"}}>{(m.vc_profiles||{}).firm_name || "—"}</span>
+                  {bucketBadge(m.bucket)}
+                  <span style={{fontSize:".8rem",color:"var(--text-muted)"}}>{Math.round(m.composite_score||0)}</span>
+                </div>
+              ))
+            }
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderCompanies() {
+    return (
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:".875rem"}}>
+          <thead>
+            <tr style={{borderBottom:"2px solid var(--border)",textAlign:"left"}}>
+              <th style={{padding:"8px 12px"}}>Company</th>
+              <th style={{padding:"8px 12px"}}>Industry</th>
+              <th style={{padding:"8px 12px"}}>Fundraising</th>
+              <th style={{padding:"8px 12px"}}>Analysis</th>
+              <th style={{padding:"8px 12px",textAlign:"center"}}>Scores (S/T/P)</th>
+              <th style={{padding:"8px 12px"}}>Bucket</th>
+              <th style={{padding:"8px 12px"}}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {(d.companies || []).map(c => (
+              <tr key={c.id} style={{borderBottom:"1px solid var(--border)"}}>
+                <td style={{padding:"8px 12px",fontWeight:500}}>{c.name}</td>
+                <td style={{padding:"8px 12px",color:"var(--text-muted)"}}>{c.industry || "—"}</td>
+                <td style={{padding:"8px 12px"}}>
+                  <span style={{color:c.fundraising?"#22c55e":"var(--text-muted)"}}>{c.fundraising ? "✓ Active" : "Off"}</span>
+                </td>
+                <td style={{padding:"8px 12px"}}>
+                  <span style={{color:c.analysis_status==="done"?"#22c55e":c.analysis_status==="error"?"#ef4444":"var(--text-muted)"}}>
+                    {c.analysis_status || "—"}
+                  </span>
+                  {c.analysis_error && <span title={c.analysis_error} style={{marginLeft:4,cursor:"help",color:"#ef4444"}}>⚠</span>}
+                </td>
+                <td style={{padding:"8px 12px",textAlign:"center"}}>
+                  {c.composite_score != null
+                    ? <span>{scorePill(c.strategy_fit_score)} / {scorePill(c.team_score)} / {scorePill(c.upside_score)}</span>
+                    : <span style={{color:"var(--text-muted)"}}>—</span>}
+                </td>
+                <td style={{padding:"8px 12px"}}>{bucketBadge(c.bucket)}</td>
+                <td style={{padding:"8px 12px"}}>
+                  {c.fundraising && (
+                    <button className="btn btn-ghost" style={{fontSize:".75rem",padding:"2px 8px"}}
+                      onClick={() => triggerMatching(c.id, c.name)}>
+                      ▶ Match
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!(d.companies||[]).length && <p style={{color:"var(--text-muted)",padding:16}}>No companies yet.</p>}
+      </div>
+    );
+  }
+
+  function renderMatches() {
+    return (
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:".875rem"}}>
+          <thead>
+            <tr style={{borderBottom:"2px solid var(--border)",textAlign:"left"}}>
+              <th style={{padding:"8px 12px"}}>Startup</th>
+              <th style={{padding:"8px 12px"}}>VC</th>
+              <th style={{padding:"8px 12px",textAlign:"center"}}>Strategy</th>
+              <th style={{padding:"8px 12px",textAlign:"center"}}>Team</th>
+              <th style={{padding:"8px 12px",textAlign:"center"}}>Potential</th>
+              <th style={{padding:"8px 12px",textAlign:"center"}}>Composite</th>
+              <th style={{padding:"8px 12px"}}>Bucket</th>
+              <th style={{padding:"8px 12px"}}>Status</th>
+              <th style={{padding:"8px 12px"}}>Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(d.matches || []).map(m => (
+              <tr key={m.id} style={{borderBottom:"1px solid var(--border)"}}>
+                <td style={{padding:"8px 12px",fontWeight:500}}>{(m.companies||{}).name || "—"}</td>
+                <td style={{padding:"8px 12px"}}>{(m.vc_profiles||{}).firm_name || "—"}</td>
+                <td style={{padding:"8px 12px",textAlign:"center"}}>{scorePill(m.strategy_fit_score)}</td>
+                <td style={{padding:"8px 12px",textAlign:"center"}}>{scorePill(m.team_score)}</td>
+                <td style={{padding:"8px 12px",textAlign:"center"}}>{scorePill(m.potential_score)}</td>
+                <td style={{padding:"8px 12px",textAlign:"center",fontWeight:700}}>{fmt(m.composite_score)}</td>
+                <td style={{padding:"8px 12px"}}>{bucketBadge(m.bucket)}</td>
+                <td style={{padding:"8px 12px",color:"var(--text-muted)",fontSize:".8rem"}}>{m.status || "pending"}</td>
+                <td style={{padding:"8px 12px",color:"var(--text-muted)",fontSize:".8rem"}}>{fmtDate(m.created_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!(d.matches||[]).length && <p style={{color:"var(--text-muted)",padding:16}}>No matches yet.</p>}
+      </div>
+    );
+  }
+
+  function renderVCs() {
+    return (
+      <div>
+        {(d.vc_profiles || []).map(v => (
+          <div key={v.id} className="section-card" style={{marginBottom:12}}>
+            <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap",marginBottom:6}}>
+              <span style={{fontWeight:600,fontSize:"1rem"}}>{v.firm_name || "—"}</span>
+              <span className={`badge ${v.active ? "" : "badge-muted"}`}>{v.active ? "active" : "inactive"}</span>
+              <span style={{fontSize:".8rem",color:"var(--text-muted)"}}>{v.match_count} match{v.match_count !== 1 ? "es" : ""}</span>
+              <span style={{marginLeft:"auto",fontSize:".75rem",color:"var(--text-muted)"}}>Joined {fmtDate(v.created_at).split(",")[0]}</span>
+            </div>
+            <div style={{fontSize:".8rem",color:"var(--text-muted)",marginBottom:6}}>
+              Min thresholds — Strategy: <b style={{color:"var(--text)"}}>{v.min_strategy_fit ?? 0}</b> &nbsp;
+              Team: <b style={{color:"var(--text)"}}>{v.min_team ?? 0}</b> &nbsp;
+              Potential: <b style={{color:"var(--text)"}}>{v.min_potential ?? 0}</b>
+            </div>
+            {v.investment_thesis && (
+              <p style={{fontSize:".82rem",color:"var(--text-muted)",margin:0,lineHeight:1.5,
+                maxHeight:60,overflow:"hidden",textOverflow:"ellipsis",display:"-webkit-box",
+                WebkitLineClamp:3,WebkitBoxOrient:"vertical"}}>
+                {v.investment_thesis}
+              </p>
+            )}
+          </div>
+        ))}
+        {!(d.vc_profiles||[]).length && <p style={{color:"var(--text-muted)"}}>No VC profiles yet.</p>}
+      </div>
+    );
+  }
+
+  const PHASE_SHORT = { decomposition: "D", answering: "A", generation: "G", evaluation: "E", ranking: "R" };
+  const PHASE_ORDER = ["decomposition", "answering", "generation", "evaluation", "ranking"];
+
+  function renderModelPills(phase_models) {
+    if (!phase_models || typeof phase_models !== "object") {
+      return <span style={{color:"var(--text-muted)",fontSize:".75rem"}}>default</span>;
+    }
+    return (
+      <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+        {PHASE_ORDER.map(phase => {
+          const sel = phase_models[phase];
+          const model = shortModelLabel(sel);
+          return (
+            <span key={phase} title={`${phase}: ${model}`}
+              style={{fontSize:".68rem",padding:"1px 6px",borderRadius:3,
+                background:"var(--bg-card)",border:"1px solid var(--border)",
+                color:"var(--text)",fontFamily:"monospace"}}>
+              <span style={{color:"var(--accent)",fontWeight:600,marginRight:3}}>{PHASE_SHORT[phase]}</span>
+              {model.length > 18 ? model.slice(0, 17) + "…" : model}
+            </span>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function renderAnalyses() {
+    return (
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:".875rem"}}>
+          <thead>
+            <tr style={{borderBottom:"2px solid var(--border)",textAlign:"left"}}>
+              <th style={{padding:"8px 12px"}}>Run ID</th>
+              <th style={{padding:"8px 12px"}}>Company</th>
+              <th style={{padding:"8px 12px"}}>Started by</th>
+              <th style={{padding:"8px 12px"}}>Models</th>
+              <th style={{padding:"8px 12px"}}>Status</th>
+              <th style={{padding:"8px 12px",textAlign:"right"}}>Cost</th>
+              <th style={{padding:"8px 12px",textAlign:"center"}}>Score</th>
+              <th style={{padding:"8px 12px"}}>Bucket</th>
+              <th style={{padding:"8px 12px"}}>Created</th>
+              <th style={{padding:"8px 12px"}}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {(d.analyses || []).map((a, idx) => {
+              const cs = a.cost_summary || {};
+              const costTotal = cs.total_usd;
+              const llm = cs.llm_usd;
+              const ppx = cs.perplexity_usd;
+              const costTooltip = cs.status === "unavailable"
+                ? "No cost data recorded for this run"
+                : `LLM: ${fmtUsd(llm)}  ·  Perplexity: ${fmtUsd(ppx)}`;
+              const canViewLog = !!a.job_id_legacy;
+              const startedBy = a.started_by || {};
+              const startedLabel = startedBy.started_by_display_name
+                || startedBy.started_by_email
+                || startedBy.started_by_label
+                || "—";
+              return (
+                <tr key={a.id || a.job_id_legacy || idx} style={{borderBottom:"1px solid var(--border)"}}>
+                  <td style={{padding:"8px 12px",fontFamily:"monospace",fontSize:".75rem",color:"var(--text-muted)"}}>
+                    {a.job_id_legacy || "—"}
+                  </td>
+                  <td style={{padding:"8px 12px",fontWeight:500}}>{a.company_name || a.company_id || "—"}</td>
+                  <td style={{padding:"8px 12px",fontSize:".8rem"}} title={startedBy.started_by_email || ""}>
+                    {startedLabel}
+                  </td>
+                  <td style={{padding:"8px 12px"}}>{renderModelPills(a.phase_models)}</td>
+                  <td style={{padding:"8px 12px"}}>
+                    <span style={{color:a.status==="done"?"#22c55e":a.status==="error"?"#ef4444":"#f59e0b"}}>
+                      {a.status || "running"}
+                    </span>
+                    {a.live_progress && (a.status === "running" || a.status === "pending") && (
+                      <div style={{fontSize:".7rem",color:"var(--text-muted)",maxWidth:240,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}
+                        title={a.live_progress}>
+                        {a.live_progress}
+                      </div>
+                    )}
+                  </td>
+                  <td style={{padding:"8px 12px",textAlign:"right",fontFamily:"monospace",fontSize:".8rem",
+                      color: cs.status === "unavailable" ? "var(--text-muted)" : "var(--text)"}}
+                      title={costTooltip}>
+                    {fmtUsd(costTotal)}
+                  </td>
+                  <td style={{padding:"8px 12px",textAlign:"center"}}>{scorePill(a.composite_score)}</td>
+                  <td style={{padding:"8px 12px"}}>{bucketBadge(a.bucket)}</td>
+                  <td style={{padding:"8px 12px",color:"var(--text-muted)",fontSize:".8rem"}}>{fmtDate(a.created_at)}</td>
+                  <td style={{padding:"8px 12px",textAlign:"right"}}>
+                    {canViewLog && (
+                      <button className="btn btn-ghost"
+                        onClick={() => setOpenLogRunId(a.job_id_legacy)}
+                        style={{fontSize:".72rem",padding:"3px 10px"}}>
+                        View Log
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {!(d.analyses||[]).length && <p style={{color:"var(--text-muted)",padding:16}}>No analyses yet.</p>}
+      </div>
+    );
+  }
+
+  // Returns true when a log line is "noise" — Python internals, Pydantic warnings,
+  // raw exception class names — that add no value for pipeline monitoring.
+  function isNoisyLogLine(line) {
+    if (!line || typeof line !== "string") return false;
+    const NOISE_PATTERNS = [
+      /PydanticSerializationUnexpectedValue/,
+      /PydanticDeprecated/,
+      /input_value=Parsed/,
+      /input_type=Parsed/,
+      /serialized value may not be as expected/,
+      /^\s*Traceback \(most recent call last\)/,
+      /^\s*File ".*", line \d+/,
+      /^\s*raise \w+/,
+      /^\s*warnings\.warn\(/,
+      /DeprecationWarning/,
+      /UserWarning/,
+    ];
+    return NOISE_PATTERNS.some(p => p.test(line));
+  }
+
+  function renderLogModal() {
+    if (!openLogRunId) return null;
+    const s = logStream || {};
+    const company = s.company || {};
+    const rc = s.run_costs || null;
+    const status = s.status || "running";
+    const statusColor = status === "done" ? "#22c55e" : status === "error" ? "#ef4444" : "#f59e0b";
+    const live = status !== "done" && status !== "error";
+
+    const llmTokens = rc && rc.llm_tokens ? rc.llm_tokens : {};
+    const ppx = rc && rc.perplexity_search ? rc.perplexity_search : {};
+
+    const allLines = s.progress_log || [];
+    const displayLines = logFilterNoise
+      ? allLines.map((line, i) => ({ line, originalIdx: i })).filter(({ line }) => !isNoisyLogLine(line))
+      : allLines.map((line, i) => ({ line, originalIdx: i }));
+    const hiddenCount = allLines.length - displayLines.length;
+
+    return (
+      <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.75)",zIndex:1000,
+        display:"flex",alignItems:"center",justifyContent:"center",padding:24}}
+        onClick={() => setOpenLogRunId(null)}>
+        <div onClick={e => e.stopPropagation()}
+          style={{width:"min(1100px, 100%)",maxHeight:"90vh",display:"flex",flexDirection:"column",
+            background:"var(--bg)",border:"1px solid var(--border)",borderRadius:10,overflow:"hidden"}}>
+
+          {/* Header */}
+          <div style={{padding:"14px 18px",borderBottom:"1px solid var(--border)",
+            display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:".95rem",fontWeight:600,display:"flex",gap:8,alignItems:"center"}}>
+                <span>{company.name || "—"}</span>
+                <span style={{fontFamily:"monospace",fontSize:".75rem",color:"var(--text-muted)"}}>
+                  {openLogRunId}
+                </span>
+              </div>
+              <div style={{fontSize:".78rem",color:"var(--text-muted)",marginTop:2}}>
+                Started by {(s.started_by && (s.started_by.started_by_display_name || s.started_by.started_by_email)) || "—"}
+                <span style={{marginLeft:10,color:statusColor,fontWeight:600}}>· {status}{live ? " (live)" : ""}</span>
+              </div>
+            </div>
+            <button className="btn btn-ghost" onClick={() => setOpenLogRunId(null)} style={{fontSize:".85rem"}}>
+              ✕ Close
+            </button>
+          </div>
+
+          {/* Cost summary bar */}
+          <div style={{padding:"10px 18px",borderBottom:"1px solid var(--border)",
+            background:"var(--bg-card)",fontSize:".82rem",display:"flex",gap:20,flexWrap:"wrap"}}>
+            {rc && rc.status !== "unavailable" ? (
+              <React.Fragment>
+                <div>
+                  <span style={{color:"var(--text-muted)",marginRight:6}}>Total:</span>
+                  <span style={{fontWeight:600,fontFamily:"monospace"}}>{fmtUsd(rc.total_usd)}</span>
+                  {live && <span style={{color:"var(--text-muted)",marginLeft:6,fontSize:".72rem"}}>(live)</span>}
+                </div>
+                <div>
+                  <span style={{color:"var(--text-muted)",marginRight:6}}>LLM:</span>
+                  <span style={{fontFamily:"monospace"}}>{fmtUsd(rc.llm_usd)}</span>
+                  <span style={{color:"var(--text-muted)",marginLeft:4,fontSize:".72rem"}}>
+                    ({fmtInt(llmTokens.total || 0)} tok)
+                  </span>
+                </div>
+                <div>
+                  <span style={{color:"var(--text-muted)",marginRight:6}}>Perplexity:</span>
+                  <span style={{fontFamily:"monospace"}}>{fmtUsd(rc.perplexity_usd)}</span>
+                  <span style={{color:"var(--text-muted)",marginLeft:4,fontSize:".72rem"}}>
+                    ({fmtInt(ppx.requests || 0)} searches)
+                  </span>
+                </div>
+              </React.Fragment>
+            ) : (
+              <div style={{color:"var(--text-muted)"}}>Costs: —</div>
+            )}
+          </div>
+
+          {/* Per-model breakdown */}
+          {rc && Array.isArray(rc.by_model) && rc.by_model.length > 0 && (
+            <details open style={{borderBottom:"1px solid var(--border)",background:"var(--bg-card)"}}>
+              <summary style={{cursor:"pointer",padding:"8px 18px",fontSize:".8rem",color:"var(--text-muted)"}}>
+                Per-model breakdown ({rc.by_model.length})
+              </summary>
+              <div style={{padding:"0 18px 12px 18px",overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:".78rem"}}>
+                  <thead>
+                    <tr style={{textAlign:"left",color:"var(--text-muted)"}}>
+                      <th style={{padding:"4px 6px"}}>Model</th>
+                      <th style={{padding:"4px 6px",textAlign:"right"}}>Prompt</th>
+                      <th style={{padding:"4px 6px",textAlign:"right"}}>Completion</th>
+                      <th style={{padding:"4px 6px",textAlign:"right"}}>Total</th>
+                      <th style={{padding:"4px 6px",textAlign:"right"}}>Cost USD</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rc.by_model.map((m, i) => (
+                      <tr key={i} style={{borderTop:"1px solid var(--border)"}}>
+                        <td style={{padding:"4px 6px",fontFamily:"monospace"}}>
+                          {m.label || `${m.provider}/${m.model}`}
+                        </td>
+                        <td style={{padding:"4px 6px",textAlign:"right",fontFamily:"monospace"}}>{fmtInt(m.prompt_tokens)}</td>
+                        <td style={{padding:"4px 6px",textAlign:"right",fontFamily:"monospace"}}>{fmtInt(m.completion_tokens)}</td>
+                        <td style={{padding:"4px 6px",textAlign:"right",fontFamily:"monospace"}}>{fmtInt(m.total_tokens)}</td>
+                        <td style={{padding:"4px 6px",textAlign:"right",fontFamily:"monospace"}}
+                          title={m.pricing_available === false ? "No pricing entry for this model" : ""}>
+                          {m.pricing_available === false ? "—" : fmtUsd(m.usd)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          )}
+
+          {/* Progress log */}
+          <div style={{flex:1,overflowY:"auto",background:"#0d0d0d",fontFamily:"monospace",fontSize:".78rem",
+            padding:"10px 0",minHeight:240}}>
+            {displayLines.length === 0 ? (
+              <div style={{color:"#4b5563",padding:"24px",textAlign:"center"}}>
+                {s.error
+                  ? `Error: ${s.error}`
+                  : allLines.length > 0
+                    ? `All ${allLines.length} entries filtered as noise. Toggle "Filter noise" off to see them.`
+                    : "No progress entries yet — waiting for activity…"}
+              </div>
+            ) : displayLines.map(({ line, originalIdx }) => (
+              <div key={originalIdx} style={{padding:"1px 16px",color:"#e5e7eb",whiteSpace:"pre-wrap",wordBreak:"break-word",
+                borderLeft:"2px solid #374151",marginLeft:4}}>
+                <span style={{color:"#4b5563",marginRight:8}}>#{originalIdx + 1}</span>
+                {line}
+              </div>
+            ))}
+            <div ref={modalLogBottomRef} />
+          </div>
+
+          {/* Footer */}
+          <div style={{padding:"10px 18px",borderTop:"1px solid var(--border)",
+            display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,fontSize:".78rem",color:"var(--text-muted)"}}>
+            <span>
+              {displayLines.length} of {allLines.length} entries shown
+              {hiddenCount > 0 && <span style={{color:"#4b5563",marginLeft:6}}>· {hiddenCount} noise lines hidden</span>}
+              {live && <span style={{marginLeft:6}}>· polling 2s</span>}
+            </span>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              <button
+                onClick={() => setLogFilterNoise(f => !f)}
+                style={{padding:"3px 10px",borderRadius:4,border:"1px solid var(--border)",cursor:"pointer",
+                  fontSize:".75rem",background: logFilterNoise ? "var(--accent)" : "var(--bg-card)",
+                  color: logFilterNoise ? "#000" : "var(--text)"}}>
+                {logFilterNoise ? "🔇 Noise filtered" : "🔊 Show all"}
+              </button>
+              <button className="btn btn-ghost" onClick={() => setOpenLogRunId(null)} style={{fontSize:".78rem"}}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function phaseModelsAreDirty() {
+    if (!pipelineModels || !pipelineModelsSaved) return false;
+    return JSON.stringify(pipelineModels) !== JSON.stringify(pipelineModelsSaved);
+  }
+
+  function updatePipelinePhase(phase, patch) {
+    setPipelineModels(prev => {
+      const next = { ...(prev || {}) };
+      next[phase] = { ...(next[phase] || {}), ...patch };
+      return next;
+    });
+  }
+
+  function resetPipelinePhase(phase) {
+    if (!pipelineModelsFactory) return;
+    const factory = pipelineModelsFactory[phase];
+    if (!factory) return;
+    setPipelineModels(prev => ({ ...(prev || {}), [phase]: { ...factory } }));
+  }
+
+  async function savePipelineModels() {
+    if (!pipelineModels) return;
+    setPipelineModelsSaving(true);
+    setError(null);
+    try {
+      const res = await api("PUT", "/api/admin/pipeline-models", { phase_models: pipelineModels });
+      setPipelineModels(res.phase_models);
+      setPipelineModelsSaved(res.phase_models);
+      setActionMsg("Pipeline model defaults saved.");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setPipelineModelsSaving(false);
+    }
+  }
+
+  function renderPipelineModels() {
+    if (!pipelineModels || !pipelineModelsCatalog) {
+      return <p style={{color:"var(--text-muted)"}}>Loading pipeline model defaults…</p>;
+    }
+    const entries = (pipelineModelsCatalog.entries || []);
+    const labels = pipelineModelsLabels || {
+      decomposition: "Decomposition",
+      answering: "Q&A",
+      generation: "Generation",
+      evaluation: "Evaluation",
+      ranking: "Ranking",
+    };
+
+    function entryFor(phase) {
+      const sel = pipelineModels[phase] || {};
+      return entries.find(e => e.provider === sel.provider && e.model === sel.model) || null;
+    }
+
+    const dirty = phaseModelsAreDirty();
+
+    return (
+      <div>
+        <p style={{color:"var(--text-muted)",fontSize:".85rem",marginBottom:16}}>
+          Per-stage model defaults used by the portal <strong>Re-evaluation</strong> flow.
+          The Q&amp;A selection also drives the critique and refinement sub-stages.
+          Changes take effect on the next re-evaluation.
+        </p>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:16,marginBottom:20}}>
+          {PHASE_ORDER.map(phase => {
+            const sel = pipelineModels[phase] || {};
+            const selectedEntry = entryFor(phase);
+            const reasoningOptions = selectedEntry && selectedEntry.reasoning_effort_options
+              ? selectedEntry.reasoning_effort_options : [];
+            const supportsReasoning = !!(selectedEntry && selectedEntry.supports_reasoning_effort_control);
+            const supportsTemp = !!(selectedEntry && selectedEntry.supports_temperature_control);
+            const tempRequiresNone = !!(selectedEntry && selectedEntry.temperature_requires_reasoning_none);
+            const effortValue = sel.reasoning_effort || "auto";
+            const tempDisabled = !supportsTemp || (tempRequiresNone && effortValue !== "none");
+
+            return (
+              <div key={phase} style={{background:"var(--bg-card)",border:"1px solid var(--border)",
+                borderRadius:10,padding:16}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+                  <h4 style={{margin:0,fontSize:"1rem"}}>{labels[phase] || phase}</h4>
+                  <button className="btn btn-ghost" onClick={() => resetPipelinePhase(phase)}
+                    style={{fontSize:".72rem",padding:"3px 8px"}}>
+                    Reset
+                  </button>
+                </div>
+
+                {/* Model dropdown */}
+                <label style={{display:"block",fontSize:".75rem",color:"var(--text-muted)",marginBottom:4}}>Model</label>
+                <select
+                  value={selectedEntry ? `${selectedEntry.provider}::${selectedEntry.model}` : ""}
+                  onChange={e => {
+                    const [provider, model] = e.target.value.split("::");
+                    const next = entries.find(en => en.provider === provider && en.model === model);
+                    const patch = { provider, model };
+                    if (next) {
+                      // Reset incompatible fields on model switch.
+                      if (!next.supports_reasoning_effort_control) patch.reasoning_effort = null;
+                      else if (sel.reasoning_effort && next.reasoning_effort_options
+                        && next.reasoning_effort_options.indexOf(sel.reasoning_effort) < 0) {
+                        patch.reasoning_effort = null;
+                      }
+                      if (!next.supports_temperature_control) patch.temperature = null;
+                    }
+                    updatePipelinePhase(phase, patch);
+                  }}
+                  style={{width:"100%",padding:"6px 8px",background:"var(--bg)",color:"var(--text)",
+                    border:"1px solid var(--border)",borderRadius:6,fontSize:".82rem",marginBottom:10}}>
+                  {entries.map(en => (
+                    <option key={`${en.provider}::${en.model}`} value={`${en.provider}::${en.model}`}>
+                      {en.label || `${en.provider}/${en.model}`}
+                    </option>
+                  ))}
+                </select>
+
+                {/* Reasoning effort */}
+                <label style={{display:"block",fontSize:".75rem",color:"var(--text-muted)",marginBottom:4}}>
+                  Reasoning effort
+                </label>
+                <select
+                  disabled={!supportsReasoning}
+                  value={effortValue}
+                  onChange={e => {
+                    const v = e.target.value;
+                    updatePipelinePhase(phase, { reasoning_effort: v === "auto" ? null : v });
+                  }}
+                  style={{width:"100%",padding:"6px 8px",background:"var(--bg)",color:"var(--text)",
+                    border:"1px solid var(--border)",borderRadius:6,fontSize:".82rem",marginBottom:10,
+                    opacity: supportsReasoning ? 1 : 0.5}}>
+                  <option value="auto">Auto</option>
+                  {["none","minimal","low","medium","high"].filter(o =>
+                    !reasoningOptions.length || reasoningOptions.indexOf(o) >= 0
+                  ).map(o => (
+                    <option key={o} value={o}>{o.charAt(0).toUpperCase() + o.slice(1)}</option>
+                  ))}
+                </select>
+
+                {/* Temperature slider */}
+                <label style={{display:"block",fontSize:".75rem",color:"var(--text-muted)",marginBottom:4}}>
+                  Temperature {sel.temperature != null ? `(${Number(sel.temperature).toFixed(2)})` : "(default)"}
+                </label>
+                <input
+                  type="range"
+                  min={0} max={2} step={0.05}
+                  disabled={tempDisabled}
+                  value={sel.temperature != null ? sel.temperature : 0.7}
+                  onChange={e => updatePipelinePhase(phase, { temperature: Number(e.target.value) })}
+                  style={{width:"100%",opacity: tempDisabled ? 0.4 : 1}} />
+                <div style={{fontSize:".7rem",color:"var(--text-muted)",marginTop:2}}>
+                  {!supportsTemp && "Not supported by this model"}
+                  {supportsTemp && tempRequiresNone && effortValue !== "none"
+                    && "Set reasoning effort to None to adjust temperature"}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          <button className="btn btn-primary"
+            disabled={!dirty || pipelineModelsSaving}
+            onClick={savePipelineModels}
+            style={{opacity: (!dirty || pipelineModelsSaving) ? 0.6 : 1}}>
+            {pipelineModelsSaving ? "Saving…" : dirty ? "Save defaults" : "Saved"}
+          </button>
+          {dirty && (
+            <button className="btn btn-ghost"
+              onClick={() => setPipelineModels(pipelineModelsSaved)}>
+              Discard changes
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function renderUsers() {
+    return (
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:".875rem"}}>
+          <thead>
+            <tr style={{borderBottom:"2px solid var(--border)",textAlign:"left"}}>
+              <th style={{padding:"8px 12px"}}>Name / Org</th>
+              <th style={{padding:"8px 12px"}}>Role</th>
+              <th style={{padding:"8px 12px"}}>Approved</th>
+              <th style={{padding:"8px 12px"}}>Joined</th>
+              <th style={{padding:"8px 12px"}}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {(d.users || []).map(u => (
+              <tr key={u.id} style={{borderBottom:"1px solid var(--border)"}}>
+                <td style={{padding:"8px 12px"}}>
+                  <div style={{fontWeight:500}}>{u.display_name || u.id.slice(0,8)}</div>
+                  {u.organization && <div style={{fontSize:".8rem",color:"var(--text-muted)"}}>{u.organization}</div>}
+                </td>
+                <td style={{padding:"8px 12px"}}><span className="badge">{u.role}</span></td>
+                <td style={{padding:"8px 12px"}}>
+                  <span style={{color:u.approved?"#22c55e":"#ef4444"}}>{u.approved ? "✓ Yes" : "✗ No"}</span>
+                </td>
+                <td style={{padding:"8px 12px",color:"var(--text-muted)",fontSize:".8rem"}}>{fmtDate(u.created_at)}</td>
+                <td style={{padding:"8px 12px"}}>
+                  <button className="btn btn-ghost" style={{fontSize:".75rem",padding:"2px 8px"}}
+                    onClick={() => approveUser(u.id, !u.approved)}>
+                    {u.approved ? "Unapprove" : "Approve"}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {!(d.users||[]).length && <p style={{color:"var(--text-muted)",padding:16}}>No users yet.</p>}
+      </div>
+    );
+  }
+
+  function renderLogs() {
+    const LEVEL_COLOR = { DEBUG:"#6b7280", INFO:"#60a5fa", WARNING:"#f59e0b", ERROR:"#ef4444", CRITICAL:"#ef4444" };
+    const LEVEL_BG   = { DEBUG:"transparent", INFO:"transparent", WARNING:"rgba(245,158,11,.08)", ERROR:"rgba(239,68,68,.08)", CRITICAL:"rgba(239,68,68,.12)" };
+    return (
+      <div style={{display:"flex",flexDirection:"column",height:"calc(100vh - 160px)"}}>
+        {/* Toolbar */}
+        <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:8,flexWrap:"wrap"}}>
+          <span style={{fontSize:".82rem",color:"var(--text-muted)"}}>Level:</span>
+          {["DEBUG","INFO","WARNING","ERROR"].map(l => (
+            <button key={l} onClick={() => { setLogLevel(l); setLogEntries([]); logSinceRef.current = null; }}
+              style={{padding:"3px 10px",borderRadius:4,border:"1px solid var(--border)",cursor:"pointer",fontSize:".78rem",
+                background: logLevel===l ? "var(--accent)" : "var(--bg-card)",
+                color: logLevel===l ? "#000" : LEVEL_COLOR[l] || "var(--text)"}}>
+              {l}
+            </button>
+          ))}
+          <button onClick={() => setLogPaused(p => !p)}
+            style={{padding:"3px 10px",borderRadius:4,border:"1px solid var(--border)",cursor:"pointer",fontSize:".78rem",
+              background: logPaused ? "#f59e0b" : "var(--bg-card)", color: logPaused ? "#000" : "var(--text)"}}>
+            {logPaused ? "▶ Resume" : "⏸ Pause"}
+          </button>
+          <button onClick={() => setLogAutoScroll(a => !a)}
+            style={{padding:"3px 10px",borderRadius:4,border:"1px solid var(--border)",cursor:"pointer",fontSize:".78rem",
+              background: logAutoScroll ? "var(--accent)" : "var(--bg-card)", color: logAutoScroll ? "#000" : "var(--text)"}}>
+            ↓ Auto-scroll
+          </button>
+          <button onClick={() => { setLogEntries([]); logSinceRef.current = null; }}
+            style={{padding:"3px 10px",borderRadius:4,border:"1px solid var(--border)",cursor:"pointer",fontSize:".78rem",
+              background:"var(--bg-card)",color:"var(--text-muted)"}}>
+            🗑 Clear
+          </button>
+          <span style={{marginLeft:"auto",fontSize:".78rem",color:"var(--text-muted)"}}>
+            {logEntries.length} entries{logPaused ? " · PAUSED" : " · polling 2s"}
+          </span>
+        </div>
+
+        {/* Log output */}
+        <div style={{flex:1,overflowY:"auto",fontFamily:"monospace",fontSize:".78rem",lineHeight:1.6,
+          background:"#0d0d0d",borderRadius:8,border:"1px solid var(--border)",padding:"8px 0"}}>
+          {logEntries.length === 0
+            ? <div style={{padding:"24px",color:"#4b5563",textAlign:"center"}}>No log entries yet — waiting for activity…</div>
+            : logEntries.map((e, i) => {
+                const color = LEVEL_COLOR[e.level] || "#9ca3af";
+                const bg = LEVEL_BG[e.level] || "transparent";
+                const time = e.ts.replace("T", " ").replace(/\.\d+Z$/, "Z");
+                return (
+                  <div key={i} style={{padding:"1px 12px",background:bg,borderLeft:`2px solid ${color}`,marginLeft:4,
+                    wordBreak:"break-all",whiteSpace:"pre-wrap"}}>
+                    <span style={{color:"#4b5563",marginRight:8}}>{time}</span>
+                    <span style={{color,fontWeight:600,marginRight:8}}>{e.level}</span>
+                    <span style={{color:"#6b7280",marginRight:8}}>{e.logger}</span>
+                    <span style={{color:"#e5e7eb"}}>{e.msg}</span>
+                  </div>
+                );
+              })
+          }
+          <div ref={logBottomRef} />
+        </div>
+      </div>
+    );
+  }
+
+  const tabContent = {
+    overview: renderOverview,
+    companies: renderCompanies,
+    matches: renderMatches,
+    vcs: renderVCs,
+    analyses: renderAnalyses,
+    pipeline_models: renderPipelineModels,
+    users: renderUsers,
+    logs: renderLogs,
+  };
+
+  return (
+    <div style={{minHeight:"100vh",background:"var(--bg)"}}>
+      {/* Header */}
+      <header style={{borderBottom:"1px solid var(--border)",padding:"12px 24px",display:"flex",alignItems:"center",gap:16}}>
+        <span style={{fontWeight:700,fontSize:"1.1rem",color:"var(--accent)"}}>Admin Portal</span>
+        <span style={{color:"var(--text-muted)",fontSize:".85rem"}}>Deal Intelligence</span>
+        <span style={{marginLeft:"auto",fontSize:".85rem",color:"var(--text-muted)"}}>{user?.email}</span>
+        <button className="btn btn-ghost" onClick={() => navigate("/vc-dashboard")} style={{fontSize:".82rem"}}>VC Portal</button>
+        <button className="btn btn-ghost" onClick={onSignOut} style={{fontSize:".82rem"}}>Sign out</button>
+      </header>
+
+      {/* Tabs */}
+      <div style={{borderBottom:"1px solid var(--border)",padding:"0 24px",display:"flex",gap:4}}>
+        {TABS.map(t => (
+          <button key={t.key}
+            onClick={() => setTab(t.key)}
+            style={{
+              padding:"10px 16px",border:"none",background:"transparent",cursor:"pointer",
+              color: tab===t.key ? "var(--accent)" : "var(--text-muted)",
+              borderBottom: tab===t.key ? "2px solid var(--accent)" : "2px solid transparent",
+              fontWeight: tab===t.key ? 600 : 400, fontSize:".9rem",
+            }}>
+            {t.label}
+          </button>
+        ))}
+        <button onClick={() => loadTab(tab)}
+          style={{marginLeft:"auto",padding:"8px 14px",border:"none",background:"transparent",
+            cursor:"pointer",color:"var(--text-muted)",fontSize:".85rem"}}>
+          {loading ? "↻" : "↻ Refresh"}
+        </button>
+      </div>
+
+      {/* Content */}
+      <main style={{padding:24,maxWidth:1200,margin:"0 auto"}}>
+        {actionMsg && (
+          <div style={{background:"var(--bg-card)",border:"1px solid #22c55e",borderRadius:8,padding:"10px 16px",marginBottom:16,color:"#22c55e",fontSize:".9rem",display:"flex",justifyContent:"space-between"}}>
+            {actionMsg}
+            <button onClick={() => setActionMsg(null)} style={{background:"none",border:"none",cursor:"pointer",color:"#22c55e"}}>✕</button>
+          </div>
+        )}
+        {error && <Alert type="error">{error}</Alert>}
+        {tab === "logs"
+          ? renderLogs()
+          : loading
+            ? <div style={{display:"flex",justifyContent:"center",padding:48}}><Spinner /></div>
+            : (tabContent[tab] || (() => null))()
+        }
+      </main>
+
+      {/* Run log modal overlay (controlled by openLogRunId) */}
+      {renderLogModal()}
+    </div>
+  );
+}
+
 // ============================================================
 // Root App
 // ============================================================
@@ -2435,7 +4432,9 @@ function App() {
   }, []);
 
   function _routeAfterLogin(me, vcProfileExists) {
-    if (me.role === "vc") {
+    if (me.role === "admin") {
+      navigate("/admin");
+    } else if (me.role === "vc") {
       if (!vcProfileExists) {
         setVCSetupNeeded(true);
         navigate("/vc-setup");
@@ -2463,7 +4462,15 @@ function App() {
           } else {
             _routeAfterLogin(me, false);
           }
-        } catch (_) { clearToken(); navigate("/login"); }
+        } catch (err) {
+          // Only clear the stored token on a genuine auth failure (401/403).
+          // Network errors and timeouts must NOT evict the user — the server
+          // may simply be busy (e.g. a background matching task is running).
+          if (!err.isNetworkError && (err.status === 401 || err.status === 403)) {
+            clearToken();
+          }
+          navigate("/login");
+        }
       } else {
         navigate("/login");
       }
@@ -2510,9 +4517,10 @@ function App() {
   const r = route;
   if (r === "/register") return <RegisterView />;
   if (r === "/verify-domain" && user) return <VerifyDomainView user={user} onVerified={handleVerified} />;
+  if (r === "/admin" && user && user.role === "admin") return <AdminPortal user={user} onSignOut={handleSignOut} />;
   if (r === "/dashboard" && user && user.role === "startup") return <DashboardView user={user} onSignOut={handleSignOut} />;
   if (r === "/vc-setup" && user && user.role === "vc") return <VCSetupView user={user} onComplete={handleVCSetupComplete} />;
-  if (r === "/vc-dashboard" && user && user.role === "vc") return (
+  if (r === "/vc-dashboard" && user && (user.role === "vc" || user.role === "admin")) return (
     <VCDashboardView user={user} onSignOut={handleSignOut} onStartDebate={handleStartDebate} />
   );
   if (r === "/debate" && user && activeDebateId) return (

@@ -53,6 +53,255 @@ def test_company_history_group_key_collapses_legacy_and_new_keys() -> None:
     assert domain_key == "name:apify"
 
 
+def test_extract_company_runs_sets_lookup_and_dimension_columns() -> None:
+    import web.db as web_db
+
+    rows = web_db._extract_company_runs_from_payload(
+        "job-123",
+        {
+            "mode": "batch",
+            "summary_rows": [
+                {
+                    "company_name": "Apaleo",
+                    "startup_slug": "apaleo",
+                    "decision": "invest",
+                    "total_score": 82.1,
+                    "composite_score": 77.5,
+                    "strategy_fit_score": 80,
+                    "team_score": 72,
+                    "risk_adjusted_potential_score": 68,
+                    "bucket": "watchlist",
+                }
+            ],
+        },
+        created_at="2026-03-10T10:00:00Z",
+        mode="specter",
+    )
+
+    assert rows[0]["company_lookup_key"] == "name:apaleo"
+    assert rows[0]["strategy_fit_score"] == 80.0
+    assert rows[0]["team_score"] == 72.0
+    assert rows[0]["upside_score"] == 68.0
+
+
+def test_compact_company_run_payload_preserves_company_links() -> None:
+    import web.db as web_db
+
+    payload = web_db._compact_company_run_payload(
+        {
+            "mode": "single",
+            "company_name": "Anthropic",
+            "summary_rows": [
+                {
+                    "company_name": "Anthropic",
+                    "domain": "anthropic.com",
+                    "specter_company_id": "61643d92c3c073075bcb8983",
+                }
+            ],
+        }
+    )
+
+    assert payload["domain"] == "anthropic.com"
+    assert payload["company_url"] == "https://anthropic.com"
+    assert payload["specter_company_id"] == "61643d92c3c073075bcb8983"
+    assert payload["specter_profile_url"] == (
+        "https://app.tryspecter.com/signals/company/feed/61643d92c3c073075bcb8983"
+    )
+
+
+def test_compact_company_run_payload_backfills_url_from_company_domain() -> None:
+    import web.db as web_db
+
+    payload = web_db._compact_company_run_payload(
+        {"mode": "single", "company_name": "Legacy Co"},
+        domain_fallback="legacy.example",
+    )
+
+    assert payload["domain"] == "legacy.example"
+    assert payload["company_url"] == "https://legacy.example"
+    assert payload["specter_company_id"] is None
+
+
+def test_list_company_summaries_uses_rpc_and_omits_payload(monkeypatch) -> None:
+    import web.db as web_db
+
+    class FakeResponse:
+        data = [
+            {
+                "company_lookup_key": "name:apify",
+                "company_name": "Apify",
+                "run_count": 3,
+                "latest_job_id": "job-apify",
+                "latest_startup_slug": "apify",
+                "latest_decision": "invest",
+                "latest_total_score": 80.0,
+                "latest_composite_score": 82.0,
+                "latest_bucket": "watchlist",
+                "latest_mode": "specter",
+                "latest_input_order": 1,
+                "latest_run_at": "2026-03-10T10:00:00Z",
+                "latest_strategy_fit_score": 81.0,
+                "latest_team_score": 79.0,
+                "latest_upside_score": 84.0,
+                "total_count": 2,
+            },
+            {
+                "company_lookup_key": "name:apaleo",
+                "company_name": "Apaleo",
+                "run_count": 2,
+                "latest_job_id": "job-apaleo",
+                "latest_startup_slug": "apaleo",
+                "latest_decision": "invest",
+                "latest_total_score": 78.0,
+                "latest_composite_score": 79.0,
+                "latest_bucket": "watchlist",
+                "latest_mode": "specter",
+                "latest_input_order": 2,
+                "latest_run_at": "2026-03-09T10:00:00Z",
+                "latest_strategy_fit_score": 80.0,
+                "latest_team_score": 76.0,
+                "latest_upside_score": 82.0,
+                "total_count": 2,
+            },
+        ]
+
+    calls = []
+
+    class FakeClient:
+        def rpc(self, fn, params):
+            calls.append((fn, params))
+            return self
+
+        def execute(self):
+            return FakeResponse()
+
+    monkeypatch.setattr(web_db, "_get_client", lambda: FakeClient())
+
+    payload = web_db.list_company_summaries(limit=200, offset=0, sort="strategy_fit")
+
+    assert calls == [(
+        "company_run_summaries",
+        {"p_limit": 200, "p_offset": 0, "p_sort": "strategy_fit"},
+    )]
+    assert payload["total"] == 2
+    assert payload["next_offset"] is None
+    assert [row["company_name"] for row in payload["companies"]] == ["Apify", "Apaleo"]
+    assert all("result_payload" not in row and "runs" not in row for row in payload["companies"])
+    assert payload["companies"][0]["latest_strategy_fit_score"] == 81.0
+
+
+def test_load_company_history_detail_filters_by_lookup_key(monkeypatch) -> None:
+    import web.db as web_db
+
+    class FakeResponse:
+        data = [
+            {
+                "company_lookup_key": "name:apify",
+                "company_key": "slug:apify",
+                "company_name": "Apify",
+                "startup_slug": "apify",
+                "job_id_legacy": "job-apify",
+                "decision": "invest",
+                "total_score": 80.0,
+                "composite_score": 82.0,
+                "strategy_fit_score": 81.0,
+                "team_score": 79.0,
+                "upside_score": 84.0,
+                "bucket": "watchlist",
+                "mode": "specter",
+                "input_order": 1,
+                "run_created_at": "2026-03-10T10:00:00Z",
+                "created_at": "2026-03-10T10:00:00Z",
+                "result_payload": {
+                    "company_name": "Apify",
+                    "startup_slug": "apify",
+                    "summary_rows": [{"company_name": "Apify", "startup_slug": "apify"}],
+                },
+            }
+        ]
+
+    calls = []
+
+    class FakeClient:
+        def rpc(self, fn, params):
+            calls.append((fn, params))
+            return self
+
+        def execute(self):
+            return FakeResponse()
+
+    monkeypatch.setattr(web_db, "_get_client", lambda: FakeClient())
+
+    detail = web_db.load_company_history_detail("name:apify")
+
+    assert calls == [("company_run_detail", {"p_company_lookup_key": "name:apify"})]
+    assert detail is not None
+    assert detail["company_lookup_key"] == "name:apify"
+    assert detail["runs"][0]["job_id"] == "job-apify"
+    assert detail["runs"][0]["results"]["company_name"] == "Apify"
+
+
+def test_load_company_history_detail_backfills_company_url_from_domain(monkeypatch) -> None:
+    import web.db as web_db
+
+    class RpcResponse:
+        data = [
+            {
+                "company_id": "company-anthropic",
+                "company_lookup_key": "name:anthropic",
+                "company_key": "name:anthropic",
+                "company_name": "Anthropic",
+                "startup_slug": "anthropic",
+                "job_id_legacy": "job-anthropic",
+                "decision": "invest",
+                "total_score": 80.0,
+                "composite_score": 89.5,
+                "bucket": "priority_review",
+                "mode": "specter",
+                "input_order": 1,
+                "run_created_at": "2026-03-10T10:00:00Z",
+                "created_at": "2026-03-10T10:00:00Z",
+                "result_payload": {
+                    "company_name": "Anthropic",
+                    "startup_slug": "anthropic",
+                    "summary_rows": [{"company_name": "Anthropic", "startup_slug": "anthropic"}],
+                },
+            }
+        ]
+
+    class DomainResponse:
+        data = [{"id": "company-anthropic", "domain": "anthropic.com"}]
+
+    class FakeTable:
+        def select(self, _fields):
+            return self
+
+        def in_(self, _field, _values):
+            return self
+
+        def execute(self):
+            return DomainResponse()
+
+    class FakeClient:
+        def rpc(self, _fn, _params):
+            return self
+
+        def table(self, name):
+            assert name == "companies"
+            return FakeTable()
+
+        def execute(self):
+            return RpcResponse()
+
+    monkeypatch.setattr(web_db, "_get_client", lambda: FakeClient())
+
+    detail = web_db.load_company_history_detail("name:anthropic")
+
+    assert detail is not None
+    assert detail["runs"][0]["results"]["company_url"] == "https://anthropic.com"
+    assert detail["runs"][0]["results"]["specter_company_id"] is None
+
+
 def test_list_company_histories_reconciles_missing_company_runs(monkeypatch) -> None:
     import web.db as web_db
 
@@ -276,71 +525,6 @@ def test_list_company_histories_keeps_audit_rows_for_company_detail(monkeypatch)
             "critical_gaps": [],
         }
     ]
-
-
-def test_list_company_histories_can_return_display_payload_without_audit_rows(monkeypatch) -> None:
-    import web.db as web_db
-
-    rows = [
-        {
-            "company_key": "slug:apaleo",
-            "company_name": "Apaleo",
-            "startup_slug": "apaleo",
-            "job_id_legacy": "job-28",
-            "decision": "invest",
-            "total_score": 60.1,
-            "composite_score": 60.1,
-            "bucket": "watchlist",
-            "mode": "specter",
-            "input_order": 1,
-            "run_created_at": "2026-03-15T22:58:47Z",
-            "created_at": "2026-03-15T22:58:47Z",
-            "result_payload": {
-                "company_name": "Apaleo",
-                "startup_slug": "apaleo",
-                "summary_rows": [{
-                    "company_name": "Apaleo",
-                    "startup_slug": "apaleo",
-                    "team_members": [{"full_name": "Alice Founder"}],
-                    "top_pro_1": "Strong product wedge.",
-                }],
-                "ranking_result": {
-                    "composite_score": 60.1,
-                    "bucket": "watchlist",
-                    "strategy_fit_summary": "Good fit.",
-                },
-                "qa_provenance_rows": [{"question": "Heavy audit row"}],
-                "argument_rows": [{"argument_text": "Heavy audit argument"}],
-            },
-        }
-    ]
-
-    fetch_kwargs = []
-
-    def fake_fetch(_client, limit_runs, *, include_result_payload=True):
-        fetch_kwargs.append(include_result_payload)
-        return rows
-
-    monkeypatch.setattr(web_db, "_get_client", lambda: object())
-    monkeypatch.setattr(web_db, "_fetch_company_run_rows", fake_fetch)
-
-    histories = web_db.list_company_histories(
-        limit_runs=50,
-        perform_maintenance=False,
-        include_run_details=False,
-        include_result_payload=True,
-    )
-
-    assert fetch_kwargs == [True]
-    assert histories[0]["company_name"] == "Apaleo"
-    run_results = histories[0]["runs"][0]["results"]
-    assert run_results["company_name"] == "Apaleo"
-    assert run_results["summary_rows"][0]["team_members"] == [{"full_name": "Alice Founder"}]
-    assert run_results["summary_rows"][0]["top_pro_1"] == "Strong product wedge."
-    assert run_results["qa_provenance_rows"] == []
-    assert run_results["argument_rows"] == []
-    assert run_results["ranking_result"]["composite_score"] == 60.1
-    assert run_results["ranking_result"]["strategy_fit_summary"] == "Good fit."
 
 
 def test_load_company_chat_context_collects_runs_and_chunks(monkeypatch) -> None:

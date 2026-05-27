@@ -1,4 +1,4 @@
-# Rockaway Deal Intelligence
+# Deal Intelligence
 
 **LLM-based deal evaluation platform for Rockaway Capital**
 
@@ -6,13 +6,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Work in Progress](https://img.shields.io/badge/status-WIP-orange.svg)](./docs/RECENT_UPDATES.md)
 
-> Built on [startup-ranker-pipeline](https://github.com/zabrodsk/startup-ranker-pipeline). Evaluates pitch decks, metrics, and optional web data to produce ranked deal lists with pro/contra arguments and invest recommendations.
+Evaluates pitch decks, metrics, and optional web data to produce ranked deal lists with pro/contra arguments and invest recommendations.
 
 ---
 
 ## Overview
 
-Rockaway Deal Intelligence helps investment teams evaluate and prioritize deal flow. Upload pitch decks, metrics, or Specter CSVs — or paste a list of company URLs — and optionally enable web search and Specter MCP augmentation for extra structured signal. The output is ranked deal lists with structured scores, executive summaries, key points, and red flags.
+Deal Intelligence helps investment teams evaluate and prioritize deal flow. Upload pitch decks, metrics, or Specter CSVs — or paste a list of company URLs — and optionally enable web search and Specter MCP augmentation for extra structured signal. The output is ranked deal lists with structured scores, executive summaries, key points, and red flags.
 
 **Pipeline stages:**
 

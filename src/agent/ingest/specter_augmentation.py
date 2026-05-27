@@ -276,7 +276,6 @@ def augment_with_specter(
     slug: str,
     expected_name: str | None = None,
     fetch_full_team: bool = False,
-    url_override: str | None = None,
     on_log: Callable[[str], None] | None = None,
 ) -> tuple[EvidenceStore, Company | None]:
     """Try to enrich a deck-derived store with Specter MCP company data.
@@ -290,8 +289,6 @@ def augment_with_specter(
             ``intelligence.founders`` summary list — no per-founder
             ``get_person_profile`` fan-out. Saves ~60% of MCP calls per company
             and is appropriate when the deck already carries founder bios.
-        url_override: Optional confirmed company URL/domain to use instead of
-            extracting one from the deck text.
         on_log: Optional callback that receives one-line status messages for
             operators (e.g. wired to ``print`` and the run-progress stream).
 
@@ -300,7 +297,7 @@ def augment_with_specter(
         the returned store is the original ``deck_store`` (unchanged) and the
         company is ``None`` — never raises.
     """
-    url = _domain_root(url_override) if url_override else extract_company_url(deck_store)
+    url = extract_company_url(deck_store)
     if not url:
         _safe_log(on_log, "specter-augment: no company URL found in deck")
         return deck_store, None
@@ -352,55 +349,7 @@ def augment_with_specter(
     return merged, company
 
 
-def augment_with_specter_status(
-    deck_store: EvidenceStore,
-    *,
-    slug: str,
-    expected_name: str | None = None,
-    fetch_full_team: bool = False,
-    url_override: str | None = None,
-    on_log: Callable[[str], None] | None = None,
-) -> dict[str, Any]:
-    """Return Specter augmentation output plus machine-readable status.
-
-    This wraps :func:`augment_with_specter` for web/API orchestration that needs
-    to persist whether a confirmed URL resolved via Specter or fell back to
-    deck-only analysis.
-    """
-    url = _domain_root(url_override) if url_override else extract_company_url(deck_store)
-    if not url:
-        store, company = augment_with_specter(
-            deck_store,
-            slug=slug,
-            expected_name=expected_name,
-            fetch_full_team=fetch_full_team,
-            on_log=on_log,
-        )
-        return {
-            "store": store,
-            "company": company,
-            "url": None,
-            "status": "missing_url",
-        }
-
-    store, company = augment_with_specter(
-        deck_store,
-        slug=slug,
-        expected_name=expected_name,
-        fetch_full_team=fetch_full_team,
-        url_override=url,
-        on_log=on_log,
-    )
-    return {
-        "store": store,
-        "company": company,
-        "url": url,
-        "status": "resolved" if company is not None else "deck_only",
-    }
-
-
 __all__ = [
     "augment_with_specter",
-    "augment_with_specter_status",
     "extract_company_url",
 ]

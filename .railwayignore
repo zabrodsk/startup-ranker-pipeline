@@ -7,6 +7,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .cursor/
+.codex/
 .wrangler/
 .pages-deploy/
 .DS_Store
@@ -25,6 +26,7 @@ deals/
 docs/
 tests/
 output/
+exports/
 test-results/
 playwright-report/
 supabase/.temp/

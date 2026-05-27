@@ -12,6 +12,7 @@ from agent.common.llm_config import get_llm
 from agent.dataclasses.ranking import CompanyRankingResult, DimensionScore
 from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
 from agent.pipeline.state.schemas import DimensionScoreOutput, ExecutiveSummaryOutput
+from agent.pipeline.scoring_signals import build_scoring_signals, format_scoring_signals
 from agent.pipeline.utils.phase_llm import invoke_with_phase_fallback
 from agent.prompt_library.manager import get_prompt
 from agent.run_context import get_current_pipeline_policy, use_stage_context
@@ -96,15 +97,36 @@ def _sanitize_top_qa_indices(
     return sanitized[:3]
 
 
+def _sub_scores_to_dict(sub_scores: list[Any]) -> dict[str, float]:
+    """Normalize structured-output sub-scores into the persisted dictionary shape."""
+    normalized: dict[str, float] = {}
+    for item in sub_scores or []:
+        name = getattr(item, "name", None)
+        value = getattr(item, "score", None)
+        if isinstance(item, dict):
+            name = item.get("name", name)
+            value = item.get("score", value)
+        key = str(name or "").strip()
+        if not key:
+            continue
+        try:
+            normalized[key] = max(0.0, min(100.0, float(value)))
+        except (TypeError, ValueError):
+            continue
+    return normalized
+
+
 def _score_dimension(
     dimension: str,
     qa_pairs: list[dict[str, Any]],
     company_summary: str,
     vc_context: str,
+    scoring_signals: dict[str, Any] | None,
     prompt_overrides: dict[str, Any] | None,
 ) -> DimensionScore:
     """Score a single dimension via LLM."""
     qa_block = _format_qa_block(qa_pairs)
+    scoring_signal_block = format_scoring_signals(scoring_signals)
     policy = get_current_pipeline_policy()
 
     if dimension == "strategy_fit":
@@ -116,6 +138,7 @@ def _score_dimension(
             company_summary=company_summary,
             vc_context=vc_block,
             qa_block=qa_block,
+            scoring_signals=scoring_signal_block,
         )
     elif dimension == "team":
         system_prompt = get_prompt("ranking.team.system", prompt_overrides)
@@ -123,6 +146,7 @@ def _score_dimension(
         user_content = user_prompt.format(
             company_summary=company_summary,
             qa_block=qa_block,
+            scoring_signals=scoring_signal_block,
         )
     else:  # upside
         system_prompt = get_prompt("ranking.upside.system", prompt_overrides)
@@ -130,6 +154,7 @@ def _score_dimension(
         user_content = user_prompt.format(
             company_summary=company_summary,
             qa_block=qa_block,
+            scoring_signals=scoring_signal_block,
         )
 
     try:
@@ -161,21 +186,44 @@ def _score_dimension(
             critical_gaps=["Scoring failed due to LLM error"],
         )
 
+    stage = str((scoring_signals or {}).get("stage") or "").lower()
+    seed_stage = stage in {"pre_seed", "pre-seed", "pre seed", "seed"}
+    adjustment_policy = "seed_softened" if dimension == "team" and seed_stage else "standard"
+    if dimension == "upside":
+        upside_ceiling = output.upside_ceiling_score
+        risk_adjusted = output.risk_adjusted_potential_score
+        if upside_ceiling is None:
+            upside_ceiling = output.raw_score
+        if risk_adjusted is None:
+            risk_adjusted = output.raw_score
+        raw_score = risk_adjusted
+    else:
+        upside_ceiling = None
+        risk_adjusted = None
+        raw_score = output.raw_score
+
     return DimensionScore(
         dimension=dimension,
-        raw_score=output.raw_score,
+        raw_score=raw_score,
         confidence=output.confidence,
         evidence_count=output.evidence_count,
         top_qa_indices=_sanitize_top_qa_indices(output.top_qa_indices, qa_pairs),
         evidence_snippets=output.evidence_snippets[:3],
         critical_gaps=output.critical_gaps,
+        sub_scores=_sub_scores_to_dict(output.sub_scores),
+        founder_archetype=output.founder_archetype or "",
+        stage_context=output.stage_context or str((scoring_signals or {}).get("stage_context") or ""),
+        adjustment_policy=adjustment_policy,
+        upside_ceiling_score=upside_ceiling,
+        risk_adjusted_potential_score=risk_adjusted,
+        scoring_signal_refs=output.scoring_signal_refs[:8],
     )
 
 
 def _dimension_display_score(score: DimensionScore) -> float:
     """Return the user-facing score for a dimension."""
     if score.dimension == "upside":
-        return round(score.raw_score, 2)
+        return score.adjusted_score
     return score.adjusted_score
 
 
@@ -190,6 +238,11 @@ def score_company_dimensions(
     """
     company_summary = state.company.get_company_summary()
     grouped = _group_qa_by_dimension(state.all_qa_pairs)
+    scoring_signals = build_scoring_signals(
+        state.company,
+        all_qa_pairs=state.all_qa_pairs,
+        existing=state.scoring_signals,
+    )
 
     dimension_scores: list[DimensionScore] = []
 
@@ -200,21 +253,36 @@ def score_company_dimensions(
             qa_pairs=qa_pairs,
             company_summary=company_summary,
             vc_context=state.vc_context or "",
+            scoring_signals=scoring_signals,
             prompt_overrides=state.prompt_overrides,
         )
         dimension_scores.append(score)
 
     strategy_adj = next((_dimension_display_score(s) for s in dimension_scores if s.dimension == "strategy_fit"), 0.0)
     team_adj = next((_dimension_display_score(s) for s in dimension_scores if s.dimension == "team"), 0.0)
-    upside_adj = next((_dimension_display_score(s) for s in dimension_scores if s.dimension == "upside"), 0.0)
+    upside_dim = next((s for s in dimension_scores if s.dimension == "upside"), None)
+    upside_adj = _dimension_display_score(upside_dim) if upside_dim else 0.0
+    upside_ceiling = (
+        round(upside_dim.upside_ceiling_score, 2)
+        if upside_dim and upside_dim.upside_ceiling_score is not None
+        else upside_adj
+    )
 
     result = CompanyRankingResult(
         company_name=state.company.name,
         slug=state.slug or state.company.name,
         strategy_fit_score=strategy_adj,
         team_score=team_adj,
-        upside_score=upside_adj,
+        upside_score=upside_ceiling,
+        upside_ceiling_score=upside_ceiling,
+        risk_adjusted_potential_score=upside_adj,
         dimension_scores=dimension_scores,
+        team_subscores=next((s.sub_scores for s in dimension_scores if s.dimension == "team"), {}),
+        potential_subscores=upside_dim.sub_scores if upside_dim else {},
+        founder_archetype=next((s.founder_archetype for s in dimension_scores if s.dimension == "team"), ""),
+        stage_context=next((s.stage_context for s in dimension_scores if s.dimension == "team"), "")
+        or str(scoring_signals.get("stage_context") or ""),
+        scoring_signals_used=scoring_signals,
     )
     return {"ranking_result": result}
 
@@ -232,12 +300,12 @@ def compute_composite_rank(
 
     strategy_adj = result.strategy_fit_score
     team_adj = result.team_score
-    upside_adj = result.upside_score
+    upside_adj = result.risk_adjusted_potential_score or result.upside_score
 
     composite = (1 / 3) * strategy_adj + (1 / 3) * team_adj + (1 / 3) * upside_adj
     result.composite_score = round(composite, 2)
 
-    scores = [result.strategy_fit_score, result.team_score, result.upside_score]
+    scores = [result.strategy_fit_score, result.team_score, upside_adj]
     result.min_dimension_score = min(scores) if scores else 0.0
 
     if result.dimension_scores:
@@ -270,6 +338,20 @@ def _format_dimension_block(dimension_scores: list[DimensionScore]) -> str:
         lines.append(f"{label} (score {_dimension_display_score(d)}):")
         if d.evidence_snippets:
             lines.append("  Evidence: " + " | ".join(d.evidence_snippets[:3]))
+        if d.stage_context:
+            lines.append("  Stage context: " + d.stage_context)
+        if d.founder_archetype:
+            lines.append("  Founder archetype: " + d.founder_archetype)
+        if d.sub_scores:
+            lines.append(
+                "  Sub-scores: "
+                + "; ".join(f"{k}={v}" for k, v in list(d.sub_scores.items())[:8])
+            )
+        if d.dimension == "upside" and d.upside_ceiling_score is not None:
+            lines.append(
+                f"  Upside ceiling: {d.upside_ceiling_score}; "
+                f"Risk-adjusted potential: {d.risk_adjusted_potential_score or d.adjusted_score}"
+            )
         if d.critical_gaps:
             lines.append("  Gaps: " + "; ".join(d.critical_gaps[:3]))
         lines.append("")

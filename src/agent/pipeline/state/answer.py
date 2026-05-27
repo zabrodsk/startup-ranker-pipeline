@@ -8,7 +8,7 @@ from datetime import datetime
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing_extensions import Annotated
 
 from agent.dataclasses.company import Company
@@ -33,6 +33,15 @@ class AnswerState(BaseModel):
     qa_pairs: list[dict[str, str]] = Field(default_factory=list)
     answer: str | None = None
     vc_context: str = ""
+
+    @field_validator("answer", mode="before")
+    @classmethod
+    def _coerce_answer(cls, v):
+        """Coerce Gemini list-of-content-parts to a plain string."""
+        if isinstance(v, list):
+            parts = [item.get("text", "") if isinstance(item, dict) else str(item) for item in v]
+            return "".join(parts)
+        return v
 
     # Tool usage tracking
     tool_usage_count: int = 0
@@ -64,6 +73,15 @@ class AnswerStateSimple(BaseModel):
     qa_pairs: list[dict[str, str]] = Field(default_factory=list)
     answer: str | None = None
     vc_context: str = ""
+
+    @field_validator("answer", mode="before")
+    @classmethod
+    def _coerce_answer(cls, v):
+        """Coerce Gemini list-of-content-parts to a plain string."""
+        if isinstance(v, list):
+            parts = [item.get("text", "") if isinstance(item, dict) else str(item) for item in v]
+            return "".join(parts)
+        return v
 
 
 class AnswerQuestionTreeState(BaseModel):

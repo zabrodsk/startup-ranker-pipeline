@@ -11,7 +11,6 @@ import pytest
 from agent.dataclasses.company import Company
 from agent.ingest.specter_augmentation import (
     augment_with_specter,
-    augment_with_specter_status,
     extract_company_url,
 )
 from agent.ingest.specter_mcp_client import (
@@ -245,30 +244,6 @@ def test_augment_calls_fetch_with_extracted_url_and_kwargs(monkeypatch):
     assert captured["identifier"] == "acme.com"
     assert captured["expected_name"] == "Acme"
     assert captured["fetch_full_team"] is False
-
-
-def test_augment_can_use_confirmed_url_override(monkeypatch):
-    deck = _store("acme-deck", "No URL in this deck text.")
-    captured: dict[str, Any] = {}
-
-    def _fake_fetch(identifier, *, expected_name=None, fetch_full_team=True, client=None):
-        captured["identifier"] = identifier
-        return _mcp_company(), _mcp_store("Company: Acme")
-
-    monkeypatch.setattr(
-        "agent.ingest.specter_augmentation.fetch_specter_company", _fake_fetch
-    )
-
-    out = augment_with_specter_status(
-        deck,
-        slug="acme",
-        url_override="https://www.acme.com/about",
-    )
-
-    assert captured["identifier"] == "acme.com"
-    assert out["url"] == "acme.com"
-    assert out["status"] == "resolved"
-    assert out["company"].name == "Acme"
 
 
 def test_augment_merges_chunks_and_renumbers(monkeypatch):

@@ -34,6 +34,12 @@ Provide:
 - top_qa_indices: 1-3 global Q&A indices from the labels above that most influenced the score, ordered by impact
 - evidence_snippets: 2-3 short quotes that support the score (max 100 chars each)
 - critical_gaps: list of high-impact facts that are missing (e.g. "no stage info", "geography unclear")
+- sub_scores: use an empty list for strategy_fit
+- founder_archetype: use an empty string for strategy_fit
+- stage_context: use the stage/geography context if useful, otherwise an empty string
+- upside_ceiling_score: use null for strategy_fit
+- risk_adjusted_potential_score: use null for strategy_fit
+- scoring_signal_refs: use an empty list for strategy_fit
 """
 
 RANKING_TEAM_SYSTEM = """\
@@ -41,17 +47,37 @@ You are a VC investment analyst scoring companies on team quality.
 
 Score the company 0-100 based on these sub-factors (equal weight unless one is clearly dominant or absent):
 - Founder-market fit: Do founders have relevant domain expertise?
-- Prior execution track record: Have they built/shipped before?
+- Archetype fit: Which founder archetype applies, and are the right signals present?
+- Prior execution track record: Have they built/shipped before, including failed-startup learnings?
 - Functional completeness: Does the team cover key roles (product, tech, sales)?
 - Hiring magnet / talent attraction: Evidence they can attract top talent?
 - Governance/credibility signals: Board, advisors, references?
+- Evidence completeness: How much of the team view is proven versus still diligence work?
+
+Classify founder_archetype as one of:
+- young prospective founder
+- big-tech R&D/product alumni
+- serial founder with exit
+- serial founder with prior failure/learnings
+- previous high-growth startup operator
+- industry veteran
+- mixed/unknown
+
+For young prospective founders, explicitly consider GitHub/projects, social audience,
+hackathons/competitions, top-tier technical school/background, side projects,
+early entrepreneurship, and open-source/community activity.
 
 Consider evidence quantity, source quality, and consistency when setting confidence.
 Downweight confidence when answers are "Unknown" or thin.
+Do not treat missing board/governance as strongly negative for Seed/pre-seed teams;
+name stage context explicitly in stage_context and in the rationale inputs.
 """
 
 RANKING_TEAM_USER = """\
 Company: {company_summary}
+
+Structured scoring signals:
+{scoring_signals}
 
 Relevant Q&A pairs (team, founders, experience):
 {qa_block}
@@ -59,16 +85,22 @@ Relevant Q&A pairs (team, founders, experience):
 Provide:
 - raw_score: 0-100
 - confidence: 0-1
+- sub_scores: list objects with name and score for founder_market_fit, archetype_fit, prior_execution, functional_completeness, talent_magnet, governance_credibility, evidence_completeness
+- founder_archetype
+- stage_context: explicitly mention company stage and how it affects interpretation
 - evidence_count: number of Q&A pairs that contributed
 - top_qa_indices: 1-3 global Q&A indices from the labels above that most influenced the score, ordered by impact
 - evidence_snippets: 2-3 short quotes that support the score (max 100 chars each)
 - critical_gaps: list of high-impact facts that are missing
+- scoring_signal_refs: structured signals that influenced the score
 """
 
 RANKING_UPSIDE_SYSTEM = """\
 You are a VC investment analyst scoring companies on problem size and upside potential.
 
-Score the company 0-100 based on the best credible upside case, assuming strong execution and favorable market adoption.
+Score both:
+1. upside_ceiling_score: the best credible upside case, assuming strong execution and favorable market adoption.
+2. risk_adjusted_potential_score: the prioritization score adjusted for evidence quality, traction, market pull, and execution/defensibility risk.
 
 Use these sub-factors (equal weight unless one is clearly dominant or absent):
 - Problem severity and urgency: How acute is the problem? Is it urgent?
@@ -76,9 +108,27 @@ Use these sub-factors (equal weight unless one is clearly dominant or absent):
 - Addressable market magnitude: Is TAM/SAM realistic and substantial?
 - Expansion potential: Adjacent markets, product surface, upsell?
 - Breakout potential: If the company executes exceptionally well, how large could the outcome become?
+- Moat/defensibility: Is there product depth, proprietary data, workflow lock-in, or engineering depth?
+- Traction relative to stage: Is proof strong for this company stage?
+- Investor/VC validation: Tier 1/2/3 investor quality and fresh investor interest signals.
 
-Do not reduce the numeric score because of execution risk, narrow hit probability, or what might go wrong.
-Instead, capture those downside concerns explicitly in critical_gaps so they surface later as red flags.
+Use risk_adjusted_potential_score for prioritization. Do not over-discount normal Seed uncertainty, but companies
+with no clients, pricing, revenue, usage, funding validation, or strong market-pull signals should generally not
+exceed 80 risk-adjusted solely because the theoretical TAM is large.
+
+Use Specter signals consistently:
+- Web Traffic Surge → demand / market-pull signal
+- Headcount Surge → execution velocity and talent magnet
+- Product Reviews Scale-up → willingness-to-pay / usage validation
+- Top Tier Investors → investor validation
+- Recent Funding → momentum and capital access
+- Certifications / security signals → enterprise readiness
+- Department mix: engineering ratio can support product depth/moat; GTM-heavy mix can support commercialization evidence.
+
+Investor interest recency:
+- 0-6 months: full weight
+- 6-12 months: partial weight
+- over 12 months: low weight unless reinforced by later activity
 
 Use confidence only to reflect evidence quality, source quality, and consistency.
 """
@@ -86,16 +136,23 @@ Use confidence only to reflect evidence quality, source quality, and consistency
 RANKING_UPSIDE_USER = """\
 Company: {company_summary}
 
+Structured scoring signals:
+{scoring_signals}
+
 Relevant Q&A pairs (market, product, TAM, problem, expansion):
 {qa_block}
 
 Provide:
-- raw_score: 0-100
+- raw_score: same value as risk_adjusted_potential_score for backwards compatibility
+- upside_ceiling_score: 0-100 best credible upside
+- risk_adjusted_potential_score: 0-100 prioritization score adjusted for evidence/risk
 - confidence: 0-1
+- sub_scores: list objects with name and score for problem_severity, willingness_to_pay, market_magnitude, expansion_potential, breakout_potential, moat_defensibility, traction_relative_to_stage, investor_vc_validation
 - evidence_count: number of Q&A pairs that contributed
 - top_qa_indices: 1-3 global Q&A indices from the labels above that most influenced the score, ordered by impact
 - evidence_snippets: 2-3 short quotes that support the score (max 100 chars each)
 - critical_gaps: list of downside risks, fragility points, or high-impact missing facts that could prevent the upside case from happening (e.g. "no TAM data", "WTP unclear", "distribution risk")
+- scoring_signal_refs: structured signals that influenced the score
 """
 
 EXECUTIVE_SUMMARY_SYSTEM = """\

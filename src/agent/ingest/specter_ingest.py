@@ -18,6 +18,21 @@ from agent.dataclasses.company import Company
 from agent.dataclasses.person import Education, Experience, Person
 from agent.ingest.store import Chunk, EvidenceStore
 
+SPECTER_PROFILE_BASE_URL = "https://app.tryspecter.com/signals/company/feed/"
+_SPECTER_COMPANY_ID_FIELDS = (
+    "Specter - ID",
+    "Specter - Company ID",
+    "Specter Company ID",
+    "External Company ID",
+    "external_company_id",
+)
+_COMPANY_URL_FIELDS = (
+    "Website",
+    "Company Website",
+    "URL",
+    "Domain",
+)
+
 
 def _safe(val: Any) -> str | None:
     """Return None for NaN/empty, else stripped string. Handles lists from Excel/CSV."""
@@ -42,6 +57,42 @@ def _normalize_public_url(val: str | None) -> str | None:
     if v.startswith("www.") or "linkedin.com/" in v:
         return f"https://{v.lstrip('/')}"
     return v
+
+
+def _first_safe(row: pd.Series, fields: tuple[str, ...]) -> str | None:
+    for field in fields:
+        value = _safe(row.get(field))
+        if value:
+            return value
+    return None
+
+
+def _normalize_company_url(val: str | None) -> str | None:
+    value = _safe(val)
+    if not value:
+        return None
+    if value.startswith(("http://", "https://")):
+        return value
+    if value.startswith("www."):
+        return f"https://{value.lstrip('/')}"
+    if re.match(r"^[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}(?:/.*)?$", value):
+        return f"https://{value}"
+    return None
+
+
+def _specter_profile_url(specter_company_id: str | None) -> str | None:
+    value = _safe(specter_company_id)
+    return f"{SPECTER_PROFILE_BASE_URL}{value}" if value else None
+
+
+def _company_metadata_from_row(row: pd.Series) -> dict[str, str | None]:
+    specter_company_id = _first_safe(row, _SPECTER_COMPANY_ID_FIELDS)
+    return {
+        "domain": _safe(row.get("Domain")),
+        "company_url": _normalize_company_url(_first_safe(row, _COMPANY_URL_FIELDS)),
+        "specter_company_id": specter_company_id,
+        "specter_profile_url": _specter_profile_url(specter_company_id),
+    }
 
 
 def _safe_float(val: Any) -> float | None:
@@ -189,7 +240,7 @@ def list_specter_companies(companies_csv: str | Path) -> list[dict[str, Any]]:
                 "name": company_name,
                 "slug": _company_slug(company_name),
                 "industry": _safe(row.get("Industry")),
-                "domain": _safe(row.get("Domain")),
+                **_company_metadata_from_row(row),
             }
         )
     return descriptors
@@ -564,7 +615,8 @@ def _build_company_and_store(
             team_rows.append(prow)
             seen_ids.add(pid)
 
-    company_domain = _safe(row.get("Domain"))
+    company_metadata = _company_metadata_from_row(row)
+    company_domain = company_metadata["domain"]
     for pid, (person, prow) in people_map.items():
         if pid in seen_ids:
             continue
@@ -584,7 +636,7 @@ def _build_company_and_store(
         tagline=_safe(row.get("Tagline")),
         about=_safe(row.get("Description")),
         team=team_persons or None,
-        domain=_safe(row.get("Domain")),
+        **company_metadata,
     )
 
     chunks: list[Chunk] = []

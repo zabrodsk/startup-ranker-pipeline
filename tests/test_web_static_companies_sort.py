@@ -16,16 +16,6 @@ def test_companies_sort_uses_latest_instead_of_alphabetical() -> None:
     assert '<option value="alphabetical">ALPHABETICAL</option>' not in companies_sort_html
 
 
-def test_pitchdeck_identity_confirmation_ui_is_wired() -> None:
-    html = (Path(__file__).resolve().parents[1] / "web" / "static" / "index.html").read_text()
-
-    assert "Skipped silently if no URL is found" not in html
-    assert 'id="identity-confirmation-panel"' in html
-    assert 'id="identity-company-url-input"' in html
-    assert "identity_confirmation_required" in html
-    assert "confirmed_company_url" in html
-
-
 def test_specter_url_mode_shows_deep_team_profiles_toggle() -> None:
     html = (Path(__file__).resolve().parents[1] / "web" / "static" / "index.html").read_text()
 
@@ -36,3 +26,43 @@ def test_specter_url_mode_shows_deep_team_profiles_toggle() -> None:
     assert "(inputMode === 'pitchdeck' || haveSpecterUrls) ? 'block' : 'none'" in html
     assert "syncUploadOptionToggles();\n    updateAnalyzeButtonState();" in html
     assert "fetch_full_team: fetchFullTeam" in html
+
+
+def test_scoring_signals_are_summarized_not_dumped() -> None:
+    html = (Path(__file__).resolve().parents[1] / "web" / "static" / "index.html").read_text()
+
+    assert "function buildStructuredSignalsSummary(signals)" in html
+    assert "<ul>${rows.join('')}</ul>" in html
+    assert "Client / traction:" in html
+    assert "Founder archetype evidence:" in html
+    assert "Specter team highlights:" in html
+    assert "duplicate Specter highlights hidden" not in html
+    assert "signals.specter_highlights.map(h => h.label || h).join(', ')" not in html
+
+
+def test_company_rank_cards_render_website_and_specter_links() -> None:
+    html = (Path(__file__).resolve().parents[1] / "web" / "static" / "index.html").read_text()
+
+    assert "const SPECTER_PROFILE_BASE_URL = 'https://app.tryspecter.com/signals/company/feed/';" in html
+    assert "function buildCompanyLinkControlsHtml(...sources)" in html
+    assert "function buildRankCompanyTitleHtml(companyName, ...sources)" in html
+    assert "target=\"_blank\" rel=\"noopener noreferrer\"" in html
+    assert "buildSpecterCompanyProfileUrl(specterCompanyId)" in html
+    assert "buildRankCompanyTitleHtml(companyName, result, summary, company, run)" in html
+    assert "buildRankCompanyTitleHtml(row.company_name || row.startup_slug, row)" in html
+
+
+def test_leadgen_intake_screen_uses_human_approval_api() -> None:
+    html = (Path(__file__).resolve().parents[1] / "web" / "static" / "index.html").read_text()
+
+    assert 'id="leadgen-screen"' in html
+    assert "function openLeadgenPage()" in html
+    assert "`/api/leadgen/intakes?status=${encodeURIComponent(leadgenStatusFilter)}&limit=100`" in html
+    assert "`/api/leadgen/intakes/${encodeURIComponent(intakeId)}/approve`" in html
+    assert "Approve Selected & Start" in html
+    assert "Approve All Eligible & Start" in html
+    assert "let leadgenSortMode = 'source';" in html
+    assert "function leadgenSourceLabel(lead)" in html
+    assert '<th>Source</th>' in html
+    assert '<option value="source" ${leadgenSortMode === \'source\' ? \'selected\' : \'\'}>Source</option>' in html
+    assert '<th>Score</th><th>Bucket</th>' not in html

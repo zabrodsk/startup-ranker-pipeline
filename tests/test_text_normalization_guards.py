@@ -15,6 +15,35 @@ def test_coerce_text_handles_list_content_blocks() -> None:
     assert _coerce_text(value) == "Unknown from provided documents. fallback"
 
 
+def test_coerce_text_drops_openai_reasoning_items() -> None:
+    value = [
+        {
+            "id": "rs_0f429877ec46728d0069da280b92e881978e837bcd881f21d2",
+            "summary": [],
+            "type": "reasoning",
+        },
+        {"type": "text", "text": "Apaleo is a cloud-native hotel platform."},
+    ]
+    result = _coerce_text(value)
+    assert result == "Apaleo is a cloud-native hotel platform."
+    assert "reasoning" not in result
+    assert "rs_" not in result
+
+
+def test_coerce_text_drops_unknown_dict_shapes() -> None:
+    # Unknown dict with no text/content field must not stringify into prose.
+    value = [
+        {"type": "unknown", "metadata": {"foo": "bar"}},
+        {"type": "text", "text": "Hello world."},
+    ]
+    assert _coerce_text(value) == "Hello world."
+
+
+def test_coerce_text_returns_empty_for_bare_reasoning_dict() -> None:
+    value = {"type": "reasoning", "id": "rs_x", "summary": []}
+    assert _coerce_text(value) == ""
+
+
 def test_answer_indicates_no_evidence_accepts_non_string_payload() -> None:
     value = [{"text": "Unknown from provided documents."}]
     assert _answer_indicates_no_evidence(value) is True

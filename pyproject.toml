@@ -1,7 +1,7 @@
 [project]
-name = "rockaway-deal-intelligence"
+name = "deal-intelligence"
 version = "0.0.3"
-description = "Rockaway Deal Intelligence for startup evaluation and deal screening."
+description = "Deal Intelligence for startup evaluation and deal screening."
 authors = [
     { name = "William Fu-Hinthorn", email = "13333726+hinthornw@users.noreply.github.com" },
 ]

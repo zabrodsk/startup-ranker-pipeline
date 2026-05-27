@@ -145,26 +145,44 @@ async def run_matching_for_pair(
     return dict(ranking)
 
 
-async def trigger_matching_for_company(company_id: str, db_module: Any) -> int:
+async def trigger_matching_for_company(
+    company_id: str,
+    db_module: Any,
+    *,
+    force_refresh: bool = False,
+) -> int:
     """Match a fundraising company against all active VC profiles.
 
     Called as a FastAPI background task when a startup toggles fundraising ON.
-    Returns the number of new match records created.
+    All synchronous DB calls are dispatched via asyncio.to_thread() so the
+    event loop (and thus the web server) is never blocked.
+    Returns the number of new match records created (or refreshed, when
+    ``force_refresh=True``).
+
+    ``force_refresh``: when True, existing matches are re-scored and their
+    rows updated in-place via the upsert in ``db.create_match``. This is what
+    the re-evaluation path uses so fresh scores land without deleting the
+    match rows (which would cascade-destroy the associated debate). When
+    False (default), existing matches are skipped — used by the fundraising
+    toggle path where we only want brand-new matches.
     """
-    company_row = db_module.get_company_by_id(company_id)
+    import asyncio  # noqa: PLC0415
+
+    company_row = await asyncio.to_thread(db_module.get_company_by_id, company_id)
     if not company_row:
         logger.warning("Company %s not found — matching aborted", company_id)
         return 0
 
-    chunks = db_module.get_company_chunks(company_id)
-    all_qa_pairs = db_module.get_analysis_qa_pairs(company_id)
+    chunks, all_qa_pairs = await asyncio.gather(
+        asyncio.to_thread(db_module.get_company_chunks, company_id),
+        asyncio.to_thread(db_module.get_analysis_qa_pairs, company_id),
+    )
 
     # Attempt Stage-8-only optimisation: load pre-computed final_arguments + decision.
-    analysis_final = (
-        db_module.get_analysis_final_state(company_id)
-        if hasattr(db_module, "get_analysis_final_state")
-        else None
-    )
+    analysis_final: dict[str, Any] | None = None
+    if hasattr(db_module, "get_analysis_final_state"):
+        analysis_final = await asyncio.to_thread(db_module.get_analysis_final_state, company_id)
+
     final_arguments: list[dict[str, Any]] | None = None
     final_decision: str | None = None
     if analysis_final:
@@ -180,12 +198,17 @@ async def trigger_matching_for_company(company_id: str, db_module: Any) -> int:
         )
         return 0
 
-    vc_profiles = db_module.get_active_vc_profiles()
+    vc_profiles = await asyncio.to_thread(db_module.get_active_vc_profiles)
     if not vc_profiles:
         logger.info("No active VC profiles to match against")
         return 0
 
-    latest_analysis = db_module.get_company_latest_analysis(company_id)
+    logger.info(
+        "Starting matching for company=%s against %d VC profiles (stage8=%s, qa_pairs=%d)",
+        company_id, len(vc_profiles), bool(final_arguments), len(all_qa_pairs),
+    )
+
+    latest_analysis = await asyncio.to_thread(db_module.get_company_latest_analysis, company_id)
     analysis_id: str | None = latest_analysis.get("id") if latest_analysis else None
 
     created = 0
@@ -194,9 +217,16 @@ async def trigger_matching_for_company(company_id: str, db_module: Any) -> int:
         if not vc_profile_id:
             continue
 
-        if db_module.match_exists(vc_profile_id, company_id):
+        match_already_exists = await asyncio.to_thread(
+            db_module.match_exists, vc_profile_id, company_id
+        )
+        if match_already_exists and not force_refresh:
             logger.debug("Match already exists: vc=%s company=%s", vc_profile_id, company_id)
             continue
+        if match_already_exists and force_refresh:
+            logger.debug(
+                "Force-refreshing existing match: vc=%s company=%s", vc_profile_id, company_id
+            )
 
         vc_thesis: str = vc_profile.get("investment_thesis") or ""
         min_strategy: float = float(vc_profile.get("min_strategy_fit") or 0)
@@ -219,11 +249,21 @@ async def trigger_matching_for_company(company_id: str, db_module: Any) -> int:
             continue
 
         if not scores:
+            logger.warning(
+                "run_matching_for_pair returned None for vc=%s company=%s — "
+                "graph.ainvoke likely failed or returned no ranking_result",
+                vc_profile_id, company_id,
+            )
             continue
 
         strategy_fit: float = float(scores.get("strategy_fit_score") or 0)
         team: float = float(scores.get("team_score") or 0)
         potential: float = float(scores.get("upside_score") or 0)
+        logger.info(
+            "Scores for vc=%s company=%s: strategy=%.1f team=%.1f potential=%.1f composite=%.1f bucket=%s",
+            vc_profile_id, company_id, strategy_fit, team, potential,
+            float(scores.get("composite_score") or 0), scores.get("bucket"),
+        )
 
         meets_thresholds = (
             strategy_fit >= min_strategy
@@ -232,7 +272,8 @@ async def trigger_matching_for_company(company_id: str, db_module: Any) -> int:
         )
 
         if meets_thresholds:
-            db_module.create_match(
+            await asyncio.to_thread(
+                db_module.create_match,
                 vc_profile_id=vc_profile_id,
                 company_id=company_id,
                 analysis_id=analysis_id,

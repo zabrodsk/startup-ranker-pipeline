@@ -17,6 +17,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 
 from agent.common.llm_config import get_llm
 from agent.dataclasses.company import Company
+from agent.evidence_answering import _coerce_text
 from agent.pipeline.state.answer import AnswerState
 from agent.pipeline.utils.helpers import generate_context_block
 from agent.run_context import use_stage_context
@@ -179,7 +180,7 @@ def answer_question(state: AnswerState) -> AnswerState:
     state.messages.append(response)
 
     if response.content:
-        state.answer = response.content
+        state.answer = _coerce_text(response.content)
 
     return state
 

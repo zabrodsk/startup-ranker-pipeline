@@ -98,11 +98,11 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from agent.dataclasses.company import Company
 from agent.dataclasses.question_tree import QuestionNode, QuestionTree
-from agent.ingest.store import EvidenceStore
+from agent.ingest.store import Chunk, EvidenceStore
 from agent.llm import create_llm
 from agent.prompt_library.manager import get_prompt
 from agent.rate_limit import gather_with_concurrency
-from agent.retrieval import retrieve_chunks
+from agent.retrieval import retrieve_chunks, retrieve_chunks_with_similarity
 from agent.run_context import (
     get_current_collector,
     get_current_pipeline_policy,
@@ -179,6 +179,10 @@ def _coerce_text(value: Any) -> str:
                 parts.append(item)
                 continue
             if isinstance(item, dict):
+                # Skip OpenAI Responses API reasoning blocks and other
+                # non-text metadata items so they never leak into prose.
+                if item.get("type") == "reasoning":
+                    continue
                 text_val = item.get("text")
                 if isinstance(text_val, str) and text_val.strip():
                     parts.append(text_val)
@@ -187,14 +191,20 @@ def _coerce_text(value: Any) -> str:
                 if isinstance(content_val, str) and content_val.strip():
                     parts.append(content_val)
                     continue
-            parts.append(str(item))
+                # Unknown dict shape — drop silently rather than serialising
+                # the Python repr into user-visible text.
+                continue
+            # Unknown non-dict, non-str item — drop silently.
+            continue
         return " ".join(p.strip() for p in parts if p and p.strip()).strip()
     if isinstance(value, dict):
+        if value.get("type") == "reasoning":
+            return ""
         for key in ("text", "content", "output_text"):
             candidate = value.get(key)
             if isinstance(candidate, str):
                 return candidate
-        return str(value)
+        return ""
     return str(value)
 
 
@@ -734,3 +744,279 @@ async def answer_all_trees_from_evidence(
         all_qa_pairs.extend(get_qa_pairs_from_question_tree(tree))
 
     return all_qa_pairs
+
+
+# ---------------------------------------------------------------------------
+# Incremental enrichment — used by re-evaluation to preserve prior answers
+# and only rewrite the ones where newly-uploaded evidence is actually
+# relevant. Keeps the non-re-eval (fresh analysis) path untouched.
+# ---------------------------------------------------------------------------
+
+# Minimum TF-IDF cosine similarity at which a new chunk is considered
+# relevant to a question. Below this, the previous answer is preserved
+# verbatim. 0.05 is low enough to catch topical overlaps (a single
+# shared keyword often hits ~0.08-0.15 on sparse TF-IDF) while avoiding
+# noise from stop-word-only matches.
+ENRICH_MIN_SIMILARITY = float(os.getenv("REEVAL_ENRICH_MIN_SIMILARITY", "0.05"))
+ENRICH_TOP_K = int(os.getenv("REEVAL_ENRICH_TOP_K", "4"))
+
+
+ENRICH_SYSTEM_PROMPT = """\
+You are updating an existing analyst answer with newly uploaded evidence.
+
+Rules:
+- Read the PREVIOUS ANSWER and the NEW EVIDENCE CHUNKS carefully.
+- If the new evidence adds, corrects, or expands information that is \
+genuinely relevant to the question, rewrite the answer so it incorporates \
+the new information. Preserve the tone, structure, length, and level of \
+detail of the previous answer.
+- Cite any new chunks inline using the same [chunk_XX] format as before.
+- If the new evidence is NOT actually relevant to this question after you \
+read it, return the PREVIOUS ANSWER completely unchanged (verbatim).
+- Do NOT invent facts. Do NOT include any JSON, reasoning blocks, \
+metadata, or preamble — return ONLY the final answer prose.
+"""
+
+ENRICH_USER_PROMPT = """\
+QUESTION:
+{question}
+
+PREVIOUS ANSWER:
+{previous_answer}
+
+NEW EVIDENCE CHUNKS:
+{chunks_text}
+
+Return the final answer prose only."""
+
+
+def _is_question_relevant_to_new_chunks(
+    question: str,
+    new_store: EvidenceStore,
+    k: int = ENRICH_TOP_K,
+    min_score: float = ENRICH_MIN_SIMILARITY,
+) -> tuple[bool, list[Chunk]]:
+    """Return (True, top_chunks) if any new chunk is TF-IDF relevant to the question.
+
+    Uses `retrieve_chunks_with_similarity` (already in `agent.retrieval`) to
+    get both the retrieved chunks and the top similarity score in one pass.
+    """
+    if not new_store.chunks or not question or not question.strip():
+        return (False, [])
+    try:
+        chunks, top_sim = retrieve_chunks_with_similarity(question, new_store, k=k)
+    except Exception:
+        return (False, [])
+    if not chunks or top_sim < min_score:
+        return (False, [])
+    return (True, chunks)
+
+
+async def enrich_existing_answer_with_new_chunks(
+    question: str,
+    previous_answer: str,
+    new_chunks: list[Chunk],
+    company: Company,
+    vc_context: str = "",
+) -> str:
+    """Call the LLM to update `previous_answer` using the relevant new chunks.
+
+    Fail-safe: returns `previous_answer` verbatim on any error or empty response.
+    """
+    if not new_chunks:
+        return previous_answer
+
+    chunks_text = "\n---\n".join(
+        f"[{c.chunk_id}] (source: {c.source_file}, location: {c.page_or_slide}):\n{c.text}"
+        for c in new_chunks
+    )
+
+    vc_block = ""
+    if vc_context:
+        vc_str = vc_context if isinstance(vc_context, str) else " ".join(str(x) for x in vc_context)
+        if vc_str.strip():
+            vc_block = f"VC Investment Strategy (context only):\n{vc_str.strip()}\n\n"
+
+    user_content = ENRICH_USER_PROMPT.format(
+        question=question,
+        previous_answer=previous_answer or "(no previous answer)",
+        chunks_text=chunks_text,
+    )
+
+    try:
+        policy = get_current_pipeline_policy()
+        with use_phase_llm(policy.answering if policy else None):
+            with use_stage_context("answering"):
+                llm = create_llm(temperature=0.2)
+                response = await asyncio.wait_for(
+                    llm.ainvoke([
+                        SystemMessage(content=ENRICH_SYSTEM_PROMPT),
+                        HumanMessage(content=vc_block + user_content),
+                    ]),
+                    timeout=LLM_ANSWER_TIMEOUT_SEC,
+                )
+        enriched = _coerce_text(response.content).strip()
+        if not enriched:
+            return previous_answer
+        return enriched
+    except Exception:
+        return previous_answer
+
+
+def _collect_nodes_by_question(trees: Dict[str, QuestionTree]) -> Dict[str, QuestionNode]:
+    """Flatten all QuestionTree nodes into a {question_text: node} map.
+
+    Used to write enriched answers back into the tree so the state snapshot
+    stays consistent with the returned `all_qa_pairs` list.
+    """
+    out: Dict[str, QuestionNode] = {}
+
+    def walk(node: QuestionNode) -> None:
+        if getattr(node, "question", None):
+            out[node.question] = node
+        for child in getattr(node, "sub_nodes", None) or []:
+            walk(child)
+
+    for tree in trees.values():
+        walk(tree.root_node)
+    return out
+
+
+async def enrich_qa_pairs_with_new_evidence(
+    previous_qa_pairs: List[Dict[str, Any]],
+    question_trees: Dict[str, QuestionTree],
+    new_chunks: List[Chunk],
+    company: Company,
+    vc_context: str = "",
+    on_progress: Callable[[int, int], None] | None = None,
+) -> List[Dict[str, Any]]:
+    """Incrementally update previous Q&A pairs using new evidence chunks.
+
+    For each previous Q&A pair:
+    - If no new chunk is TF-IDF relevant to the question, the pair is copied
+      through verbatim (answer, citations, provenance all preserved).
+    - If any new chunk is relevant, a targeted LLM call rewrites the answer
+      while preserving the original shape; the new chunk ids are unioned into
+      `chunk_ids` so the Analysis Evidence provenance view surfaces the new
+      sources.
+
+    The enriched answers are also written back into the matching nodes of
+    `question_trees` so that `final_state["question_trees"]` in the analysis
+    snapshot stays consistent with the returned pairs.
+    """
+    if not previous_qa_pairs:
+        return []
+
+    new_store = EvidenceStore(startup_slug=getattr(company, "name", "") or "")
+    new_store.chunks = list(new_chunks)
+
+    node_by_question = _collect_nodes_by_question(question_trees)
+
+    total = len(previous_qa_pairs)
+
+    async def _process_one(idx: int, qa_pair: Dict[str, Any]) -> Dict[str, Any]:
+        question = qa_pair.get("question") or ""
+        previous_answer = qa_pair.get("answer") or ""
+
+        relevant, top_chunks = _is_question_relevant_to_new_chunks(question, new_store)
+        if not relevant:
+            # Preserve verbatim — do NOT touch answer, citations, provenance.
+            updated = dict(qa_pair)
+        else:
+            enriched_answer = await enrich_existing_answer_with_new_chunks(
+                question=question,
+                previous_answer=previous_answer,
+                new_chunks=top_chunks,
+                company=company,
+                vc_context=vc_context,
+            )
+            updated = dict(qa_pair)
+            updated["answer"] = enriched_answer
+            # Union new chunk ids into chunk_ids for provenance rendering.
+            prev_ids = list(updated.get("chunk_ids") or [])
+            new_ids = [c.chunk_id for c in top_chunks if c.chunk_id]
+            seen: set[str] = set()
+            merged: list[str] = []
+            for cid in prev_ids + new_ids:
+                if cid and cid not in seen:
+                    seen.add(cid)
+                    merged.append(cid)
+            updated["chunk_ids"] = merged
+
+            # Extend chunks_preview with the new chunks so the evidence panel
+            # can render their text immediately without re-retrieval.
+            existing_preview = updated.get("chunks_preview") or ""
+            new_preview_parts = [
+                f"[{c.chunk_id}]: {c.text[:CHUNK_PREVIEW_CHARS]}"
+                f"{'...' if len(c.text) > CHUNK_PREVIEW_CHARS else ''}"
+                for c in top_chunks
+            ]
+            if new_preview_parts:
+                joined_new = "\n---\n".join(new_preview_parts)
+                updated["chunks_preview"] = (
+                    f"{existing_preview}\n---\n{joined_new}"
+                    if existing_preview
+                    else joined_new
+                )
+
+        # Write enriched answer back into the matching tree node.
+        node = node_by_question.get(question)
+        if node is not None:
+            node.answer = updated.get("answer") or previous_answer
+            # Keep node.provenance roughly aligned so the snapshot JSON is sane.
+            prov = {
+                "chunk_ids": updated.get("chunk_ids") or [],
+                "chunks_preview": updated.get("chunks_preview") or "",
+                "web_search_query": updated.get("web_search_query"),
+                "web_search_results": updated.get("web_search_results"),
+                "web_search_used": updated.get("web_search_used", False),
+                "web_search_decision": updated.get("web_search_decision", "enrich: preserved"),
+            }
+            try:
+                node.provenance = prov
+            except Exception:
+                pass
+
+        if on_progress:
+            try:
+                on_progress(idx + 1, total)
+            except Exception:
+                pass
+        return updated
+
+    # Process all pairs concurrently up to MAX_CONCURRENT_LLM_CALLS.
+    tasks = [_process_one(i, qa) for i, qa in enumerate(previous_qa_pairs)]
+    enriched_pairs = await gather_with_concurrency(tasks, limit=MAX_CONCURRENT_LLM_CALLS)
+    return list(enriched_pairs)
+
+
+def write_qa_pairs_into_trees(
+    question_trees: Dict[str, QuestionTree],
+    qa_pairs: List[Dict[str, Any]],
+) -> None:
+    """Write answers from `qa_pairs` back into the matching nodes of `question_trees`.
+
+    Used by the re-evaluation "no new chunks" branch where the previous
+    answers are reused verbatim but the tree structure (decomposed separately)
+    needs populated `node.answer` fields before downstream stages run.
+    """
+    if not question_trees or not qa_pairs:
+        return
+    node_by_question = _collect_nodes_by_question(question_trees)
+    for qa in qa_pairs:
+        question = qa.get("question") or ""
+        node = node_by_question.get(question)
+        if node is None:
+            continue
+        node.answer = qa.get("answer") or ""
+        try:
+            node.provenance = {
+                "chunk_ids": qa.get("chunk_ids") or [],
+                "chunks_preview": qa.get("chunks_preview") or "",
+                "web_search_query": qa.get("web_search_query"),
+                "web_search_results": qa.get("web_search_results"),
+                "web_search_used": qa.get("web_search_used", False),
+                "web_search_decision": qa.get("web_search_decision", "reused"),
+            }
+        except Exception:
+            pass

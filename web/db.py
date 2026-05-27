@@ -30,6 +30,7 @@ WORKER_ACTIVE_STATUSES = {"queued", "claimed", "running", "finalizing"}
 WORKER_TERMINAL_STATUSES = {"done", "error", "interrupted", "stopped"}
 WORKER_EXECUTION_STALE_SECONDS = int(os.getenv("SPECTER_WORKER_STALE_SECONDS", "120"))
 WORKER_QUEUE_STALE_SECONDS = int(os.getenv("SPECTER_WORKER_QUEUE_STALE_SECONDS", "900"))
+SPECTER_PROFILE_BASE_URL = "https://app.tryspecter.com/signals/company/feed/"
 
 
 def _log_supabase_error(
@@ -125,6 +126,109 @@ def _strip_legacy_company_key_suffix(company_key: str | None) -> str:
     return re.sub(r"--legacy-\d+$", "", (company_key or "").strip().lower())
 
 
+def _company_url_from_domain(domain: str | None) -> str | None:
+    text = (domain or "").strip()
+    if not text:
+        return None
+    if text.startswith(("http://", "https://")):
+        return text
+    text = text.lower().removeprefix("www.").split("/", 1)[0]
+    return f"https://{text}" if "." in text else None
+
+
+def _specter_profile_url(specter_company_id: str | None) -> str | None:
+    value = (specter_company_id or "").strip()
+    return f"{SPECTER_PROFILE_BASE_URL}{value}" if value else None
+
+
+def _company_link_metadata_from_payload(
+    payload: dict[str, Any],
+    summary_row: dict[str, Any],
+    *,
+    domain_fallback: str | None = None,
+) -> dict[str, str | None]:
+    domain = (
+        payload.get("domain")
+        or summary_row.get("domain")
+        or domain_fallback
+    )
+    company_url = (
+        payload.get("company_url")
+        or summary_row.get("company_url")
+        or _company_url_from_domain(domain)
+    )
+    specter_company_id = (
+        payload.get("specter_company_id")
+        or summary_row.get("specter_company_id")
+    )
+    specter_profile_url = (
+        payload.get("specter_profile_url")
+        or summary_row.get("specter_profile_url")
+        or _specter_profile_url(specter_company_id)
+    )
+    return {
+        "domain": domain,
+        "company_url": company_url,
+        "specter_company_id": specter_company_id,
+        "specter_profile_url": specter_profile_url,
+    }
+
+
+def _company_lookup_key_from_values(
+    company_name: str | None,
+    startup_slug: str | None,
+    company_key: str | None,
+) -> str:
+    if company_name:
+        return f"name:{_normalize_text_token(company_name)}"
+    if startup_slug:
+        return f"slug:{_normalize_text_token(startup_slug)}"
+    stripped_key = _strip_legacy_company_key_suffix(company_key)
+    return stripped_key or "name:unknown"
+
+
+def _as_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _company_run_dimension_fields(
+    payload: dict[str, Any] | None,
+    *,
+    summary_row: dict[str, Any] | None = None,
+) -> dict[str, float | None]:
+    serialized = _serialize(payload or {})
+    ranking = _serialize(serialized.get("ranking_result") or {})
+    summary = summary_row or ((serialized.get("summary_rows") or [{}]) or [{}])[0]
+    return {
+        "strategy_fit_score": _as_float(
+            ranking.get("strategy_fit_score")
+            if ranking.get("strategy_fit_score") is not None
+            else summary.get("strategy_fit_score")
+        ),
+        "team_score": _as_float(
+            ranking.get("team_score")
+            if ranking.get("team_score") is not None
+            else summary.get("team_score")
+        ),
+        "upside_score": _as_float(
+            ranking.get("risk_adjusted_potential_score")
+            if ranking.get("risk_adjusted_potential_score") is not None
+            else (
+                ranking.get("upside_score")
+                if ranking.get("upside_score") is not None
+                else summary.get("risk_adjusted_potential_score")
+                if summary.get("risk_adjusted_potential_score") is not None
+                else summary.get("upside_score")
+            )
+        ),
+    }
+
+
 def _extract_started_by_fields(payload: dict[str, Any] | None) -> dict[str, Any]:
     source = payload if isinstance(payload, dict) else {}
     started_by = {
@@ -137,6 +241,10 @@ def _extract_started_by_fields(payload: dict[str, Any] | None) -> dict[str, Any]
 
 
 def _company_history_group_key(row: dict[str, Any]) -> str:
+    lookup_key = row.get("company_lookup_key")
+    if lookup_key:
+        return _strip_legacy_company_key_suffix(str(lookup_key))
+
     result_payload = _serialize(row.get("result_payload") or {})
     summary_row = ((result_payload.get("summary_rows") or [{}]) or [{}])[0]
     company_name = (
@@ -225,6 +333,8 @@ def _company_payload_from_result(
             "strategy_fit_score": summary_row.get("strategy_fit_score"),
             "team_score": summary_row.get("team_score"),
             "upside_score": summary_row.get("upside_score"),
+            "upside_ceiling_score": summary_row.get("upside_ceiling_score"),
+            "risk_adjusted_potential_score": summary_row.get("risk_adjusted_potential_score"),
             "bucket": summary_row.get("bucket"),
             "strategy_fit_summary": summary_row.get("strategy_fit_summary"),
             "team_summary": summary_row.get("team_summary"),
@@ -232,6 +342,11 @@ def _company_payload_from_result(
             "key_points": summary_row.get("key_points"),
             "red_flags": summary_row.get("red_flags"),
             "dimension_scores": _serialize(summary_row.get("dimension_scores") or []),
+            "team_subscores": _serialize(summary_row.get("team_subscores") or {}),
+            "potential_subscores": _serialize(summary_row.get("potential_subscores") or {}),
+            "founder_archetype": summary_row.get("founder_archetype"),
+            "stage_context": summary_row.get("stage_context"),
+            "scoring_signals_used": _serialize(summary_row.get("scoring_signals_used") or {}),
         } if summary_row else None,
     }
 
@@ -369,11 +484,18 @@ def _compose_results_payload_from_company_runs(
             "strategy_fit_score",
             "team_score",
             "upside_score",
+            "upside_ceiling_score",
+            "risk_adjusted_potential_score",
             "bucket",
             "strategy_fit_summary",
             "team_summary",
             "potential_summary",
             "dimension_scores",
+            "team_subscores",
+            "potential_subscores",
+            "founder_archetype",
+            "stage_context",
+            "scoring_signals_used",
         ):
             if key in ranking:
                 summary_row[key] = _serialize(ranking.get(key))
@@ -382,6 +504,9 @@ def _compose_results_payload_from_company_runs(
                 continue
             value = _serialize(ranking.get(key))
             summary_row[key] = "\n".join(value) if isinstance(value, list) else value
+        for key in ("domain", "company_url", "specter_company_id", "specter_profile_url"):
+            if not summary_row.get(key) and payload.get(key):
+                summary_row[key] = payload.get(key)
 
         slug = (
             summary_row.get("startup_slug")
@@ -575,8 +700,10 @@ def _persist_company_analysis_row(
     company_name = getattr(company, "name", None) or result_row.get("company_name") or slug
     company_domain = getattr(company, "domain", None)
     company_key = _normalize_company_key(company_name, company_domain, slug)
+    company_lookup_key = _company_lookup_key_from_values(company_name, slug, company_key)
     ranking_result = company_payload.get("ranking_result") or {}
     summary_row = ((company_payload.get("summary_rows") or [{}]) or [{}])[0]
+    dimension_fields = _company_run_dimension_fields(company_payload, summary_row=summary_row)
 
     company_id = _upsert_company(
         client,
@@ -689,12 +816,14 @@ def _persist_company_analysis_row(
                 "job_id": job_uuid,
                 "job_id_legacy": job_id_legacy,
                 "company_key": company_key,
+                "company_lookup_key": company_lookup_key,
                 "company_name": company_name,
                 "startup_slug": slug,
                 "input_order": summary_row.get("specter_input_order"),
                 "decision": company_payload.get("decision"),
                 "total_score": company_payload.get("total_score"),
                 "composite_score": ranking_result.get("composite_score"),
+                **dimension_fields,
                 "bucket": ranking_result.get("bucket"),
                 "mode": run_config.get("input_mode", "pitchdeck"),
                 "run_created_at": datetime.now(timezone.utc).isoformat(),
@@ -1158,6 +1287,372 @@ def queue_specter_worker_job(
     return True
 
 
+_LEADGEN_BATCH_SELECT = (
+    "id,batch_id,generated_at,scoring_version,source,thesis_key,status,lead_count,"
+    "accepted_count,rejected_count,duplicate_count,payload_hash,summary,job_id_legacy,"
+    "approved_at,approved_by_user_id,approved_by_email,approved_by_display_name,approved_by_label,"
+    "rejected_at,rejected_by_user_id,rejected_by_email,rejected_by_display_name,rejected_by_label,"
+    "rejection_reason,created_at,updated_at"
+)
+_LEADGEN_LEAD_SELECT = (
+    "id,intake_id,input_order,company_name,domain,url,leadgen_score,leadgen_bucket,thesis_key,"
+    "thesis_status,eligible,approval_status,rejection_reason,duplicate_of_url,raw_lead,raw_score,"
+    "context_payload,created_at,updated_at"
+)
+_LEADGEN_EVENT_SELECT = (
+    "id,intake_id,lead_id,event_type,actor_user_id,actor_email,actor_display_name,actor_label,"
+    "payload,created_at"
+)
+
+
+def _format_leadgen_batch(row: dict[str, Any]) -> dict[str, Any]:
+    formatted = _serialize(row or {})
+    formatted["intake_id"] = str(formatted.get("id") or "")
+    return formatted
+
+
+def _format_leadgen_lead(row: dict[str, Any]) -> dict[str, Any]:
+    formatted = _serialize(row or {})
+    formatted["lead_id"] = str(formatted.get("id") or "")
+    return formatted
+
+
+def _format_leadgen_event(row: dict[str, Any]) -> dict[str, Any]:
+    formatted = _serialize(row or {})
+    formatted["event_id"] = str(formatted.get("id") or "")
+    return formatted
+
+
+def _leadgen_actor_event_fields(actor: dict[str, Any] | None) -> dict[str, Any]:
+    actor = actor or {}
+    return {
+        "actor_user_id": actor.get("started_by_user_id"),
+        "actor_email": actor.get("started_by_email"),
+        "actor_display_name": actor.get("started_by_display_name"),
+        "actor_label": actor.get("started_by_label"),
+    }
+
+
+def _leadgen_actor_batch_fields(prefix: str, actor: dict[str, Any] | None) -> dict[str, Any]:
+    actor = actor or {}
+    return {
+        f"{prefix}_by_user_id": actor.get("started_by_user_id"),
+        f"{prefix}_by_email": actor.get("started_by_email"),
+        f"{prefix}_by_display_name": actor.get("started_by_display_name"),
+        f"{prefix}_by_label": actor.get("started_by_label"),
+    }
+
+
+def _insert_leadgen_event(
+    client: Client,
+    *,
+    intake_id: str,
+    event_type: str,
+    actor: dict[str, Any] | None = None,
+    payload: dict[str, Any] | None = None,
+    lead_id: str | None = None,
+) -> None:
+    try:
+        client.table("leadgen_intake_events").insert(
+            {
+                "intake_id": intake_id,
+                "lead_id": lead_id,
+                "event_type": event_type,
+                **_leadgen_actor_event_fields(actor),
+                "payload": _serialize(payload or {}),
+            }
+        ).execute()
+    except Exception as exc:
+        _log_supabase_error("insert_leadgen_event", "leadgen_intake_events", exc)
+
+
+def _load_leadgen_batch_by_field(field: str, value: str) -> dict[str, Any] | None:
+    client = _get_client()
+    if not client or not value:
+        return None
+    try:
+        rows = (
+            client.table("leadgen_intake_batches")
+            .select(_LEADGEN_BATCH_SELECT)
+            .eq(field, value)
+            .limit(1)
+            .execute()
+        ).data or []
+        return _format_leadgen_batch(rows[0]) if rows else None
+    except Exception as exc:
+        _log_supabase_error("load_leadgen_batch", "leadgen_intake_batches", exc)
+        return None
+
+
+def load_leadgen_intake_by_batch_id(batch_id: str) -> dict[str, Any] | None:
+    return _load_leadgen_batch_by_field("batch_id", batch_id)
+
+
+def create_leadgen_intake(
+    *,
+    batch: dict[str, Any],
+    leads: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Persist a LeadGen batch as pending human approval.
+
+    Returns a small status envelope:
+    - created: new intake inserted
+    - existing: same batch_id and same payload_hash already exists
+    - conflict: same batch_id exists with a different payload_hash
+    """
+    client = _get_client()
+    if not client:
+        return None
+
+    batch_payload = _serialize(batch)
+    batch_id = str(batch_payload.get("batch_id") or "").strip()
+    payload_hash = str(batch_payload.get("payload_hash") or "").strip()
+    if not batch_id or not payload_hash:
+        return None
+
+    try:
+        existing = (
+            client.table("leadgen_intake_batches")
+            .select(_LEADGEN_BATCH_SELECT)
+            .eq("batch_id", batch_id)
+            .limit(1)
+            .execute()
+        ).data or []
+        if existing:
+            formatted = _format_leadgen_batch(existing[0])
+            if str(formatted.get("payload_hash") or "") != payload_hash:
+                return {"status": "conflict", "batch": formatted}
+            return {"status": "existing", "batch": formatted}
+
+        inserted = (
+            client.table("leadgen_intake_batches")
+            .insert(batch_payload)
+            .execute()
+        ).data or []
+        if not inserted:
+            return None
+        intake = _format_leadgen_batch(inserted[0])
+        intake_id = intake["intake_id"]
+        lead_payloads = [
+            {**_serialize(lead), "intake_id": intake_id}
+            for lead in leads
+        ]
+        if lead_payloads:
+            client.table("leadgen_intake_leads").insert(lead_payloads).execute()
+        _insert_leadgen_event(
+            client,
+            intake_id=intake_id,
+            event_type="ingested",
+            payload={
+                "batch_id": batch_id,
+                "lead_count": batch_payload.get("lead_count"),
+                "accepted_count": batch_payload.get("accepted_count"),
+                "rejected_count": batch_payload.get("rejected_count"),
+                "duplicate_count": batch_payload.get("duplicate_count"),
+            },
+        )
+        detail = load_leadgen_intake(intake_id)
+        return {"status": "created", "batch": detail["batch"] if detail else intake}
+    except Exception as exc:
+        _log_supabase_error("create_leadgen_intake", "leadgen_intake_batches,leadgen_intake_leads", exc)
+        return None
+
+
+def list_leadgen_intake_batches(
+    *,
+    status: str = "pending",
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    client = _get_client()
+    if not client:
+        return []
+
+    safe_limit = max(1, min(int(limit or 50), 200))
+    normalized_status = (status or "pending").strip().lower()
+    try:
+        query = (
+            client.table("leadgen_intake_batches")
+            .select(_LEADGEN_BATCH_SELECT)
+            .order("created_at", desc=True)
+            .limit(safe_limit)
+        )
+        if normalized_status != "all":
+            query = query.eq("status", normalized_status)
+        rows = query.execute().data or []
+        return [_format_leadgen_batch(row) for row in rows]
+    except Exception as exc:
+        _log_supabase_error("list_leadgen_intake_batches", "leadgen_intake_batches", exc)
+        return []
+
+
+def load_leadgen_intake(intake_id: str) -> dict[str, Any] | None:
+    client = _get_client()
+    if not client:
+        return None
+    key = str(intake_id or "").strip()
+    if not key:
+        return None
+
+    try:
+        batch_rows = (
+            client.table("leadgen_intake_batches")
+            .select(_LEADGEN_BATCH_SELECT)
+            .eq("id", key)
+            .limit(1)
+            .execute()
+        ).data or []
+        if not batch_rows:
+            return None
+        lead_rows = (
+            client.table("leadgen_intake_leads")
+            .select(_LEADGEN_LEAD_SELECT)
+            .eq("intake_id", key)
+            .order("input_order")
+            .limit(1000)
+            .execute()
+        ).data or []
+        event_rows = (
+            client.table("leadgen_intake_events")
+            .select(_LEADGEN_EVENT_SELECT)
+            .eq("intake_id", key)
+            .order("created_at", desc=True)
+            .limit(100)
+            .execute()
+        ).data or []
+        return {
+            "batch": _format_leadgen_batch(batch_rows[0]),
+            "leads": [_format_leadgen_lead(row) for row in lead_rows],
+            "events": [_format_leadgen_event(row) for row in event_rows],
+        }
+    except Exception as exc:
+        _log_supabase_error("load_leadgen_intake", "leadgen_intake_batches,leadgen_intake_leads", exc)
+        return None
+
+
+def mark_leadgen_intake_queued(
+    *,
+    intake_id: str,
+    lead_ids: list[str],
+    job_id_legacy: str,
+    actor: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    client = _get_client()
+    if not client:
+        return None
+    safe_lead_ids = [str(item) for item in lead_ids if str(item or "").strip()]
+    if not safe_lead_ids:
+        return None
+    now = _utcnow().isoformat()
+
+    try:
+        client.table("leadgen_intake_leads").update(
+            {
+                "approval_status": "approved",
+                "eligible": True,
+                "updated_at": now,
+            }
+        ).eq("intake_id", intake_id).in_("id", safe_lead_ids).execute()
+
+        client.table("leadgen_intake_batches").update(
+            {
+                "status": "queued",
+                "job_id_legacy": job_id_legacy,
+                "approved_at": now,
+                **_leadgen_actor_batch_fields("approved", actor),
+                "updated_at": now,
+            }
+        ).eq("id", intake_id).execute()
+
+        _insert_leadgen_event(
+            client,
+            intake_id=intake_id,
+            event_type="approved_and_queued",
+            actor=actor,
+            payload={"job_id_legacy": job_id_legacy, "lead_ids": safe_lead_ids},
+        )
+        return load_leadgen_intake(intake_id)
+    except Exception as exc:
+        _log_supabase_error("mark_leadgen_intake_queued", "leadgen_intake_batches,leadgen_intake_leads", exc)
+        return None
+
+
+def reject_leadgen_intake(
+    *,
+    intake_id: str,
+    actor: dict[str, Any] | None = None,
+    reason: str | None = None,
+    lead_ids: list[str] | None = None,
+    reject_all: bool = False,
+) -> dict[str, Any] | None:
+    client = _get_client()
+    if not client:
+        return None
+    now = _utcnow().isoformat()
+    safe_reason = (reason or "").strip()[:1000] or None
+    safe_lead_ids = [str(item) for item in (lead_ids or []) if str(item or "").strip()]
+
+    try:
+        if reject_all:
+            client.table("leadgen_intake_leads").update(
+                {
+                    "approval_status": "rejected",
+                    "eligible": False,
+                    "rejection_reason": safe_reason,
+                    "updated_at": now,
+                }
+            ).eq("intake_id", intake_id).eq("approval_status", "pending").execute()
+            batch_update = {
+                "status": "rejected",
+                "rejected_at": now,
+                **_leadgen_actor_batch_fields("rejected", actor),
+                "rejection_reason": safe_reason,
+                "updated_at": now,
+            }
+            client.table("leadgen_intake_batches").update(batch_update).eq("id", intake_id).execute()
+        elif safe_lead_ids:
+            client.table("leadgen_intake_leads").update(
+                {
+                    "approval_status": "rejected",
+                    "eligible": False,
+                    "rejection_reason": safe_reason,
+                    "updated_at": now,
+                }
+            ).eq("intake_id", intake_id).in_("id", safe_lead_ids).execute()
+
+            remaining = (
+                client.table("leadgen_intake_leads")
+                .select("id", count="exact", head=True)
+                .eq("intake_id", intake_id)
+                .eq("approval_status", "pending")
+                .eq("eligible", True)
+                .execute()
+            )
+            if (remaining.count or 0) == 0:
+                client.table("leadgen_intake_batches").update(
+                    {
+                        "status": "rejected",
+                        "rejected_at": now,
+                        **_leadgen_actor_batch_fields("rejected", actor),
+                        "rejection_reason": safe_reason,
+                        "updated_at": now,
+                    }
+                ).eq("id", intake_id).execute()
+        else:
+            return None
+
+        _insert_leadgen_event(
+            client,
+            intake_id=intake_id,
+            event_type="rejected" if reject_all else "leads_rejected",
+            actor=actor,
+            payload={"reason": safe_reason, "lead_ids": safe_lead_ids, "reject_all": reject_all},
+        )
+        return load_leadgen_intake(intake_id)
+    except Exception as exc:
+        _log_supabase_error("reject_leadgen_intake", "leadgen_intake_batches,leadgen_intake_leads", exc)
+        return None
+
+
 def list_claimable_specter_worker_jobs(limit: int = 10) -> list[dict[str, Any]]:
     client = _get_client()
     if not client:
@@ -1347,16 +1842,19 @@ def insert_analysis_event(
         return
     try:
         job_uuid = _get_job_uuid(client, job_id_legacy)
-        client.table("analysis_events").insert(
-            {
-                "job_id": job_uuid,
-                "job_id_legacy": job_id_legacy,
-                "event_type": event_type,
-                "stage": stage,
-                "message": message,
-                "payload": _serialize(payload or {}),
-            }
-        ).execute()
+        row: dict[str, Any] = {
+            "job_id_legacy": job_id_legacy,
+            "event_type": event_type,
+            "stage": stage,
+            "message": message,
+            "payload": _serialize(payload or {}),
+        }
+        # Only include job_id when we have a real UUID — re-evaluation jobs
+        # (re-XXXXXX) have no row in the jobs table so _get_job_uuid returns
+        # None. Omitting the field lets the nullable FK default to NULL cleanly.
+        if job_uuid is not None:
+            row["job_id"] = job_uuid
+        client.table("analysis_events").insert(row).execute()
     except Exception as exc:
         _log_supabase_error("insert_analysis_event", "analysis_events", exc, job_id_legacy=job_id_legacy)
 
@@ -1934,8 +2432,9 @@ def _load_company_run_rows_for_job(client: Client, job_id_legacy: str) -> list[d
         rows = (
             client.table("company_runs")
             .select(
-                "company_key, company_name, startup_slug, job_id_legacy, decision, total_score, "
-                "composite_score, bucket, mode, input_order, run_created_at, created_at, result_payload"
+                "company_key, company_lookup_key, company_name, startup_slug, job_id_legacy, decision, total_score, "
+                "composite_score, strategy_fit_score, team_score, upside_score, bucket, mode, input_order, "
+                "run_created_at, created_at, result_payload"
             )
             .eq("job_id_legacy", job_id_legacy)
             .limit(500)
@@ -2445,33 +2944,13 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
         return []
 
 
-def _fetch_company_run_rows(
-    client: Client,
-    limit_runs: int,
-    *,
-    include_result_payload: bool = True,
-) -> list[dict[str, Any]]:
-    select_fields = [
-        "company_key",
-        "company_name",
-        "startup_slug",
-        "job_id_legacy",
-        "decision",
-        "total_score",
-        "composite_score",
-        "bucket",
-        "mode",
-        "input_order",
-        "run_created_at",
-        "created_at",
-        "started_by_user_id",
-        "started_by_email",
-        "started_by_display_name",
-        "started_by_label",
-    ]
-    if include_result_payload:
-        select_fields.insert(12, "result_payload")
-    select_clause = ", ".join(select_fields)
+def _fetch_company_run_rows(client: Client, limit_runs: int) -> list[dict[str, Any]]:
+    select_clause = (
+        "company_key, company_lookup_key, company_name, startup_slug, job_id_legacy, decision, total_score, "
+        "composite_score, strategy_fit_score, team_score, upside_score, bucket, mode, input_order, "
+        "run_created_at, created_at, result_payload, "
+        "started_by_user_id, started_by_email, started_by_display_name, started_by_label"
+    )
     limits_to_try: list[int] = []
     for candidate in (limit_runs, min(limit_runs, 250), min(limit_runs, 100), 50):
         if candidate > 0 and candidate not in limits_to_try:
@@ -2502,8 +2981,9 @@ def _fetch_chat_company_run_rows(client: Client, limit_runs: int = 2000) -> list
         rows = (
             client.table("company_runs")
             .select(
-                "company_id, company_key, company_name, startup_slug, job_id_legacy, decision, "
-                "total_score, composite_score, bucket, mode, input_order, run_created_at, created_at, result_payload"
+                "company_id, company_key, company_lookup_key, company_name, startup_slug, job_id_legacy, decision, "
+                "total_score, composite_score, strategy_fit_score, team_score, upside_score, bucket, mode, "
+                "input_order, run_created_at, created_at, result_payload"
             )
             .order("run_created_at", desc=True)
             .limit(limit_runs)
@@ -2637,29 +3117,18 @@ def list_company_histories(
     limit_runs: int = 1000,
     *,
     perform_maintenance: bool = True,
-    include_run_details: bool = True,
-    include_result_payload: bool | None = None,
 ) -> list[dict[str, Any]]:
     """Return grouped company histories with per-run records."""
     client = _get_client()
     if not client:
         return []
 
-    fetch_result_payload = include_run_details if include_result_payload is None else include_result_payload
     try:
-        rows_data = _fetch_company_run_rows(
-            client,
-            limit_runs,
-            include_result_payload=fetch_result_payload,
-        )
+        rows_data = _fetch_company_run_rows(client, limit_runs)
         if perform_maintenance:
             if not rows_data:
                 backfill_company_runs_from_analyses()
-                rows_data = _fetch_company_run_rows(
-                    client,
-                    limit_runs,
-                    include_result_payload=fetch_result_payload,
-                )
+                rows_data = _fetch_company_run_rows(client, limit_runs)
             else:
                 inserted = _reconcile_missing_company_runs(
                     client,
@@ -2667,11 +3136,7 @@ def list_company_histories(
                     limit_jobs=max(limit_runs, 200),
                 )
                 if inserted:
-                    rows_data = _fetch_company_run_rows(
-                        client,
-                        limit_runs,
-                        include_result_payload=fetch_result_payload,
-                    )
+                    rows_data = _fetch_company_run_rows(client, limit_runs)
 
         grouped: dict[str, dict[str, Any]] = {}
         for row in rows_data:
@@ -2694,11 +3159,7 @@ def list_company_histories(
                 "started_by_email": row.get("started_by_email"),
                 "started_by_display_name": row.get("started_by_display_name"),
                 "started_by_label": row.get("started_by_label"),
-                "results": _compact_company_run_payload(
-                    row.get("result_payload"),
-                    include_audit_rows=include_run_details,
-                    fallback_row=row,
-                ),
+                "results": _compact_company_run_payload(row.get("result_payload")),
             }
             entry = grouped.setdefault(
                 group_key,
@@ -2759,51 +3220,259 @@ def list_company_histories(
         return []
 
 
+_COMPANY_SUMMARY_SORTS = {"latest", "top_scored", "strategy_fit", "team", "upside"}
+
+
+def _normalize_company_summary_sort(sort: str | None) -> str:
+    normalized = (sort or "latest").strip().lower()
+    return normalized if normalized in _COMPANY_SUMMARY_SORTS else "latest"
+
+
+def _format_company_summary_row(row: dict[str, Any]) -> dict[str, Any]:
+    lookup_key = row.get("company_lookup_key") or _company_lookup_key_from_values(
+        row.get("company_name"),
+        row.get("latest_startup_slug"),
+        row.get("company_key"),
+    )
+    return {
+        "company_lookup_key": lookup_key,
+        "company_key": lookup_key,
+        "company_name": row.get("company_name") or row.get("latest_startup_slug") or lookup_key,
+        "run_count": int(row.get("run_count") or 0),
+        "latest_job_id": row.get("latest_job_id"),
+        "latest_startup_slug": row.get("latest_startup_slug"),
+        "latest_decision": row.get("latest_decision"),
+        "latest_total_score": row.get("latest_total_score"),
+        "latest_score": row.get("latest_composite_score"),
+        "latest_composite_score": row.get("latest_composite_score"),
+        "latest_bucket": row.get("latest_bucket"),
+        "latest_mode": row.get("latest_mode"),
+        "latest_input_order": row.get("latest_input_order"),
+        "latest_run_at": row.get("latest_run_at"),
+        "latest_strategy_fit_score": row.get("latest_strategy_fit_score"),
+        "latest_team_score": row.get("latest_team_score"),
+        "latest_upside_score": row.get("latest_upside_score"),
+        "started_by_user_id": row.get("latest_started_by_user_id"),
+        "started_by_email": row.get("latest_started_by_email"),
+        "started_by_display_name": row.get("latest_started_by_display_name"),
+        "started_by_label": row.get("latest_started_by_label"),
+    }
+
+
+def list_company_summaries(
+    *,
+    limit: int = 200,
+    offset: int = 0,
+    sort: str = "latest",
+) -> dict[str, Any]:
+    """Return paginated company summaries without per-run payloads."""
+    client = _get_client()
+    if not client:
+        return {"companies": [], "total": 0, "next_offset": None}
+
+    safe_limit = max(1, min(int(limit or 200), 500))
+    safe_offset = max(0, int(offset or 0))
+    safe_sort = _normalize_company_summary_sort(sort)
+    try:
+        response = client.rpc(
+            "company_run_summaries",
+            {
+                "p_limit": safe_limit,
+                "p_offset": safe_offset,
+                "p_sort": safe_sort,
+            },
+        ).execute()
+        rows = response.data or []
+        total = int(rows[0].get("total_count") or 0) if rows else 0
+        companies = [_format_company_summary_row(row) for row in rows]
+        next_offset = safe_offset + len(companies)
+        return {
+            "companies": companies,
+            "total": total,
+            "next_offset": next_offset if next_offset < total else None,
+        }
+    except Exception as exc:
+        _log_supabase_error("list_company_summaries", "company_run_summaries", exc)
+        return {"companies": [], "total": 0, "next_offset": None}
+
+
+def _fetch_company_detail_rows(client: Client, company_lookup_key: str) -> list[dict[str, Any]]:
+    try:
+        response = client.rpc(
+            "company_run_detail",
+            {"p_company_lookup_key": company_lookup_key},
+        ).execute()
+        return response.data or []
+    except Exception as exc:
+        _log_supabase_error(
+            "company_run_detail",
+            "company_run_detail",
+            exc,
+        )
+
+    rows = _fetch_chat_company_run_rows(client, limit_runs=2000)
+    return [
+        row for row in rows
+        if _company_history_group_key(row) == company_lookup_key
+    ]
+
+
+def _fetch_company_domains(client: Client, company_ids: list[str]) -> dict[str, str]:
+    ids = [str(company_id) for company_id in company_ids if company_id]
+    if not ids or not hasattr(client, "table"):
+        return {}
+    try:
+        response = (
+            client.table("companies")
+            .select("id,domain")
+            .in_("id", ids)
+            .execute()
+        )
+        return {
+            str(row.get("id")): row.get("domain")
+            for row in (response.data or [])
+            if row.get("id") and row.get("domain")
+        }
+    except Exception as exc:
+        _log_supabase_error("fetch_company_domains", "companies", exc)
+        return {}
+
+
+def load_company_history_detail(company_lookup_key: str) -> dict[str, Any] | None:
+    """Load run details and compact payloads for a single grouped company identity."""
+    client = _get_client()
+    if not client:
+        return None
+
+    normalized_lookup_key = (company_lookup_key or "").strip().lower()
+    if not normalized_lookup_key:
+        return None
+
+    try:
+        rows = _fetch_company_detail_rows(client, normalized_lookup_key)
+        if not rows:
+            return None
+
+        company_domain_by_id = _fetch_company_domains(
+            client,
+            [row.get("company_id") for row in rows if row.get("company_id")],
+        )
+        runs: list[dict[str, Any]] = []
+        seen_job_ids: set[str] = set()
+        latest_name = None
+        latest_score = None
+        latest_total_score = None
+        latest_run_at = None
+        latest_input_order = None
+        for row in sorted(
+            rows,
+            key=lambda item: str(item.get("run_created_at") or item.get("created_at") or ""),
+            reverse=True,
+        ):
+            job_id = row.get("job_id_legacy")
+            if job_id and job_id in seen_job_ids:
+                continue
+            if job_id:
+                seen_job_ids.add(job_id)
+            result_payload = _compact_company_run_payload(
+                row.get("result_payload"),
+                domain_fallback=company_domain_by_id.get(str(row.get("company_id") or "")),
+            )
+            run_created_at = row.get("run_created_at") or row.get("created_at")
+            latest_name = latest_name or row.get("company_name") or result_payload.get("company_name")
+            latest_score = latest_score if latest_score is not None else row.get("composite_score")
+            latest_total_score = latest_total_score if latest_total_score is not None else row.get("total_score")
+            latest_run_at = latest_run_at or run_created_at
+            latest_input_order = latest_input_order if latest_input_order is not None else row.get("input_order")
+            runs.append(
+                {
+                    "job_id": job_id,
+                    "startup_slug": row.get("startup_slug") or result_payload.get("startup_slug"),
+                    "decision": row.get("decision"),
+                    "total_score": row.get("total_score"),
+                    "composite_score": row.get("composite_score"),
+                    "strategy_fit_score": row.get("strategy_fit_score"),
+                    "team_score": row.get("team_score"),
+                    "upside_score": row.get("upside_score"),
+                    "bucket": row.get("bucket"),
+                    "mode": row.get("mode"),
+                    "input_order": row.get("input_order"),
+                    "created_at": run_created_at,
+                    "started_by_user_id": row.get("started_by_user_id"),
+                    "started_by_email": row.get("started_by_email"),
+                    "started_by_display_name": row.get("started_by_display_name"),
+                    "started_by_label": row.get("started_by_label"),
+                    "results": result_payload,
+                }
+            )
+
+        return {
+            "company_lookup_key": normalized_lookup_key,
+            "company_key": normalized_lookup_key,
+            "company_name": latest_name or "Unknown company",
+            "run_count": len(runs),
+            "latest_score": latest_score,
+            "latest_total_score": latest_total_score,
+            "latest_input_order": latest_input_order,
+            "latest_run_at": latest_run_at,
+            "runs": runs,
+        }
+    except Exception as exc:
+        _log_supabase_error("load_company_history_detail", "company_run_detail", exc)
+        return None
+
+
 def _compact_company_run_payload(
     payload: dict[str, Any] | None,
     *,
-    include_audit_rows: bool = True,
-    fallback_row: dict[str, Any] | None = None,
+    domain_fallback: str | None = None,
 ) -> dict[str, Any]:
     serialized = _serialize(payload or {})
-    fallback = fallback_row or {}
     summary_row = ((serialized.get("summary_rows") or [{}]) or [{}])[0]
     ranking = _serialize(serialized.get("ranking_result") or {})
-    compacted = {
-        "mode": serialized.get("mode") or fallback.get("mode"),
+    link_metadata = _company_link_metadata_from_payload(
+        serialized,
+        summary_row,
+        domain_fallback=domain_fallback,
+    )
+    return {
+        "mode": serialized.get("mode"),
         "source_mode": serialized.get("source_mode"),
-        "startup_slug": serialized.get("startup_slug") or summary_row.get("startup_slug") or fallback.get("startup_slug"),
-        "company_name": serialized.get("company_name") or summary_row.get("company_name") or fallback.get("company_name"),
-        "decision": serialized.get("decision") or summary_row.get("decision") or fallback.get("decision"),
-        "total_score": serialized.get("total_score") or summary_row.get("total_score") or fallback.get("total_score"),
+        "startup_slug": serialized.get("startup_slug") or summary_row.get("startup_slug"),
+        "company_name": serialized.get("company_name") or summary_row.get("company_name"),
+        **link_metadata,
+        "decision": serialized.get("decision") or summary_row.get("decision"),
+        "total_score": serialized.get("total_score") or summary_row.get("total_score"),
         "avg_pro": serialized.get("avg_pro"),
         "avg_contra": serialized.get("avg_contra"),
         "summary_rows": [summary_row] if summary_row else [],
+        "qa_provenance_rows": _serialize(serialized.get("qa_provenance_rows") or []),
+        "argument_rows": _serialize(serialized.get("argument_rows") or []),
         "founders": serialized.get("founders") or summary_row.get("founders") or [],
         "team_members": serialized.get("team_members") or summary_row.get("team_members") or [],
         "ranking_result": {
             "rank": ranking.get("rank") or summary_row.get("rank"),
             "percentile": ranking.get("percentile") or summary_row.get("percentile"),
-            "composite_score": ranking.get("composite_score") or summary_row.get("composite_score") or fallback.get("composite_score"),
+            "composite_score": ranking.get("composite_score") or summary_row.get("composite_score"),
             "strategy_fit_score": ranking.get("strategy_fit_score") or summary_row.get("strategy_fit_score"),
             "team_score": ranking.get("team_score") or summary_row.get("team_score"),
             "upside_score": ranking.get("upside_score") or summary_row.get("upside_score"),
-            "bucket": ranking.get("bucket") or summary_row.get("bucket") or fallback.get("bucket"),
+            "upside_ceiling_score": ranking.get("upside_ceiling_score") or summary_row.get("upside_ceiling_score"),
+            "risk_adjusted_potential_score": ranking.get("risk_adjusted_potential_score") or summary_row.get("risk_adjusted_potential_score"),
+            "bucket": ranking.get("bucket") or summary_row.get("bucket"),
             "strategy_fit_summary": ranking.get("strategy_fit_summary") or summary_row.get("strategy_fit_summary"),
             "team_summary": ranking.get("team_summary") or summary_row.get("team_summary"),
             "potential_summary": ranking.get("potential_summary") or summary_row.get("potential_summary"),
             "key_points": ranking.get("key_points") or summary_row.get("key_points"),
             "red_flags": ranking.get("red_flags") or summary_row.get("red_flags"),
             "dimension_scores": _serialize(ranking.get("dimension_scores") or summary_row.get("dimension_scores") or []),
+            "team_subscores": _serialize(ranking.get("team_subscores") or summary_row.get("team_subscores") or {}),
+            "potential_subscores": _serialize(ranking.get("potential_subscores") or summary_row.get("potential_subscores") or {}),
+            "founder_archetype": ranking.get("founder_archetype") or summary_row.get("founder_archetype"),
+            "stage_context": ranking.get("stage_context") or summary_row.get("stage_context"),
+            "scoring_signals_used": _serialize(ranking.get("scoring_signals_used") or summary_row.get("scoring_signals_used") or {}),
         },
     }
-    if include_audit_rows:
-        compacted["qa_provenance_rows"] = _serialize(serialized.get("qa_provenance_rows") or [])
-        compacted["argument_rows"] = _serialize(serialized.get("argument_rows") or [])
-    else:
-        compacted["qa_provenance_rows"] = []
-        compacted["argument_rows"] = []
-    return compacted
 
 
 def load_company_chat_context(company_lookup_key: str) -> dict[str, Any] | None:
@@ -2816,11 +3485,7 @@ def load_company_chat_context(company_lookup_key: str) -> dict[str, Any] | None:
     if not normalized_lookup_key:
         return None
 
-    rows = _fetch_chat_company_run_rows(client, limit_runs=2000)
-    matching_rows = [
-        row for row in rows
-        if _company_history_group_key(row) == normalized_lookup_key
-    ]
+    matching_rows = _fetch_company_detail_rows(client, normalized_lookup_key)
     if not matching_rows:
         return None
 
@@ -3115,16 +3780,20 @@ def _extract_company_runs_from_payload(
     if payload_mode == "single":
         company_name = serialized.get("company_name") or serialized.get("startup_slug") or job_id_legacy
         company_key = _normalize_company_key(company_name, None, serialized.get("startup_slug"))
+        company_lookup_key = _company_lookup_key_from_values(company_name, serialized.get("startup_slug"), company_key)
         ranking = _serialize(serialized.get("ranking_result") or {})
+        dimension_fields = _company_run_dimension_fields(serialized)
         return [{
             "job_id_legacy": job_id_legacy,
             "company_key": company_key,
+            "company_lookup_key": company_lookup_key,
             "company_name": company_name,
             "startup_slug": serialized.get("startup_slug"),
             "input_order": None,
             "decision": serialized.get("decision"),
             "total_score": serialized.get("total_score"),
             "composite_score": ranking.get("composite_score"),
+            **dimension_fields,
             "bucket": ranking.get("bucket"),
             "mode": mode or payload_mode,
             "run_created_at": created_at,
@@ -3137,6 +3806,7 @@ def _extract_company_runs_from_payload(
         company_name = summary_row.get("company_name") or summary_row.get("startup_slug") or job_id_legacy
         startup_slug = summary_row.get("startup_slug")
         company_key = _normalize_company_key(company_name, None, startup_slug)
+        company_lookup_key = _company_lookup_key_from_values(company_name, startup_slug, company_key)
         row_payload = _compact_company_run_payload(
             {
                 "mode": "single",
@@ -3166,15 +3836,18 @@ def _extract_company_runs_from_payload(
                 },
             }
         )
+        dimension_fields = _company_run_dimension_fields(row_payload, summary_row=summary_row)
         rows.append({
             "job_id_legacy": job_id_legacy,
             "company_key": company_key,
+            "company_lookup_key": company_lookup_key,
             "company_name": company_name,
             "startup_slug": startup_slug,
             "input_order": summary_row.get("specter_input_order"),
             "decision": summary_row.get("decision"),
             "total_score": summary_row.get("total_score"),
             "composite_score": summary_row.get("composite_score"),
+            **dimension_fields,
             "bucket": summary_row.get("bucket"),
             "mode": mode or payload_mode,
             "run_created_at": created_at,
@@ -3559,6 +4232,11 @@ def set_company_fundraising(company_id: str, fundraising: bool) -> dict[str, Any
 def get_company_chunks(company_id: str) -> list[dict[str, Any]]:
     """Return evidence chunks for a company, excluding Specter-sourced files.
 
+    Only chunks from startup-uploaded pitch decks (storage_path starting with
+    'startup_uploads/') are returned. Old pipeline job-based pitch decks
+    (storage_path starting with 'jobs/') are excluded — those were internal
+    pipeline artifacts and would cause massive duplication in the evidence view.
+
     Chunks are joined through pitch_decks → company_id. Rows whose source_file
     matches any Specter file (companies.csv / people.csv) are filtered out at
     the DB query level and never returned to callers.
@@ -3567,11 +4245,12 @@ def get_company_chunks(company_id: str) -> list[dict[str, Any]]:
     if not client or not company_id:
         return []
     try:
-        # Fetch pitch_deck ids for this company first.
+        # Fetch only startup-uploaded pitch decks (exclude old jobs/ pipeline artifacts).
         decks = (
             client.table("pitch_decks")
-            .select("id")
+            .select("id, storage_path")
             .eq("company_id", company_id)
+            .like("storage_path", "startup_uploads/%")
             .execute()
         )
         deck_ids = [d["id"] for d in (decks.data or []) if d.get("id")]
@@ -3814,7 +4493,7 @@ def get_matches_for_vc(vc_profile_id: str) -> list[dict[str, Any]]:
             .select(
                 "id, strategy_fit_score, team_score, potential_score, composite_score, "
                 "bucket, status, created_at, "
-                "companies(id, name, industry, tagline, about, fundraising)"
+                "companies(id, name, industry, tagline, about, fundraising, data_room_enabled)"
             )
             .eq("vc_profile_id", vc_profile_id)
             .order("composite_score", desc=True)
@@ -3932,6 +4611,12 @@ def create_debate(
         return None
 
 
+_DEBATE_COLUMNS = (
+    "id, match_id, company_id, vc_profile_id, status, current_round, max_rounds, "
+    "summary, awaiting_input_from, created_at, updated_at"
+)
+
+
 def get_debate_by_id(debate_id: str) -> dict[str, Any] | None:
     """Return a debates row by id."""
     client = _get_client()
@@ -3940,7 +4625,7 @@ def get_debate_by_id(debate_id: str) -> dict[str, Any] | None:
     try:
         rows = (
             client.table("debates")
-            .select("id, match_id, company_id, vc_profile_id, status, current_round, max_rounds, summary, created_at, updated_at")
+            .select(_DEBATE_COLUMNS)
             .eq("id", debate_id)
             .limit(1)
             .execute()
@@ -3959,7 +4644,7 @@ def get_debate_by_match(match_id: str) -> dict[str, Any] | None:
     try:
         rows = (
             client.table("debates")
-            .select("id, match_id, company_id, vc_profile_id, status, current_round, max_rounds, summary, created_at, updated_at")
+            .select(_DEBATE_COLUMNS)
             .eq("match_id", match_id)
             .limit(1)
             .execute()
@@ -4004,23 +4689,84 @@ def complete_debate(debate_id: str, summary: str) -> bool:
 
 
 def pause_debate(debate_id: str) -> bool:
-    """Set debate status to paused."""
+    """Set debate status to paused, only if not already paused.
+
+    Deliberately does NOT touch ``awaiting_input_from``. When the orchestrator
+    pauses a debate because the VC agent requested evidence, it uses the
+    dedicated :func:`pause_debate_for_evidence` helper, which sets both
+    ``status`` and ``awaiting_input_from`` atomically. This generic pause is
+    used for VC-initiated manual pauses and must not clobber that field.
+    """
     client = _get_client()
     if not client or not debate_id:
         return False
     try:
-        client.table("debates").update({
-            "status": "paused",
-            "updated_at": _utcnow().isoformat(),
-        }).eq("id", debate_id).execute()
+        (
+            client.table("debates")
+            .update({"status": "paused", "updated_at": _utcnow().isoformat()})
+            .eq("id", debate_id)
+            .neq("status", "paused")
+            .execute()
+        )
         return True
     except Exception as exc:
         _log_supabase_error("pause_debate", "debates", exc)
         return False
 
 
+def pause_debate_for_evidence(debate_id: str, topic: str | None = None) -> bool:
+    """Atomic pause + flag debate as awaiting founder evidence.
+
+    ``topic`` is accepted for API symmetry with the orchestrator call site; the
+    topic itself is stored on the paired ``evidence_request`` debate_messages
+    row (in ``info_request``), not duplicated here.
+    """
+    client = _get_client()
+    if not client or not debate_id:
+        return False
+    try:
+        client.table("debates").update({
+            "status": "paused",
+            "awaiting_input_from": "founder",
+            "updated_at": _utcnow().isoformat(),
+        }).eq("id", debate_id).execute()
+        return True
+    except Exception as exc:
+        _log_supabase_error("pause_debate_for_evidence", "debates", exc)
+        return False
+
+
+def claim_founder_response(debate_id: str) -> bool:
+    """Atomically clear ``awaiting_input_from`` so exactly one response wins.
+
+    Returns True iff this call was the one that flipped the flag. If a prior
+    response (from a concurrent click or a background resume) already cleared
+    it, this returns False and the caller must return HTTP 409.
+    """
+    client = _get_client()
+    if not client or not debate_id:
+        return False
+    try:
+        result = (
+            client.table("debates")
+            .update({"awaiting_input_from": None, "updated_at": _utcnow().isoformat()})
+            .eq("id", debate_id)
+            .eq("awaiting_input_from", "founder")
+            .execute()
+        )
+        return bool(result.data)
+    except Exception as exc:
+        _log_supabase_error("claim_founder_response", "debates", exc)
+        return False
+
+
 def resume_debate(debate_id: str) -> bool:
-    """Set debate status back to active."""
+    """Set debate status back to active.
+
+    Leaves ``awaiting_input_from`` alone. The founder-respond endpoint already
+    clears it atomically via :func:`claim_founder_response`; the VC resume
+    endpoint never sets it in the first place.
+    """
     client = _get_client()
     if not client or not debate_id:
         return False
@@ -4042,23 +4788,46 @@ def save_debate_message(
     speaker: str,
     content: str,
     citations: list[dict[str, Any]] | None = None,
+    message_type: str = "argument",
+    info_request: dict[str, Any] | None = None,
+    founder_response_type: str | None = None,
+    linked_reeval_job_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """Insert a debate_messages row. Returns the created row or None."""
+    """Insert a debate_messages row. Returns the created row or None.
+
+    ``message_type`` defaults to ``'argument'`` for back-compat with existing
+    callers. Newer callers pass ``'evidence_request'`` / ``'founder_response'``
+    / ``'system_note'`` plus the matching payload fields.
+    """
     client = _get_client()
     if not client or not debate_id:
         return None
     try:
-        rows = client.table("debate_messages").insert({
+        payload: dict[str, Any] = {
             "debate_id": debate_id,
             "round": round,
             "speaker": speaker,
             "content": content,
             "citations": _serialize(citations or []),
-        }).execute()
+            "message_type": message_type,
+        }
+        if info_request is not None:
+            payload["info_request"] = _serialize(info_request)
+        if founder_response_type is not None:
+            payload["founder_response_type"] = founder_response_type
+        if linked_reeval_job_id is not None:
+            payload["linked_reeval_job_id"] = linked_reeval_job_id
+        rows = client.table("debate_messages").insert(payload).execute()
         return rows.data[0] if rows.data else None
     except Exception as exc:
         _log_supabase_error("save_debate_message", "debate_messages", exc)
         return None
+
+
+_DEBATE_MESSAGE_COLUMNS = (
+    "id, debate_id, round, speaker, content, citations, message_type, "
+    "info_request, founder_response_type, linked_reeval_job_id, created_at"
+)
 
 
 def get_debate_messages(debate_id: str) -> list[dict[str, Any]]:
@@ -4069,7 +4838,7 @@ def get_debate_messages(debate_id: str) -> list[dict[str, Any]]:
     try:
         rows = (
             client.table("debate_messages")
-            .select("id, debate_id, round, speaker, content, citations, created_at")
+            .select(_DEBATE_MESSAGE_COLUMNS)
             .eq("debate_id", debate_id)
             .order("created_at", desc=False)
             .execute()
@@ -4080,6 +4849,27 @@ def get_debate_messages(debate_id: str) -> list[dict[str, Any]]:
         return []
 
 
+def get_latest_evidence_request_message(debate_id: str) -> dict[str, Any] | None:
+    """Return the most recent ``evidence_request`` message for a debate."""
+    client = _get_client()
+    if not client or not debate_id:
+        return None
+    try:
+        rows = (
+            client.table("debate_messages")
+            .select(_DEBATE_MESSAGE_COLUMNS)
+            .eq("debate_id", debate_id)
+            .eq("message_type", "evidence_request")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return rows.data[0] if rows.data else None
+    except Exception as exc:
+        _log_supabase_error("get_latest_evidence_request_message", "debate_messages", exc)
+        return None
+
+
 def get_debates_for_vc(vc_profile_id: str) -> list[dict[str, Any]]:
     """Return all debates for a VC profile."""
     client = _get_client()
@@ -4088,7 +4878,10 @@ def get_debates_for_vc(vc_profile_id: str) -> list[dict[str, Any]]:
     try:
         rows = (
             client.table("debates")
-            .select("id, match_id, company_id, status, current_round, max_rounds, summary, created_at, companies(id, name, industry)")
+            .select(
+                "id, match_id, company_id, status, current_round, max_rounds, "
+                "summary, awaiting_input_from, created_at, companies(id, name, industry)"
+            )
             .eq("vc_profile_id", vc_profile_id)
             .order("created_at", desc=True)
             .execute()
@@ -4107,7 +4900,10 @@ def get_debates_for_company(company_id: str) -> list[dict[str, Any]]:
     try:
         rows = (
             client.table("debates")
-            .select("id, match_id, vc_profile_id, status, current_round, max_rounds, summary, created_at, vc_profiles(id, firm_name)")
+            .select(
+                "id, match_id, vc_profile_id, status, current_round, max_rounds, "
+                "summary, awaiting_input_from, created_at, vc_profiles(id, firm_name)"
+            )
             .eq("company_id", company_id)
             .order("created_at", desc=True)
             .execute()
@@ -4115,6 +4911,30 @@ def get_debates_for_company(company_id: str) -> list[dict[str, Any]]:
         return list(rows.data or [])
     except Exception as exc:
         _log_supabase_error("get_debates_for_company", "debates", exc)
+        return []
+
+
+def get_paused_debates_for_company(company_id: str) -> list[dict[str, Any]]:
+    """Return debates currently paused awaiting founder input for a company.
+
+    Used by ``_run_re_evaluation`` to snapshot which debates should receive a
+    system_note at the end of the re-eval job (success or failure).
+    """
+    client = _get_client()
+    if not client or not company_id:
+        return []
+    try:
+        rows = (
+            client.table("debates")
+            .select("id, current_round, max_rounds")
+            .eq("company_id", company_id)
+            .eq("status", "paused")
+            .eq("awaiting_input_from", "founder")
+            .execute()
+        )
+        return list(rows.data or [])
+    except Exception as exc:
+        _log_supabase_error("get_paused_debates_for_company", "debates", exc)
         return []
 
 
@@ -4265,6 +5085,47 @@ def get_all_company_chunks(company_id: str) -> list[dict[str, Any]]:
         return []
 
 
+def get_chunks_created_after(
+    company_id: str, after_iso: str
+) -> list[dict[str, Any]]:
+    """Return chunks for a company whose `created_at` is strictly after `after_iso`.
+
+    Used by re-evaluation to identify newly-uploaded evidence since the last
+    completed analysis so downstream code can target the incremental Q&A
+    enrichment path. Row shape matches `_fetch_chunks_for_pitch_deck_ids`
+    (chunk_id, text, source_file, page_or_slide, sort_order, created_at).
+    """
+    client = _get_client()
+    if not client or not company_id or not after_iso:
+        return []
+    try:
+        decks = (
+            client.table("pitch_decks")
+            .select("id")
+            .eq("company_id", company_id)
+            .execute()
+        )
+        deck_ids = [d["id"] for d in (decks.data or []) if d.get("id")]
+        if not deck_ids:
+            return []
+        rows = (
+            client.table("chunks")
+            .select(
+                "pitch_deck_id, chunk_id, text, source_file, page_or_slide, "
+                "sort_order, created_at"
+            )
+            .in_("pitch_deck_id", deck_ids)
+            .gt("created_at", after_iso)
+            .order("sort_order")
+            .limit(10000)
+            .execute()
+        )
+        return rows.data or []
+    except Exception as exc:
+        _log_supabase_error("get_chunks_created_after", "chunks", exc)
+        return []
+
+
 def get_analysis_question_trees(company_id: str) -> dict[str, Any] | None:
     """Return question_trees from the latest completed analysis state.
 
@@ -4370,11 +5231,16 @@ def create_analysis_record(
     results_payload: dict[str, Any],
     status: str = "done",
     run_config: dict[str, Any] | None = None,
+    job_id_legacy: str = "portal",
 ) -> str | None:
     """Insert a new analyses row for a portal-triggered pipeline run.
 
     Returns the analysis_id UUID or None on error.
     Old analysis rows are preserved for historical comparison.
+
+    ``job_id_legacy`` is required NOT NULL by the schema. Callers that track a
+    real run identifier (e.g. re-evaluation with ``re-xxxxxx``) should pass it
+    so the run can be joined with ``model_executions`` and ``analysis_events``.
     """
     client = _get_client()
     if not client or not company_id:
@@ -4383,6 +5249,7 @@ def create_analysis_record(
         row = client.table("analyses").insert({
             "company_id": company_id,
             "pitch_deck_id": pitch_deck_id,
+            "job_id_legacy": job_id_legacy or "portal",
             "state": _serialize(state),
             "results_payload": _serialize(results_payload),
             "status": status,
@@ -4491,6 +5358,8 @@ def get_company_analysis_status(company_id: str) -> str | None:
     except Exception as exc:
         _log_supabase_error("get_company_analysis_status", "analyses", exc)
         return None
+
+
 # ---------------------------------------------------------------------------
 # Admin — read-only aggregate views
 # ---------------------------------------------------------------------------

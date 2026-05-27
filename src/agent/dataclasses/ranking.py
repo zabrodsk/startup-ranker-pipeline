@@ -20,11 +20,24 @@ class DimensionScore(BaseModel):
     top_qa_indices: list[int] = Field(default_factory=list)
     evidence_snippets: list[str] = Field(default_factory=list)
     critical_gaps: list[str] = Field(default_factory=list)
+    sub_scores: dict[str, float] = Field(default_factory=dict)
+    founder_archetype: str = ""
+    stage_context: str = ""
+    adjustment_policy: Literal["standard", "seed_softened", "none"] = "standard"
+    upside_ceiling_score: float | None = Field(default=None, ge=0, le=100)
+    risk_adjusted_potential_score: float | None = Field(default=None, ge=0, le=100)
+    scoring_signal_refs: list[str] = Field(default_factory=list)
 
     @computed_field
     @property
     def adjusted_score(self) -> float:
-        """Confidence-adjusted score: raw * (0.7 + 0.3 * confidence)."""
+        """Confidence-adjusted score."""
+        if self.dimension == "upside" and self.risk_adjusted_potential_score is not None:
+            return round(self.risk_adjusted_potential_score, 2)
+        if self.adjustment_policy == "none":
+            return round(self.raw_score, 2)
+        if self.adjustment_policy == "seed_softened":
+            return round(self.raw_score * (0.85 + 0.15 * self.confidence), 2)
         return round(self.raw_score * (0.7 + 0.3 * self.confidence), 2)
 
 
@@ -37,6 +50,8 @@ class CompanyRankingResult(BaseModel):
     strategy_fit_score: float = 0.0
     team_score: float = 0.0
     upside_score: float = 0.0
+    upside_ceiling_score: float = 0.0
+    risk_adjusted_potential_score: float = 0.0
     composite_score: float = 0.0
 
     bucket: Literal["priority_review", "watchlist", "low_priority"] = "low_priority"
@@ -49,6 +64,11 @@ class CompanyRankingResult(BaseModel):
     min_dimension_score: float = 0.0
     avg_confidence: float = 0.0
     critical_gaps_count: int = 0
+    team_subscores: dict[str, float] = Field(default_factory=dict)
+    potential_subscores: dict[str, float] = Field(default_factory=dict)
+    founder_archetype: str = ""
+    stage_context: str = ""
+    scoring_signals_used: dict[str, object] = Field(default_factory=dict)
 
     # Executive summary (human-readable)
     strategy_fit_summary: str = ""

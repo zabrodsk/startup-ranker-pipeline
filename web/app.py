@@ -1,6 +1,6 @@
-"""Rockaway Deal Intelligence web application.
+"""Deal Intelligence web application.
 
-FastAPI backend serving the Rockaway-branded UI with password protection.
+FastAPI backend serving the UI with password protection.
 Provider API keys stay server-side only and are never exposed to the client.
 """
 
@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import collections
 import contextlib
 import gc
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -25,10 +27,65 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+
+# ---------------------------------------------------------------------------
+# In-memory log buffer — captures all Python logging for the admin live log.
+# Thread-safe circular buffer; survives for the lifetime of the process.
+# ---------------------------------------------------------------------------
+
+class _InMemoryLogHandler(logging.Handler):
+    """Append log records to a shared deque so the admin portal can poll them."""
+
+    _records: collections.deque = collections.deque(maxlen=500)
+    _lock: threading.Lock = threading.Lock()
+
+    LEVEL_COLOURS = {
+        "DEBUG": "muted",
+        "INFO": "info",
+        "WARNING": "warning",
+        "ERROR": "error",
+        "CRITICAL": "error",
+    }
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            entry = {
+                "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+                "level": record.levelname,
+                "logger": record.name,
+                "msg": self.format(record),
+            }
+            with self._lock:
+                self._records.append(entry)
+        except Exception:
+            pass  # never crash the app due to logging
+
+    @classmethod
+    def get_entries(cls, since_ts: str | None = None, level: str | None = None) -> list[dict]:
+        with cls._lock:
+            records = list(cls._records)
+        if since_ts:
+            records = [r for r in records if r["ts"] > since_ts]
+        if level and level != "ALL":
+            lvl = getattr(logging, level, logging.DEBUG)
+            records = [r for r in records if getattr(logging, r["level"], 0) >= lvl]
+        return records
+
+
+# Install the handler on the root logger once at import time.
+_mem_handler = _InMemoryLogHandler()
+_mem_handler.setFormatter(logging.Formatter("%(name)s — %(message)s"))
+_mem_handler.setLevel(logging.DEBUG)
+_root_logger = logging.getLogger()
+if not any(isinstance(h, _InMemoryLogHandler) for h in _root_logger.handlers):
+    _root_logger.addHandler(_mem_handler)
+    if _root_logger.level == logging.NOTSET or _root_logger.level > logging.DEBUG:
+        _root_logger.setLevel(logging.DEBUG)
+
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, Body, Cookie, FastAPI, File, Header, HTTPException, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, Body, Cookie, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -51,12 +108,15 @@ from agent.llm_catalog import (
     validate_requested_selection,
 )
 from agent.llm_policy import (
+    PHASE_LABELS,
+    PHASE_SHORT_LABELS,
     build_default_phase_model_policy,
     build_phase_model_policy,
     build_phase_policy_display_label,
     build_pipeline_policy,
     build_tier_display_label,
     coerce_phase_models_payload,
+    default_phase_model_selections,
     normalize_phase_models,
     normalize_premium_phase_models,
     normalize_quality_tier,
@@ -67,9 +127,11 @@ from agent.llm_policy import (
     resolve_effective_phase_models,
 )
 from agent.company_chat import answer_company_question, build_company_chat_store
+from agent.pipeline.scoring_signals import build_scoring_signals
 from agent.run_context import (
     RunTelemetryCollector,
     build_run_costs_from_model_executions,
+    use_company_context,
     use_run_context,
 )
 
@@ -83,7 +145,7 @@ from agent.person_intel.models import (
 )
 from agent.person_intel.service import PersonIntelService
 
-app = FastAPI(title="Rockaway Deal Intelligence", docs_url=None, redoc_url=None)
+app = FastAPI(title="Deal Intelligence", docs_url=None, redoc_url=None)
 
 app.add_middleware(
     CORSMiddleware,
@@ -841,7 +903,6 @@ class AnalyzeRequest(BaseModel):
     use_web_search: bool = False
     use_specter_mcp: bool = True
     fetch_full_team: bool = False
-    confirmed_company_url: str | None = None
     instructions: str | None = None
     input_mode: str = "pitchdeck"  # pitchdeck | specter | original
     run_name: str | None = None
@@ -856,7 +917,6 @@ class AnalyzeRequest(BaseModel):
         "instructions",
         "run_name",
         "vc_investment_strategy",
-        "confirmed_company_url",
         "llm_provider",
         "llm_model",
         mode="before",
@@ -980,6 +1040,78 @@ class VcStrategyRequest(BaseModel):
     @classmethod
     def _validate_strategy(cls, v: str) -> str:
         return (v or "").strip()[:8000]
+
+
+class LeadgenScoredLead(BaseModel):
+    lead: dict[str, Any]
+    score: dict[str, Any] = Field(default_factory=dict)
+
+
+class LeadgenBatchRequest(BaseModel):
+    batch_id: str
+    generated_at: str
+    scoring_version: str
+    leads: list[LeadgenScoredLead] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("batch_id")
+    @classmethod
+    def _validate_batch_id(cls, v: str) -> str:
+        text = (v or "").strip()
+        if not text:
+            raise ValueError("batch_id is required")
+        return text
+
+
+class LeadgenIngestError(BaseModel):
+    lead_name: str | None = None
+    url: str | None = None
+    reason: str
+
+
+class LeadgenIngestResponse(BaseModel):
+    batch_id: str
+    intake_id: str | None = None
+    job_id: str | None = None
+    status: Literal[
+        "pending_approval",
+        "existing_pending",
+        "existing_queued",
+        "existing_rejected",
+        "rejected",
+    ]
+    accepted_count: int
+    rejected_count: int
+    accepted_urls: list[str] = Field(default_factory=list)
+    errors: list[LeadgenIngestError] = Field(default_factory=list)
+
+
+class LeadgenApprovalRequest(BaseModel):
+    approve_all_eligible: bool = False
+    lead_ids: list[str] = Field(default_factory=list)
+
+
+class LeadgenRejectRequest(BaseModel):
+    reject_all: bool = False
+    lead_ids: list[str] = Field(default_factory=list)
+    reason: str | None = None
+
+    @field_validator("reason")
+    @classmethod
+    def _validate_reason(cls, v: str | None) -> str | None:
+        text = (v or "").strip()
+        return text[:1000] if text else None
+
+
+for _leadgen_model in (
+    LeadgenScoredLead,
+    LeadgenBatchRequest,
+    LeadgenIngestError,
+    LeadgenIngestResponse,
+    LeadgenApprovalRequest,
+    LeadgenRejectRequest,
+):
+    _leadgen_model.model_rebuild()
 
 
 class CompanyChatMessage(BaseModel):
@@ -1835,9 +1967,24 @@ def _list_company_runs_for_ui() -> list[dict[str, Any]]:
     return db.list_company_histories(
         limit_runs=COMPANY_RUNS_OVERVIEW_LIMIT,
         perform_maintenance=False,
-        include_run_details=False,
-        include_result_payload=True,
     )
+
+
+def _list_company_run_summaries_for_ui(
+    *,
+    limit: int = 200,
+    offset: int = 0,
+    sort: str = "latest",
+) -> dict[str, Any]:
+    if not db or not db.is_configured():
+        return {"companies": [], "total": 0, "next_offset": None}
+    return db.list_company_summaries(limit=limit, offset=offset, sort=sort)
+
+
+def _load_company_run_detail_for_ui(company_lookup_key: str) -> dict[str, Any] | None:
+    if not db or not db.is_configured():
+        return None
+    return db.load_company_history_detail(company_lookup_key)
 
 
 def _check_session(session_id: str | None) -> bool:
@@ -2138,8 +2285,8 @@ async def _require_startup(
 async def _require_vc(
     user: CurrentUser = Depends(get_current_user),
 ) -> CurrentUser:
-    """Dependency: allow only users with role='vc'."""
-    if user.role != "vc":
+    """Dependency: allow users with role='vc' or role='admin' (admin can access VC endpoints)."""
+    if user.role not in ("vc", "admin"):
         raise HTTPException(status_code=403, detail="VC role required.")
     return user
 
@@ -2213,13 +2360,15 @@ def _parse_max_startups_from_instructions(instructions: str | None) -> int | Non
 
 
 @app.get("/", response_class=HTMLResponse)
-async def root():
+async def root(response: Response):
+    _set_no_store_headers(response)
     return (STATIC_DIR / "index.html").read_text()
 
 
 @app.get("/portal", response_class=HTMLResponse)
-async def portal():
+async def portal(response: Response):
     """Serve the startup / VC self-service portal (separate from the internal tool)."""
+    _set_no_store_headers(response)
     return (STATIC_DIR / "portal.html").read_text()
 
 
@@ -2593,6 +2742,7 @@ async def startup_profile(user: CurrentUser = Depends(_require_startup)) -> dict
             "fundraising": company.get("fundraising", False),
             "fundraising_updated_at": company.get("fundraising_updated_at"),
             "claimed_at": company.get("claimed_at"),
+            "data_room_enabled": company.get("data_room_enabled", False),
         },
         "analysis": analysis_summary,
     }
@@ -2791,14 +2941,51 @@ def _get_vc_profile_or_404(user: CurrentUser) -> dict[str, Any]:
     return profile
 
 
-async def _run_matching_background(company_id: str) -> None:
-    """Background task: run matching for a company against all active VCs."""
+def _blocking_match_for_company(company_id: str, *, force_refresh: bool = False) -> int:
+    """Run matching synchronously inside a dedicated thread with its own event loop.
+
+    This isolates the matching pipeline (which contains synchronous LLM .invoke()
+    calls) from the main FastAPI event loop and its shared thread pool.  Without
+    this isolation, long-running sync LLM calls saturate the default thread pool
+    and cause asyncio.to_thread() calls (e.g. Supabase auth) to queue up, making
+    login and other endpoints time-out while a matching job is running.
+
+    When ``force_refresh=True``, existing matches are re-scored in place via the
+    upsert in ``db.create_match`` (preserving match ids → preserving debate FK
+    links). Used by the re-evaluation flow so a fresh analysis updates scores
+    without destroying debates.
+    """
+    import asyncio as _aio  # noqa: PLC0415
+    from agent.matching.engine import trigger_matching_for_company  # noqa: PLC0415
+
+    loop = _aio.new_event_loop()
+    _aio.set_event_loop(loop)
     try:
-        from agent.matching.engine import trigger_matching_for_company  # noqa: PLC0415
-        count = await trigger_matching_for_company(company_id, db)
+        return loop.run_until_complete(
+            trigger_matching_for_company(company_id, db, force_refresh=force_refresh)
+        )
+    finally:
+        loop.close()
+        _aio.set_event_loop(None)
+
+
+async def _run_matching_background(company_id: str, *, force_refresh: bool = False) -> None:
+    """Background task: run matching for a company against all active VCs.
+
+    Delegates to _blocking_match_for_company() via asyncio.to_thread() so the
+    matching pipeline runs in an isolated thread, leaving the FastAPI event loop
+    free to handle other requests (login, health-checks, etc.).
+
+    ``force_refresh`` is forwarded so the re-evaluation path can update existing
+    matches in place without deleting them (which would cascade-destroy debates).
+    """
+    try:
+        count = await asyncio.to_thread(
+            _blocking_match_for_company, company_id, force_refresh=force_refresh
+        )
         import logging  # noqa: PLC0415
         logging.getLogger(__name__).info(
-            "Matching complete for company=%s: %d matches created", company_id, count
+            "Matching complete for company=%s: %d matches created/refreshed", company_id, count
         )
     except Exception as exc:
         import logging  # noqa: PLC0415
@@ -2807,36 +2994,33 @@ async def _run_matching_background(company_id: str) -> None:
         )
 
 
-async def _run_vc_rematching_background(vc_profile_id: str) -> None:
-    """Background task: re-run matching for a VC against all actively fundraising companies.
+def _blocking_rematch_for_vc(vc_profile_id: str) -> int:
+    """Run VC re-matching synchronously inside a dedicated thread with its own event loop.
 
-    Called when a VC updates their investment thesis or score thresholds.  Clears
-    all existing matches for this VC, then re-evaluates every company that currently
-    has fundraising=True so the match list reflects the latest thesis and thresholds.
+    Same isolation rationale as _blocking_match_for_company — prevents sync LLM
+    calls inside the pipeline from blocking the FastAPI event loop.
     """
-    import logging as _log_module  # noqa: PLC0415
-    _logger = _log_module.getLogger(__name__)
+    import asyncio as _aio  # noqa: PLC0415
 
-    try:
+    async def _async_body() -> int:
+        import logging as _log_module  # noqa: PLC0415
         from agent.matching.engine import run_matching_for_pair  # noqa: PLC0415
+        _logger = _log_module.getLogger(__name__)
 
-        # 1. Wipe stale matches so we start with a clean slate.
-        deleted = await asyncio.to_thread(db.delete_matches_for_vc, vc_profile_id)
+        deleted = await _aio.to_thread(db.delete_matches_for_vc, vc_profile_id)
         _logger.info("VC re-matching: deleted %d stale matches for vc=%s", deleted, vc_profile_id)
 
-        # 2. Fetch the fresh VC profile (with updated thesis / thresholds).
-        vc_profile = await asyncio.to_thread(db.get_vc_profile_by_id, vc_profile_id)
+        vc_profile = await _aio.to_thread(db.get_vc_profile_by_id, vc_profile_id)
         if not vc_profile:
             _logger.warning("VC re-matching: vc_profile %s not found", vc_profile_id)
-            return
+            return 0
 
         vc_thesis: str = vc_profile.get("investment_thesis") or ""
         min_strategy: float = float(vc_profile.get("min_strategy_fit") or 0)
         min_team: float = float(vc_profile.get("min_team") or 0)
         min_potential: float = float(vc_profile.get("min_potential") or 0)
 
-        # 3. Loop over all fundraising companies.
-        companies = await asyncio.to_thread(db.get_fundraising_companies)
+        companies = await _aio.to_thread(db.get_fundraising_companies)
         _logger.info(
             "VC re-matching: evaluating %d fundraising companies against vc=%s",
             len(companies), vc_profile_id,
@@ -2848,12 +3032,11 @@ async def _run_vc_rematching_background(vc_profile_id: str) -> None:
             if not company_id:
                 continue
 
-            chunks = await asyncio.to_thread(db.get_company_chunks, company_id)
-            all_qa_pairs = await asyncio.to_thread(db.get_analysis_qa_pairs, company_id)
+            chunks = await _aio.to_thread(db.get_company_chunks, company_id)
+            all_qa_pairs = await _aio.to_thread(db.get_analysis_qa_pairs, company_id)
 
-            # Prefer Stage-8-only path if final_arguments available.
             analysis_final = (
-                await asyncio.to_thread(db.get_analysis_final_state, company_id)
+                await _aio.to_thread(db.get_analysis_final_state, company_id)
                 if hasattr(db, "get_analysis_final_state")
                 else None
             )
@@ -2861,9 +3044,7 @@ async def _run_vc_rematching_background(vc_profile_id: str) -> None:
             final_decision = analysis_final.get("final_decision") if analysis_final else None
 
             if not final_arguments and not all_qa_pairs:
-                _logger.debug(
-                    "VC re-matching: skipping company=%s (no analysis data)", company_id
-                )
+                _logger.debug("VC re-matching: skipping company=%s (no analysis data)", company_id)
                 continue
 
             try:
@@ -2889,9 +3070,9 @@ async def _run_vc_rematching_background(vc_profile_id: str) -> None:
             potential: float = float(scores.get("upside_score") or 0)
 
             if strategy_fit >= min_strategy and team >= min_team and potential >= min_potential:
-                latest = await asyncio.to_thread(db.get_company_latest_analysis, company_id)
+                latest = await _aio.to_thread(db.get_company_latest_analysis, company_id)
                 analysis_id = latest.get("id") if latest else None
-                await asyncio.to_thread(
+                await _aio.to_thread(
                     db.create_match,
                     vc_profile_id=vc_profile_id,
                     company_id=company_id,
@@ -2914,11 +3095,39 @@ async def _run_vc_rematching_background(vc_profile_id: str) -> None:
             "VC re-matching complete for vc=%s: %d matches created from %d companies",
             vc_profile_id, created, len(companies),
         )
+        return created
+
+    loop = _aio.new_event_loop()
+    _aio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_async_body())
+    finally:
+        loop.close()
+        _aio.set_event_loop(None)
+
+
+async def _run_vc_rematching_background(vc_profile_id: str) -> None:
+    """Background task: re-run matching for a VC against all actively fundraising companies.
+
+    Called when a VC updates their investment thesis or score thresholds.  Clears
+    all existing matches for this VC, then re-evaluates every company that currently
+    has fundraising=True so the match list reflects the latest thesis and thresholds.
+
+    Delegates to _blocking_rematch_for_vc() via asyncio.to_thread() so the pipeline
+    runs in an isolated thread and the FastAPI event loop stays responsive.
+    """
+    import logging as _log_module  # noqa: PLC0415
+    _logger = _log_module.getLogger(__name__)
+
+    try:
+        await asyncio.to_thread(_blocking_rematch_for_vc, vc_profile_id)
     except Exception as exc:
-        import logging as _lm  # noqa: PLC0415
-        _lm.getLogger(__name__).error(
+        _logger.error(
             "VC re-matching background task failed for vc=%s: %s", vc_profile_id, exc, exc_info=True
         )
+        return
+
+    # (success logging is inside _blocking_rematch_for_vc / _async_body)
 
 
 # ---------------------------------------------------------------------------
@@ -3027,6 +3236,13 @@ async def vc_get_matches(user: CurrentUser = Depends(_require_vc)) -> dict[str, 
     """Return all matches for the VC, ordered by composite score descending."""
     profile = await asyncio.to_thread(_get_vc_profile_or_404, user)
     matches = await asyncio.to_thread(db.get_matches_for_vc, profile["id"])
+
+    # Enrich with data room file counts (batch to avoid N+1).
+    company_ids = list({(m.get("companies") or {}).get("id") for m in matches} - {None})
+    dr_counts: dict[str, int] = {}
+    for cid in company_ids:
+        dr_counts[cid] = await asyncio.to_thread(db.count_data_room_files, cid)
+
     return {
         "matches": [
             {
@@ -3045,6 +3261,8 @@ async def vc_get_matches(user: CurrentUser = Depends(_require_vc)) -> dict[str, 
                 "bucket": m.get("bucket"),
                 "status": m.get("status"),
                 "created_at": m.get("created_at"),
+                "data_room_enabled": (m.get("companies") or {}).get("data_room_enabled", False),
+                "data_room_file_count": dr_counts.get((m.get("companies") or {}).get("id"), 0),
             }
             for m in matches
         ]
@@ -3067,6 +3285,391 @@ async def vc_match_action(
 
 
 # ---------------------------------------------------------------------------
+# Admin portal endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/admin/overview")
+async def admin_overview(user: CurrentUser = Depends(_require_admin)) -> dict[str, Any]:
+    """Return aggregate counts for the admin dashboard."""
+    companies, vc_profiles, matches, analyses, users = await asyncio.gather(
+        asyncio.to_thread(db.admin_get_all_companies),
+        asyncio.to_thread(db.admin_get_all_vc_profiles),
+        asyncio.to_thread(db.admin_get_all_matches),
+        asyncio.to_thread(db.admin_get_recent_analyses, 40),
+        asyncio.to_thread(db.admin_get_all_users),
+    )
+    fundraising = [c for c in companies if c.get("fundraising")]
+    analysed = [c for c in companies if c.get("analysis_status") == "done"]
+    running = [a for a in analyses if a.get("status") not in ("done", "error", None)]
+    return {
+        "counts": {
+            "companies": len(companies),
+            "fundraising": len(fundraising),
+            "analysed": len(analysed),
+            "vc_profiles": len(vc_profiles),
+            "matches": len(matches),
+            "analyses": len(analyses),
+            "users": len(users),
+            "running_analyses": len(running),
+        },
+        "recent_analyses": analyses[:10],
+        "recent_matches": matches[:10],
+    }
+
+
+@app.get("/api/admin/companies")
+async def admin_companies(user: CurrentUser = Depends(_require_admin)) -> dict[str, Any]:
+    """Return all companies with latest analysis scores."""
+    companies = await asyncio.to_thread(db.admin_get_all_companies)
+    return {"companies": companies}
+
+
+@app.get("/api/admin/vc-profiles")
+async def admin_vc_profiles(user: CurrentUser = Depends(_require_admin)) -> dict[str, Any]:
+    """Return all VC profiles with match counts."""
+    profiles = await asyncio.to_thread(db.admin_get_all_vc_profiles)
+    return {"vc_profiles": profiles}
+
+
+@app.get("/api/admin/matches")
+async def admin_matches(user: CurrentUser = Depends(_require_admin)) -> dict[str, Any]:
+    """Return all matches with company and VC names."""
+    matches = await asyncio.to_thread(db.admin_get_all_matches)
+    return {"matches": matches}
+
+
+@app.get("/api/admin/analyses")
+async def admin_analyses(user: CurrentUser = Depends(_require_admin)) -> dict[str, Any]:
+    """Return recent analyses with status, scores, per-stage models, and costs.
+
+    Overlays in-memory ``_jobs`` status so currently-running portal
+    re-evaluations appear with live progress messages even when the DB row
+    is still in ``running`` status from a previous poll.
+
+    Also surfaces active in-memory jobs that have not yet been persisted
+    to the ``analyses`` table (e.g. a just-started re-evaluation) so the
+    admin UI shows them immediately.
+    """
+    analyses = await asyncio.to_thread(db.admin_get_recent_analyses, 40)
+
+    by_job_id: dict[str, dict[str, Any]] = {}
+    for row in analyses:
+        jid = row.get("job_id_legacy")
+        if jid:
+            by_job_id[jid] = row
+
+    # Overlay live status + progress from the in-memory job store.
+    for jid, job in list(_jobs.items()):
+        if not jid.startswith("re-"):
+            continue
+        row = by_job_id.get(jid)
+        if row is not None:
+            row["live_progress"] = getattr(job, "progress", None)
+            row["live_progress_log"] = list(getattr(job, "progress_log", []) or [])
+            if job.status in ("running", "pending"):
+                row["status"] = job.status
+        else:
+            analyses.insert(0, {
+                "id": None,
+                "company_id": None,
+                "company_name": None,
+                "job_id_legacy": jid,
+                "status": job.status,
+                "created_at": None,
+                "error": None,
+                "composite_score": None,
+                "bucket": None,
+                "run_config": None,
+                "phase_models": None,
+                "started_by": {
+                    "started_by_user_id": job.started_by_user_id,
+                    "started_by_email": job.started_by_email,
+                    "started_by_display_name": job.started_by_display_name,
+                    "started_by_label": job.started_by_label,
+                },
+                "cost_summary": None,
+                "live_progress": job.progress,
+                "live_progress_log": list(job.progress_log or []),
+            })
+
+    return {"analyses": analyses}
+
+
+@app.get("/api/admin/users")
+async def admin_users(user: CurrentUser = Depends(_require_admin)) -> dict[str, Any]:
+    """Return all registered users."""
+    users = await asyncio.to_thread(db.admin_get_all_users)
+    return {"users": users}
+
+
+@app.post("/api/admin/users/{user_id}/approve")
+async def admin_approve_user(
+    user_id: str,
+    body: dict[str, Any],
+    user: CurrentUser = Depends(_require_admin),
+) -> dict[str, Any]:
+    """Approve or unapprove a user account."""
+    approved: bool = bool(body.get("approved", True))
+    ok = await asyncio.to_thread(db.admin_set_user_approved, user_id, approved)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to update user approval.")
+    return {"user_id": user_id, "approved": approved}
+
+
+@app.post("/api/admin/trigger-matching/{company_id}")
+async def admin_trigger_matching(
+    company_id: str,
+    background_tasks: BackgroundTasks,
+    user: CurrentUser = Depends(_require_admin),
+) -> dict[str, Any]:
+    """Manually trigger matching for a company against all active VC profiles."""
+    background_tasks.add_task(_run_matching_background, company_id)
+    return {"triggered": True, "company_id": company_id}
+
+
+@app.get("/api/admin/matching-debug/{company_id}")
+async def admin_matching_debug(
+    company_id: str,
+    key: str | None = None,
+    user: CurrentUser = Depends(_require_admin),
+) -> dict[str, Any]:
+    """Diagnostic endpoint: check matching preconditions without running LLMs.
+
+    Returns a full checklist so you can see exactly why matching succeeds or fails.
+    """
+    result: dict[str, Any] = {"company_id": company_id, "checks": {}}
+
+    company = await asyncio.to_thread(db.get_company_by_id, company_id)
+    result["checks"]["company_found"] = bool(company)
+    result["checks"]["company_name"] = (company or {}).get("name")
+    result["checks"]["fundraising"] = (company or {}).get("fundraising", False)
+
+    chunks = await asyncio.to_thread(db.get_company_chunks, company_id)
+    result["checks"]["chunk_count"] = len(chunks)
+
+    qa_pairs = await asyncio.to_thread(db.get_analysis_qa_pairs, company_id)
+    result["checks"]["qa_pairs_count"] = len(qa_pairs)
+
+    analysis_final = None
+    if hasattr(db, "get_analysis_final_state"):
+        analysis_final = await asyncio.to_thread(db.get_analysis_final_state, company_id)
+    result["checks"]["final_arguments_count"] = len((analysis_final or {}).get("final_arguments") or [])
+    result["checks"]["final_decision"] = (analysis_final or {}).get("final_decision")
+    result["checks"]["stage8_shortcut_available"] = bool(
+        analysis_final and analysis_final.get("final_arguments") and analysis_final.get("final_decision")
+    )
+
+    vc_profiles = await asyncio.to_thread(db.get_active_vc_profiles)
+    result["checks"]["active_vc_count"] = len(vc_profiles)
+    result["vc_profiles"] = []
+    for vc in vc_profiles:
+        vc_id = vc.get("id", "")
+        exists = await asyncio.to_thread(db.match_exists, vc_id, company_id)
+        result["vc_profiles"].append({
+            "id": vc_id,
+            "firm_name": vc.get("firm_name"),
+            "min_strategy_fit": vc.get("min_strategy_fit"),
+            "min_team": vc.get("min_team"),
+            "min_potential": vc.get("min_potential"),
+            "thesis_length": len(vc.get("investment_thesis") or ""),
+            "match_already_exists": exists,
+        })
+
+    will_attempt = (
+        bool(company)
+        and (bool(analysis_final) or bool(qa_pairs))
+        and len(vc_profiles) > 0
+    )
+    result["will_attempt_matching"] = will_attempt
+    if not will_attempt:
+        if not company:
+            result["skip_reason"] = "Company not found"
+        elif not analysis_final and not qa_pairs:
+            result["skip_reason"] = "No QA pairs or final_arguments — company needs a completed analysis first"
+        elif not vc_profiles:
+            result["skip_reason"] = "No active VC profiles"
+    else:
+        result["skip_reason"] = None
+
+    return result
+
+
+@app.get("/api/admin/logs")
+async def admin_logs(
+    since: str | None = None,
+    level: str | None = None,
+    user: CurrentUser = Depends(_require_admin),
+) -> dict[str, Any]:
+    """Return recent in-process log entries for the admin live log.
+
+    Args:
+        since: ISO-8601 timestamp — only return entries after this time.
+        level: Minimum level to include: DEBUG | INFO | WARNING | ERROR (default ALL).
+    """
+    entries = _InMemoryLogHandler.get_entries(since_ts=since, level=level)
+    return {"entries": entries, "total": len(entries)}
+
+
+@app.get("/api/admin/runs/{job_id}/log")
+async def admin_run_log(
+    job_id: str,
+    user: CurrentUser = Depends(_require_admin),
+) -> dict[str, Any]:
+    """Return progress log and cost breakdown for a single pipeline run.
+
+    Resolution order:
+      1. In-memory ``_jobs`` entry (live view for currently-running runs).
+      2. Persisted ``analysis_events`` rows (fallback for completed/old runs).
+
+    Always attempts to include ``run_costs`` via ``db.load_run_costs``.
+    """
+    job = _jobs.get(job_id)
+    payload: dict[str, Any] = {
+        "job_id": job_id,
+        "status": None,
+        "progress": None,
+        "progress_log": [],
+        "run_costs": None,
+        "phase_models": None,
+        "started_by": None,
+        "company": None,
+        "created_at": None,
+        "error": None,
+    }
+
+    if job is not None:
+        payload["status"] = job.status
+        payload["progress"] = job.progress
+        payload["progress_log"] = list(job.progress_log or [])
+        payload["started_by"] = {
+            "started_by_user_id": job.started_by_user_id,
+            "started_by_email": job.started_by_email,
+            "started_by_display_name": job.started_by_display_name,
+            "started_by_label": job.started_by_label,
+        }
+
+    # Enrich with persisted fields (analysis row + run_costs) regardless of
+    # whether the run is still live — live runs benefit from the live cost
+    # snapshot once rows start getting persisted to model_executions.
+    try:
+        run_costs = await asyncio.to_thread(db.load_run_costs, job_id)
+    except Exception:
+        run_costs = None
+    payload["run_costs"] = run_costs
+
+    # Look up the analyses row (if persisted) to fill in company + phase_models
+    # + error fields, and pull the persisted progress log when we don't have a
+    # live in-memory copy.
+    try:
+        all_rows = await asyncio.to_thread(db.admin_get_recent_analyses, 100)
+    except Exception:
+        all_rows = []
+    matching_row = next(
+        (r for r in all_rows if r.get("job_id_legacy") == job_id),
+        None,
+    )
+    if matching_row:
+        payload["company"] = {
+            "id": matching_row.get("company_id"),
+            "name": matching_row.get("company_name"),
+        }
+        payload["phase_models"] = matching_row.get("phase_models")
+        payload["created_at"] = matching_row.get("created_at")
+        payload["error"] = matching_row.get("error")
+        if not payload["status"]:
+            payload["status"] = matching_row.get("status")
+        if not payload["started_by"] and matching_row.get("started_by"):
+            payload["started_by"] = matching_row.get("started_by")
+
+    # Fallback log source when no in-memory job survived.
+    if not payload["progress_log"]:
+        try:
+            persisted = await asyncio.to_thread(db.load_analysis_events, job_id, 500)
+        except Exception:
+            persisted = []
+        payload["progress_log"] = list(persisted or [])
+        if persisted and not payload["progress"]:
+            payload["progress"] = persisted[-1]
+
+    if (
+        job is None
+        and not matching_row
+        and not payload["progress_log"]
+        and not payload["run_costs"]
+    ):
+        raise HTTPException(status_code=404, detail="Run not found.")
+
+    return payload
+
+
+@app.get("/api/admin/pipeline-models")
+async def admin_get_pipeline_models(
+    user: CurrentUser = Depends(_require_admin),
+) -> dict[str, Any]:
+    """Return persisted admin pipeline model defaults + catalog for the editor."""
+    try:
+        stored = await asyncio.to_thread(db.admin_get_pipeline_model_defaults)
+    except Exception:
+        stored = None
+    try:
+        factory = default_phase_model_selections()
+    except Exception:
+        factory = {}
+
+    if isinstance(stored, dict):
+        try:
+            phase_models = coerce_phase_models_payload(stored, require_all=True)
+        except Exception:
+            phase_models = coerce_phase_models_payload(factory, require_all=True)
+    else:
+        phase_models = coerce_phase_models_payload(factory, require_all=True)
+
+    catalog_list = available_models_payload()
+    # Only offer models that are selectable (credentials present + supports
+    # structured output).  Wrap in a dict so the frontend can evolve without
+    # breaking on a bare list.
+    selectable = [m for m in catalog_list if m.get("selectable", False)]
+    return {
+        "phase_models": phase_models,
+        "factory_defaults": coerce_phase_models_payload(factory, require_all=True),
+        "catalog": {"entries": selectable},
+        "labels": PHASE_LABELS,
+        "short_labels": PHASE_SHORT_LABELS,
+    }
+
+
+@app.put("/api/admin/pipeline-models")
+async def admin_put_pipeline_models(
+    payload: dict[str, Any] = Body(default_factory=dict),
+    user: CurrentUser = Depends(_require_admin),
+) -> dict[str, Any]:
+    """Persist new admin pipeline model defaults. Validates all 5 stages."""
+    raw = payload.get("phase_models") if isinstance(payload, dict) else None
+    if not isinstance(raw, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="phase_models (dict) is required.",
+        )
+    try:
+        phase_models = coerce_phase_models_payload(raw, require_all=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    updated_by = user.email or user.display_name or user.id
+    stored = await asyncio.to_thread(
+        db.admin_set_pipeline_model_defaults,
+        phase_models,
+        updated_by=updated_by,
+    )
+    if stored is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to persist pipeline model defaults.",
+        )
+    return {"phase_models": stored}
+
+
+# ---------------------------------------------------------------------------
 # Sprint 3 — Debate engine
 # ---------------------------------------------------------------------------
 
@@ -3075,6 +3678,11 @@ _active_debate_tasks: dict[str, asyncio.Task] = {}
 
 # WebSocket connections per debate: debate_id → list of WebSocket
 _debate_ws_clients: dict[str, list[WebSocket]] = {}
+
+# Re-evaluation ↔ paused-debate linkage so success/failure system_notes land in
+# the right debates. Keyed by re-eval job_id; value is the list of paused
+# debate ids snapshotted at the start of the re-evaluation run.
+_reeval_debate_links: dict[str, list[str]] = {}
 
 
 def _safe_analysis_for_debate(company_id: str) -> dict[str, Any]:
@@ -3110,12 +3718,17 @@ async def _run_debate_task(
     existing_messages: list[dict[str, Any]],
     current_round: int,
     max_rounds: int,
+    *,
+    context_notes: dict[str, Any] | None = None,
 ) -> None:
     """Background task that drives the debate loop and broadcasts via WebSocket."""
     import logging as _logging  # noqa: PLC0415
     _logger = _logging.getLogger(__name__)
     try:
-        from agent.debate.orchestrator import run_debate  # noqa: PLC0415
+        from agent.debate.orchestrator import (  # noqa: PLC0415
+            DebatePausedForEvidence,
+            run_debate,
+        )
         async for message in run_debate(
             debate_id=debate_id,
             company_name=company_name,
@@ -3126,11 +3739,17 @@ async def _run_debate_task(
             current_round=current_round,
             max_rounds=max_rounds,
             db_module=db,
+            context_notes=context_notes,
         ):
             await _broadcast_debate_message(debate_id, message)
     except asyncio.CancelledError:
         _logger.info("Debate task %s cancelled (paused)", debate_id)
         await asyncio.to_thread(db.pause_debate, debate_id)
+    except DebatePausedForEvidence:
+        # Orchestrator already persisted the evidence_request message and
+        # flipped debates.status='paused' + awaiting_input_from='founder'.
+        # Exit cleanly — this is not an error.
+        _logger.info("Debate %s paused awaiting founder evidence", debate_id)
     except Exception as exc:
         _logger.error("Debate task %s error: %s", debate_id, exc)
     finally:
@@ -3236,12 +3855,20 @@ async def pause_debate(
     return {"debate_id": debate_id, "status": "paused"}
 
 
-@app.post("/api/debates/{debate_id}/resume")
-async def resume_debate(
+async def _spawn_debate_task(
     debate_id: str,
-    user: CurrentUser = Depends(_require_vc),
+    *,
+    context_notes: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Resume a paused debate from where it left off."""
+    """Load debate context and spawn a background ``_run_debate_task``.
+
+    Shared by the VC resume endpoint and the founder respond endpoint so both
+    code paths are guaranteed to hydrate the orchestrator the same way.
+    Returns a dict ``{debate_id, status, current_round}`` on success.
+
+    Raises HTTPException(404) if the debate does not exist, HTTPException(400)
+    if it is already completed.
+    """
     if not db:
         raise HTTPException(status_code=503, detail="Database unavailable.")
 
@@ -3251,11 +3878,16 @@ async def resume_debate(
     if debate.get("status") == "completed":
         raise HTTPException(status_code=400, detail="Debate is already completed.")
 
-    vc_profile = await asyncio.to_thread(_get_vc_profile_or_404, user)
-    vc_thesis: str = vc_profile.get("investment_thesis") or ""
     company_id: str = debate["company_id"]
-    company_name_row = await asyncio.to_thread(db.get_company_by_id, company_id)
-    company_name: str = (company_name_row or {}).get("name") or "Unknown"
+    vc_profile_id: str | None = debate.get("vc_profile_id")
+    vc_thesis: str = ""
+    if vc_profile_id:
+        vc_profile = await asyncio.to_thread(db.get_vc_profile_by_id, vc_profile_id)
+        if vc_profile:
+            vc_thesis = vc_profile.get("investment_thesis") or ""
+
+    company_row = await asyncio.to_thread(db.get_company_by_id, company_id)
+    company_name: str = (company_row or {}).get("name") or "Unknown"
 
     analysis_summary = await asyncio.to_thread(_safe_analysis_for_debate, company_id)
     chunks = await asyncio.to_thread(db.get_company_chunks, company_id)
@@ -3275,11 +3907,21 @@ async def resume_debate(
             existing_messages=existing_messages,
             current_round=current_round,
             max_rounds=max_rounds,
+            context_notes=context_notes,
         )
     )
     _active_debate_tasks[debate_id] = task
 
     return {"debate_id": debate_id, "status": "active", "current_round": current_round}
+
+
+@app.post("/api/debates/{debate_id}/resume")
+async def resume_debate(
+    debate_id: str,
+    user: CurrentUser = Depends(_require_vc),
+) -> dict[str, Any]:
+    """Resume a paused debate from where it left off (VC-initiated)."""
+    return await _spawn_debate_task(debate_id, context_notes=None)
 
 
 @app.get("/api/vc/debates")
@@ -3294,12 +3936,162 @@ async def vc_list_debates(user: CurrentUser = Depends(_require_vc)) -> dict[str,
 
 @app.get("/api/startup/debates")
 async def startup_list_debates(user: CurrentUser = Depends(_require_startup)) -> dict[str, Any]:
-    """Return all debates for the startup's company."""
+    """Return all debates for the startup's company.
+
+    For any debate that is currently paused awaiting founder input, we
+    additionally load the most recent ``evidence_request`` message so the
+    portal can render the topic / questions / rationale without a second
+    round-trip per debate.
+    """
     if not db:
         raise HTTPException(status_code=503, detail="Database unavailable.")
     company_id = await asyncio.to_thread(_first_linked_company_id, user)
     debates = await asyncio.to_thread(db.get_debates_for_company, company_id)
+
+    for debate in debates:
+        if (
+            debate.get("status") == "paused"
+            and debate.get("awaiting_input_from") == "founder"
+        ):
+            try:
+                latest_req = await asyncio.to_thread(
+                    db.get_latest_evidence_request_message, debate["id"]
+                )
+            except Exception:
+                latest_req = None
+            debate["latest_evidence_request"] = latest_req
+
     return {"debates": debates}
+
+
+class StartupDebateResponseRequest(BaseModel):
+    """Payload for the founder's respond endpoint.
+
+    ``response_type='uploaded'`` means the founder uploaded new evidence and
+    (optionally) kicked off a re-evaluation via ``reeval_job_id``. The debate
+    resumes immediately; the VC agent will pick up the new analysis on its
+    next turn.
+
+    ``response_type='unavailable'`` means the founder cannot provide the
+    requested evidence. The debate resumes with a ``gap_note`` injected into
+    the first startup turn so the Startup Agent acknowledges the gap instead
+    of fabricating data.
+    """
+
+    response_type: Literal["uploaded", "unavailable"]
+    reeval_job_id: str | None = None
+    note: str | None = None
+
+
+@app.post("/api/startup/debates/{debate_id}/respond")
+async def startup_respond_to_debate(
+    debate_id: str,
+    body: StartupDebateResponseRequest,
+    user: CurrentUser = Depends(_require_startup),
+) -> dict[str, Any]:
+    """Founder response to an evidence request — resumes the paused debate.
+
+    Authorisation: the debate must belong to the founder's linked company.
+    On a cross-company attempt we return 404 (not 403) so we don't leak
+    existence of other founders' debates.
+
+    Concurrency: we atomically claim the ``awaiting_input_from='founder'``
+    flag via ``db.claim_founder_response`` so a double-click (or a race with
+    upload-complete vs. decline) cannot produce two founder_response messages.
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    debate = await asyncio.to_thread(db.get_debate_by_id, debate_id)
+    if not debate:
+        raise HTTPException(status_code=404, detail="Debate not found.")
+
+    # Auth: the debate must belong to the founder's linked company.
+    founder_company_id = await asyncio.to_thread(_first_linked_company_id, user)
+    if debate.get("company_id") != founder_company_id:
+        # Return 404 instead of 403 — do not leak existence of other debates.
+        raise HTTPException(status_code=404, detail="Debate not found.")
+
+    if debate.get("status") != "paused" or debate.get("awaiting_input_from") != "founder":
+        raise HTTPException(
+            status_code=409,
+            detail="Debate is not currently awaiting founder input.",
+        )
+
+    # Atomic claim: exactly one founder response wins.
+    claimed = await asyncio.to_thread(db.claim_founder_response, debate_id)
+    if not claimed:
+        raise HTTPException(
+            status_code=409,
+            detail="This debate has already been responded to.",
+        )
+
+    # Find the topic from the latest evidence_request so we can pass a gap_note
+    # if the founder declined to provide it.
+    latest_req = await asyncio.to_thread(db.get_latest_evidence_request_message, debate_id)
+    topic: str | None = None
+    if latest_req and isinstance(latest_req.get("info_request"), dict):
+        topic_raw = latest_req["info_request"].get("topic")
+        if isinstance(topic_raw, str) and topic_raw.strip():
+            topic = topic_raw.strip()
+
+    if body.response_type == "uploaded":
+        content = (
+            body.note
+            or "Founder uploaded new evidence"
+            + (f" and kicked off re-evaluation {body.reeval_job_id}"
+               if body.reeval_job_id else "")
+            + "."
+        )
+    else:
+        content = body.note or (
+            f"Founder declined to provide evidence: {topic}." if topic
+            else "Founder stated they cannot provide the requested evidence."
+        )
+
+    current_round = int(debate.get("current_round") or 1)
+
+    saved_msg = await asyncio.to_thread(
+        db.save_debate_message,
+        debate_id=debate_id,
+        round=current_round,
+        speaker="system",
+        content=content,
+        citations=[],
+        message_type="founder_response",
+        founder_response_type=body.response_type,
+        linked_reeval_job_id=body.reeval_job_id,
+    )
+
+    # Broadcast so any live WebSocket subscriber sees the response in real time.
+    if saved_msg:
+        await _broadcast_debate_message(debate_id, saved_msg)
+
+    context_notes: dict[str, Any] | None = None
+    if body.response_type == "unavailable" and topic:
+        context_notes = {"gap_note": topic}
+
+    return await _spawn_debate_task(debate_id, context_notes=context_notes)
+
+
+@app.get("/api/startup/reeval-status/{job_id}")
+async def startup_reeval_status(
+    job_id: str,
+    user: CurrentUser = Depends(_require_startup),
+) -> dict[str, Any]:
+    """Lightweight polling endpoint for a re-evaluation triggered from the
+    founder portal. Returns the in-memory job status when available.
+    """
+    job = _jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    progress_log = getattr(job, "progress_log", None) or []
+    return {
+        "job_id": job_id,
+        "status": getattr(job, "status", None),
+        "progress": getattr(job, "progress", None),
+        "progress_log": progress_log[-20:],  # cap tail for bandwidth
+    }
 
 
 @app.websocket("/ws/debates/{debate_id}")
@@ -3524,6 +4316,7 @@ async def startup_upload(
 @app.post("/api/startup/re-evaluate")
 async def startup_re_evaluate(
     background_tasks: BackgroundTasks,
+    payload: dict[str, Any] = Body(default_factory=dict),
     user: CurrentUser = Depends(_require_startup),
 ) -> dict[str, Any]:
     """Trigger a re-evaluation of the startup's company using all available evidence.
@@ -3534,13 +4327,284 @@ async def startup_re_evaluate(
     question trees are reused. Stages 2-8 are re-run. Old matches are deleted
     and re-computed against all active VCs.
 
+    Optional body: {"use_web_search": bool} — when true, Stage 2 may call the
+    configured web search provider (Perplexity/Brave) to fill gaps where the
+    document evidence does not answer a question.
+
     Returns immediately. Status can be polled via GET /api/startup/profile.
     """
     if not db:
         raise HTTPException(status_code=503, detail="Database unavailable.")
     company_id = await asyncio.to_thread(_first_linked_company_id, user)
-    background_tasks.add_task(_run_re_evaluation, company_id)
-    return {"status": "re_evaluation_started", "company_id": company_id}
+    use_web_search = bool(payload.get("use_web_search", False))
+    job_id = "re-" + uuid.uuid4().hex[:6]
+    background_tasks.add_task(
+        _run_re_evaluation,
+        company_id,
+        use_web_search,
+        triggered_by=user,
+        job_id=job_id,
+    )
+    return {
+        "status": "re_evaluation_started",
+        "company_id": company_id,
+        "use_web_search": use_web_search,
+        "job_id": job_id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Data Room endpoints
+# ---------------------------------------------------------------------------
+
+_DATA_ROOM_CATEGORIES = {"pitch_deck", "financials", "legal", "team", "product", "other"}
+
+
+@app.put("/api/startup/data-room/toggle")
+async def startup_data_room_toggle(
+    user: CurrentUser = Depends(_require_startup),
+    enabled: bool = Body(..., embed=True),
+) -> dict[str, Any]:
+    """Enable or disable the data room for the startup's company."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    company_id = await asyncio.to_thread(_first_linked_company_id, user)
+    ok = await asyncio.to_thread(db.set_data_room_enabled, company_id, enabled)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to update data room setting.")
+    return {"data_room_enabled": enabled}
+
+
+@app.post("/api/startup/data-room/upload")
+async def startup_data_room_upload(
+    file: UploadFile,
+    user: CurrentUser = Depends(_require_startup),
+    category: str = Form("other"),
+    also_evidence: bool = Form(False),
+) -> dict[str, Any]:
+    """Upload a file to the startup's data room.
+
+    If also_evidence is True, the file is additionally parsed, chunked and
+    ingested as evidence for the AI pipeline (same as POST /api/startup/upload).
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    company_id = await asyncio.to_thread(_first_linked_company_id, user)
+    filename = file.filename or "upload"
+    suffix = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+    if suffix not in _SUPPORTED_UPLOAD_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{suffix}'. Supported: {', '.join(sorted(_SUPPORTED_UPLOAD_EXTENSIONS))}",
+        )
+
+    if category not in _DATA_ROOM_CATEGORIES:
+        category = "other"
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Empty file.")
+
+    # Upload to Supabase Storage under data_room/ sub-path.
+    safe_name = __import__("re").sub(r"[^a-zA-Z0-9._\-]+", "-", filename).strip("-") or "upload"
+    storage_path = f"startup_uploads/{company_id}/data_room/{safe_name}"
+    try:
+        from web.db import ensure_source_files_bucket, SOURCE_FILES_BUCKET  # noqa: PLC0415
+        await asyncio.to_thread(ensure_source_files_bucket)
+        client = db._get_client()
+        options: dict[str, Any] = {"upsert": "true"}
+        content_type = file.content_type
+        if content_type:
+            options["content-type"] = content_type
+        await asyncio.to_thread(
+            client.storage.from_(SOURCE_FILES_BUCKET).upload,
+            storage_path, file_bytes, options,
+        )
+    except Exception as exc:
+        _log = logging.getLogger(__name__)
+        _log.warning("Data room storage upload failed for %s: %s", filename, exc)
+        # Proceed anyway — record the row so the user sees the file.
+
+    # Optionally ingest as evidence.
+    pitch_deck_id: str | None = None
+    chunks_count = 0
+    if also_evidence:
+        import tempfile  # noqa: PLC0415
+        from agent.ingest import _EXTENSION_MAP, _TEXT_EXTENSIONS  # noqa: PLC0415
+        from agent.ingest.chunking import smart_chunk_texts  # noqa: PLC0415
+
+        tmp_dir = tempfile.mkdtemp(prefix="dr_upload_")
+        try:
+            tmp_path = Path(tmp_dir) / filename
+            tmp_path.write_bytes(file_bytes)
+
+            extractor = _EXTENSION_MAP.get(suffix)
+            if extractor is not None:
+                raw_items = extractor(tmp_path)
+            elif suffix in _TEXT_EXTENSIONS:
+                raw_items = [{"text": tmp_path.read_text(errors="replace").strip(), "page_or_slide": "N/A", "source_file": filename}]
+            else:
+                raw_items = []
+
+            if raw_items:
+                chunks = smart_chunk_texts(raw_items)
+                # Reuse the data_room storage_path — no second upload needed.
+                pitch_deck_id = await asyncio.to_thread(
+                    db.create_pitch_deck_for_upload, company_id, storage_path, filename,
+                )
+                if pitch_deck_id:
+                    chunks_count = await asyncio.to_thread(
+                        db.insert_chunks_for_pitch_deck, pitch_deck_id, chunks,
+                    )
+        except Exception as exc:
+            _log = logging.getLogger(__name__)
+            _log.warning("Data room evidence ingest failed for %s: %s", filename, exc)
+        finally:
+            import shutil  # noqa: PLC0415
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    # Create the data_room_files row.
+    row = await asyncio.to_thread(
+        db.create_data_room_file,
+        company_id=company_id,
+        storage_path=storage_path,
+        original_filename=filename,
+        file_size_bytes=len(file_bytes),
+        mime_type=file.content_type,
+        category=category,
+        also_evidence=also_evidence,
+        pitch_deck_id=pitch_deck_id,
+        uploaded_by=user.id,
+    )
+    if not row:
+        raise HTTPException(status_code=500, detail="Failed to create data room record.")
+
+    return {
+        "file": {
+            "id": row.get("id"),
+            "original_filename": row.get("original_filename"),
+            "file_size_bytes": row.get("file_size_bytes"),
+            "mime_type": row.get("mime_type"),
+            "category": row.get("category"),
+            "also_evidence": row.get("also_evidence"),
+            "created_at": row.get("created_at"),
+        },
+        "evidence_created": also_evidence and pitch_deck_id is not None,
+        "chunks_count": chunks_count,
+    }
+
+
+@app.get("/api/startup/data-room/files")
+async def startup_data_room_files(
+    user: CurrentUser = Depends(_require_startup),
+) -> dict[str, Any]:
+    """List all data room files for the startup's company."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    company_id = await asyncio.to_thread(_first_linked_company_id, user)
+    files = await asyncio.to_thread(db.list_data_room_files, company_id)
+    return {"files": files}
+
+
+@app.delete("/api/startup/data-room/files/{file_id}")
+async def startup_data_room_delete(
+    file_id: str,
+    user: CurrentUser = Depends(_require_startup),
+) -> dict[str, Any]:
+    """Delete a data room file (DB row + Storage object)."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    company_id = await asyncio.to_thread(_first_linked_company_id, user)
+
+    # Verify ownership.
+    file_row = await asyncio.to_thread(db.get_data_room_file, file_id)
+    if not file_row or file_row.get("company_id") != company_id:
+        raise HTTPException(status_code=404, detail="File not found.")
+
+    # Delete from Storage (best-effort).
+    await asyncio.to_thread(db.delete_storage_file, file_row.get("storage_path", ""))
+
+    # If also_evidence and linked pitch_deck, delete the pitch_deck (chunks cascade).
+    if file_row.get("also_evidence") and file_row.get("pitch_deck_id"):
+        try:
+            def _delete_pitch_deck(pd_id: str) -> None:
+                client = db._get_client()
+                if client:
+                    client.table("pitch_decks").delete().eq("id", pd_id).execute()
+            await asyncio.to_thread(_delete_pitch_deck, file_row["pitch_deck_id"])
+        except Exception:
+            pass  # best-effort
+
+    # Delete the data_room_files row.
+    await asyncio.to_thread(db.delete_data_room_file, file_id)
+    return {"deleted": True}
+
+
+@app.get("/api/vc/matches/{match_id}/data-room")
+async def vc_match_data_room(
+    match_id: str,
+    user: CurrentUser = Depends(_require_vc),
+) -> dict[str, Any]:
+    """List data room files for a matched company. Verifies VC ownership + data_room_enabled."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+    files = await asyncio.to_thread(db.list_data_room_files_for_match, match_id, user.id)
+    if files is None:
+        raise HTTPException(status_code=403, detail="Access denied or data room not enabled.")
+    return {"files": files}
+
+
+@app.get("/api/data-room/download/{file_id}")
+async def data_room_download(
+    file_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Generate a signed download URL for a data room file.
+
+    Accessible by:
+    - Startup users who own the company
+    - VC users with an active match to the company (and data_room_enabled)
+    """
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    file_row = await asyncio.to_thread(db.get_data_room_file, file_id)
+    if not file_row:
+        raise HTTPException(status_code=404, detail="File not found.")
+
+    company_id = file_row.get("company_id")
+
+    # Check access.
+    allowed = False
+    if user.role == "startup":
+        try:
+            linked = await asyncio.to_thread(_first_linked_company_id, user)
+            allowed = linked == company_id
+        except HTTPException:
+            pass
+    elif user.role in ("vc", "admin"):
+        # Check if VC has any active match with this company.
+        profile = await asyncio.to_thread(db.get_vc_profile, user.id)
+        if profile:
+            matches = await asyncio.to_thread(db.get_matches_for_vc, profile["id"])
+            for m in matches:
+                co = m.get("companies") or {}
+                if co.get("id") == company_id and co.get("data_room_enabled"):
+                    allowed = True
+                    break
+    elif user.role == "admin":
+        allowed = True
+
+    if not allowed:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    url = await asyncio.to_thread(db.create_signed_download_url, file_row.get("storage_path", ""))
+    if not url:
+        raise HTTPException(status_code=500, detail="Failed to generate download URL.")
+
+    return {"download_url": url, "filename": file_row.get("original_filename")}
 
 
 @app.post("/api/startup/analyze")
@@ -3639,30 +4703,137 @@ def _build_evidence_provenance(
     return qa_provenance_rows, argument_rows
 
 
-async def _run_re_evaluation(company_id: str) -> None:
+async def _run_re_evaluation(
+    company_id: str,
+    use_web_search: bool = False,
+    *,
+    triggered_by: CurrentUser | None = None,
+    job_id: str | None = None,
+) -> None:
     """Background task: re-evaluate a company with all available evidence.
 
     Evidence is additive — combines Specter chunks, original pitch deck chunks,
     and all portal-uploaded chunks. Reuses cached question_trees to skip Stage 1.
+
+    Per-stage models are loaded from admin_settings.pipeline_model_defaults (or
+    factory defaults when absent), and all 8 pipeline stages read them via
+    ``use_run_context(pipeline_policy=...)``.
+
+    A ``RunTelemetryCollector`` captures every LLM call and Perplexity search;
+    results are persisted to ``model_executions`` and the aggregated
+    ``run_costs`` block is embedded in ``results_payload``.
+
+    If ``use_web_search`` is True, Stage 2 may call the configured web search
+    provider (Perplexity) to fill gaps where document evidence is missing.
     """
     import logging as _log_module  # noqa: PLC0415
     _logger = _log_module.getLogger(__name__)
-    _logger.info("Re-evaluation started for company=%s", company_id)
+
+    # 0. Mint a trackable job id and register with the in-memory job store so
+    #    the admin Analyses tab + log modal can poll progress.
+    if not job_id:
+        job_id = "re-" + uuid.uuid4().hex[:6]
+
+    started_by_user_id = getattr(triggered_by, "id", None)
+    started_by_email = getattr(triggered_by, "email", None)
+    started_by_display_name = getattr(triggered_by, "display_name", None)
+    started_by_label = started_by_display_name or started_by_email or "portal"
+
+    _jobs[job_id] = AnalysisStatus(
+        job_id=job_id,
+        status="running",
+        progress="Starting re-evaluation",
+        progress_log=[],
+        started_by_user_id=started_by_user_id,
+        started_by_email=started_by_email,
+        started_by_display_name=started_by_display_name,
+        started_by_label=started_by_label,
+    )
+
+    _logger.info(
+        "Re-evaluation started job=%s company=%s use_web_search=%s user=%s",
+        job_id, company_id, use_web_search, started_by_email or "?",
+    )
+
+    # Load admin-configured per-stage model defaults (fall back to factory).
+    try:
+        stored_defaults = await asyncio.to_thread(db.admin_get_pipeline_model_defaults)
+    except Exception as exc:
+        _logger.warning("Re-evaluation: failed to load admin pipeline defaults: %s", exc)
+        stored_defaults = None
+    try:
+        factory_defaults = default_phase_model_selections()
+    except Exception:
+        factory_defaults = {}
+
+    phase_models_raw = stored_defaults if isinstance(stored_defaults, dict) else factory_defaults
+    try:
+        phase_models = coerce_phase_models_payload(phase_models_raw, require_all=True)
+    except Exception as exc:
+        _logger.warning(
+            "Re-evaluation: stored phase_models invalid (%s); falling back to factory defaults",
+            exc,
+        )
+        phase_models = coerce_phase_models_payload(factory_defaults, require_all=True)
+
+    try:
+        pipeline_policy = build_phase_model_policy(phase_models)
+    except Exception as exc:
+        _logger.warning("Re-evaluation: failed to build pipeline policy: %s", exc)
+        pipeline_policy = None
+
+    # NB: RunTelemetryCollector only takes `selected_llm`; company slug and job
+    # id are propagated through contextvars by `use_company_context` and the
+    # collector+pipeline policy bound inside `use_run_context` below.
+    collector = RunTelemetryCollector()
+
+    run_costs: dict[str, Any] | None = None
+    analysis_id: str | None = None
+    final_state_error: Exception | None = None
 
     try:
         from agent.dataclasses.company import Company  # noqa: PLC0415
         from agent.dataclasses.config import Config  # noqa: PLC0415
         from agent.dataclasses.question_tree import QuestionTree  # noqa: PLC0415
-        from agent.evidence_answering import answer_all_trees_from_evidence  # noqa: PLC0415
+        from agent.evidence_answering import (  # noqa: PLC0415
+            answer_all_trees_from_evidence,
+            enrich_qa_pairs_with_new_evidence,
+            write_qa_pairs_into_trees,
+        )
         from agent.ingest.store import Chunk, EvidenceStore  # noqa: PLC0415
         from agent.pipeline.graph import graph  # noqa: PLC0415
         from agent.pipeline.state.investment_story import IterativeInvestmentStoryState  # noqa: PLC0415
+
+        _append_progress(job_id, "Loading company and evidence chunks")
 
         # 1. Load company row.
         company_row = await asyncio.to_thread(db.get_company_by_id, company_id)
         if not company_row:
             _logger.error("Re-evaluation: company %s not found", company_id)
+            _append_progress(job_id, f"ERROR: company {company_id} not found")
+            _set_job_status(job_id, "error")
             return
+
+        # 1a. Snapshot paused debates awaiting founder input so success/failure
+        #     system_notes can land in the right rows. Stored in a module-level
+        #     map keyed by job_id so the except block below can reach it too.
+        try:
+            paused_debates_snapshot = await asyncio.to_thread(
+                db.get_paused_debates_for_company, company_id
+            )
+        except Exception as exc:
+            _logger.warning(
+                "Re-evaluation: failed to snapshot paused debates for %s: %s",
+                company_id, exc,
+            )
+            paused_debates_snapshot = []
+        paused_debate_ids = [d.get("id") for d in paused_debates_snapshot if d.get("id")]
+        if paused_debate_ids:
+            _reeval_debate_links[job_id] = paused_debate_ids
+            _logger.info(
+                "Re-evaluation job=%s linked to %d paused debate(s): %s",
+                job_id, len(paused_debate_ids), paused_debate_ids,
+            )
 
         company = Company(
             name=company_row.get("name") or "Unknown",
@@ -3676,6 +4847,8 @@ async def _run_re_evaluation(company_id: str) -> None:
         all_chunk_rows = await asyncio.to_thread(db.get_all_company_chunks, company_id)
         if not all_chunk_rows:
             _logger.warning("Re-evaluation: no chunks found for company=%s — aborting", company_id)
+            _append_progress(job_id, "ERROR: no evidence chunks found for company")
+            _set_job_status(job_id, "error")
             return
 
         store = EvidenceStore(startup_slug=company_id)
@@ -3686,7 +4859,7 @@ async def _run_re_evaluation(company_id: str) -> None:
                 source_file=c.get("source_file") or "",
                 page_or_slide=c.get("page_or_slide") or "N/A",
             ))
-        _logger.info("Re-evaluation: %d total chunks for company=%s", len(store.chunks), company_id)
+        _append_progress(job_id, f"Loaded {len(store.chunks)} evidence chunks")
 
         # 3. Try to load cached question_trees to skip Stage 1.
         cached_trees_raw = await asyncio.to_thread(db.get_analysis_question_trees, company_id)
@@ -3697,9 +4870,9 @@ async def _run_re_evaluation(company_id: str) -> None:
                     aspect: QuestionTree.model_validate(tree_data)
                     for aspect, tree_data in cached_trees_raw.items()
                 }
-                _logger.info(
-                    "Re-evaluation: reusing %d cached question trees for company=%s",
-                    len(question_trees), company_id,
+                _append_progress(
+                    job_id,
+                    f"Stage 1: reusing {len(question_trees)} cached question trees",
                 )
             except Exception as exc:
                 _logger.warning("Re-evaluation: failed to reconstruct question trees: %s", exc)
@@ -3712,64 +4885,195 @@ async def _run_re_evaluation(company_id: str) -> None:
             max_iterations=1,
         )
 
-        if question_trees:
-            # 4a. Re-run Stage 2 (Answering) with combined corpus.
-            _logger.info("Re-evaluation: running Stage 2 (answering) for company=%s", company_id)
-            all_qa_pairs = await answer_all_trees_from_evidence(question_trees, company, store)
+        # 3a. Load previous analysis snapshot for INCREMENTAL ENRICHMENT.
+        # Re-evaluation must preserve good previous answers verbatim when
+        # the newly uploaded evidence is not relevant to a question — and
+        # enrich (not replace) them when it is. See plan file Part B.
+        prev_analysis = await asyncio.to_thread(db.get_latest_analysis_full, company_id)
+        previous_all_qa_pairs: list[dict] | None = None
+        prev_created_at: str | None = None
+        if prev_analysis and isinstance(prev_analysis.get("state"), dict):
+            raw_qa = prev_analysis["state"].get("all_qa_pairs")
+            if isinstance(raw_qa, list) and raw_qa:
+                previous_all_qa_pairs = [dict(p) for p in raw_qa if isinstance(p, dict)]
+            prev_created_at = prev_analysis.get("created_at")
 
-            # 4b. Run Stages 3-8 via graph (enters at argument generation).
-            _logger.info("Re-evaluation: running Stages 3-8 for company=%s", company_id)
-            final_state = await graph.ainvoke(
-                {
-                    "company": company,
-                    "config": config,
-                    "all_qa_pairs": all_qa_pairs,
-                    "vc_context": "",
-                    "slug": company_id,
-                    "prompt_overrides": {},
-                },
-                config={"recursion_limit": 100},
+        # 3b. Identify chunks uploaded AFTER the previous analysis.
+        new_chunk_rows: list[dict] = []
+        if prev_created_at:
+            try:
+                new_chunk_rows = await asyncio.to_thread(
+                    db.get_chunks_created_after, company_id, prev_created_at,
+                )
+            except Exception as exc:
+                _logger.warning(
+                    "Re-evaluation: get_chunks_created_after failed: %s", exc,
+                )
+                new_chunk_rows = []
+        new_chunks_list: list[Chunk] = [
+            Chunk(
+                chunk_id=c.get("chunk_id") or f"new_chunk_{i}",
+                text=c.get("text") or "",
+                source_file=c.get("source_file") or "",
+                page_or_slide=c.get("page_or_slide") or "N/A",
             )
-        else:
-            # 4c. No cached trees — run full pipeline (Stages 1-8).
-            _logger.info("Re-evaluation: no cached trees, running full pipeline for company=%s", company_id)
-            temp_state = IterativeInvestmentStoryState(
-                company=company,
-                config=config,
-                prompt_overrides={},
-            )
-            decomp_result = await _decompose_questions_safe(temp_state)
-            if not decomp_result:
-                _logger.error("Re-evaluation: decomposition failed for company=%s", company_id)
-                return
+            for i, c in enumerate(new_chunk_rows)
+        ]
+        _append_progress(
+            job_id,
+            f"Found {len(new_chunks_list)} new evidence chunks since previous analysis"
+            + (f" (prev={prev_created_at})" if prev_created_at else " (no previous analysis)"),
+        )
 
-            retrieved_trees = decomp_result.get("question_trees", {})
-            all_qa_pairs = await answer_all_trees_from_evidence(retrieved_trees, company, store)
-            final_state = await graph.ainvoke(
-                {
-                    "company": company,
-                    "config": config,
-                    "all_qa_pairs": all_qa_pairs,
-                    "vc_context": "",
-                    "slug": company_id,
-                    "prompt_overrides": {},
-                },
-                config={"recursion_limit": 100},
-            )
+        # Wrap the whole pipeline in a run context so stages read the admin
+        # pipeline policy and the collector captures token usage + perplexity.
+        # `use_run_context` only takes pipeline_policy / telemetry_collector /
+        # llm_selection — company slug is propagated via `use_company_context`
+        # so `get_current_company_slug()` returns the right value inside the
+        # telemetry callback.
+        with use_company_context(company_id), use_run_context(
+            pipeline_policy=pipeline_policy,
+            telemetry_collector=collector,
+        ):
+            if question_trees:
+                if previous_all_qa_pairs and new_chunks_list:
+                    _append_progress(
+                        job_id,
+                        f"Stage 2: enriching {len(previous_all_qa_pairs)} previous answers "
+                        f"with {len(new_chunks_list)} new chunks",
+                    )
+                    all_qa_pairs = await enrich_qa_pairs_with_new_evidence(
+                        previous_qa_pairs=previous_all_qa_pairs,
+                        question_trees=question_trees,
+                        new_chunks=new_chunks_list,
+                        company=company,
+                        vc_context="",
+                    )
+                elif previous_all_qa_pairs and not new_chunks_list:
+                    _append_progress(
+                        job_id,
+                        f"Stage 2: no new evidence since previous analysis — reusing "
+                        f"{len(previous_all_qa_pairs)} previous answers verbatim",
+                    )
+                    all_qa_pairs = [dict(p) for p in previous_all_qa_pairs]
+                    write_qa_pairs_into_trees(question_trees, all_qa_pairs)
+                else:
+                    _append_progress(
+                        job_id,
+                        f"Stage 2: no previous answers cached — answering "
+                        f"{len(question_trees)} trees against {len(store.chunks)} chunks",
+                    )
+                    all_qa_pairs = await answer_all_trees_from_evidence(
+                        question_trees, company, store, use_web_search=use_web_search,
+                    )
+
+                _append_progress(job_id, "Stages 3-6: argument generation + critique + evaluation + refinement")
+                final_state = await graph.ainvoke(
+                    {
+                        "company": company,
+                        "config": config,
+                        "all_qa_pairs": all_qa_pairs,
+                        "scoring_signals": build_scoring_signals(
+                            company,
+                            evidence_store=store,
+                            all_qa_pairs=all_qa_pairs,
+                        ),
+                        "vc_context": "",
+                        "slug": company_id,
+                        "prompt_overrides": {},
+                    },
+                    config={"recursion_limit": 100},
+                )
+            else:
+                _append_progress(job_id, "Stage 1: decomposing investment questions")
+                temp_state = IterativeInvestmentStoryState(
+                    company=company,
+                    config=config,
+                    prompt_overrides={},
+                )
+                decomp_result = await _decompose_questions_safe(temp_state)
+                if not decomp_result:
+                    _append_progress(job_id, "ERROR: decomposition failed")
+                    _set_job_status(job_id, "error")
+                    return
+
+                retrieved_trees = decomp_result.get("question_trees", {})
+                _append_progress(
+                    job_id,
+                    f"Stage 2: answering {len(retrieved_trees)} trees against {len(store.chunks)} chunks",
+                )
+                all_qa_pairs = await answer_all_trees_from_evidence(
+                    retrieved_trees, company, store, use_web_search=use_web_search,
+                )
+                _append_progress(job_id, "Stages 3-6: argument generation + critique + evaluation + refinement")
+                final_state = await graph.ainvoke(
+                    {
+                        "company": company,
+                        "config": config,
+                        "all_qa_pairs": all_qa_pairs,
+                        "scoring_signals": build_scoring_signals(
+                            company,
+                            evidence_store=store,
+                            all_qa_pairs=all_qa_pairs,
+                        ),
+                        "vc_context": "",
+                        "slug": company_id,
+                        "prompt_overrides": {},
+                    },
+                    config={"recursion_limit": 100},
+                )
+
+            _append_progress(job_id, "Stages 7-8: decision + ranking complete")
 
         # 5. Build results_payload from the final state (including evidence provenance).
         ranking = final_state.get("ranking_result")
         ranking_dict = ranking.model_dump() if hasattr(ranking, "model_dump") else (ranking or {})
-        # Pass local all_qa_pairs directly to avoid LangGraph state-merge artefacts.
         qa_provenance_rows, argument_rows = _build_evidence_provenance(
             final_state, all_qa_pairs=all_qa_pairs
         )
+
+        # Drain + persist telemetry BEFORE saving the analysis so that
+        # `results_payload.run_costs` is populated and `model_executions`
+        # rows exist for the join.
+        _append_progress(job_id, "Persisting telemetry and costs")
+        try:
+            execution_rows = collector.drain_model_executions()
+        except Exception as exc:
+            _logger.error("Re-evaluation: drain_model_executions failed: %s", exc, exc_info=True)
+            execution_rows = []
+
+        if execution_rows:
+            try:
+                await asyncio.to_thread(
+                    db.persist_model_executions,
+                    job_id,
+                    execution_rows,
+                    run_config={
+                        "source": "portal_re_evaluate",
+                        "company_id": company_id,
+                        "phase_models": phase_models,
+                    },
+                )
+            except Exception as exc:
+                _logger.error(
+                    "Re-evaluation: persist_model_executions failed: %s", exc, exc_info=True
+                )
+
+        try:
+            run_costs = build_run_costs_from_model_executions(execution_rows)
+        except Exception as exc:
+            _logger.error(
+                "Re-evaluation: build_run_costs_from_model_executions failed: %s", exc
+            )
+            run_costs = None
+
         results_payload = {
             "mode": "single",
             "ranking_result": ranking_dict,
             "qa_provenance_rows": qa_provenance_rows,
             "argument_rows": argument_rows,
             "decision": final_state.get("final_decision"),
+            "run_costs": run_costs,
         }
 
         # 6. Build state snapshot for storage (includes question_trees for future reuse).
@@ -3786,7 +5090,17 @@ async def _run_re_evaluation(company_id: str) -> None:
             "final_decision": final_state.get("final_decision"),
         }
 
-        # 7. Persist new analysis record (old ones are preserved for history).
+        run_config = {
+            "source": "portal_re_evaluate",
+            "use_web_search": use_web_search,
+            "phase_models": phase_models,
+            "started_by_user_id": started_by_user_id,
+            "started_by_email": started_by_email,
+            "started_by_display_name": started_by_display_name,
+            "started_by_label": started_by_label,
+        }
+
+        _append_progress(job_id, "Saving analysis record")
         analysis_id = await asyncio.to_thread(
             db.create_analysis_record,
             company_id=company_id,
@@ -3794,28 +5108,102 @@ async def _run_re_evaluation(company_id: str) -> None:
             state=state_snapshot,
             results_payload=results_payload,
             status="done",
-            run_config={"source": "portal_re_evaluate"},
+            run_config=run_config,
+            job_id_legacy=job_id,
         )
-        _logger.info("Re-evaluation: analysis saved, id=%s for company=%s", analysis_id, company_id)
+        _logger.info(
+            "Re-evaluation: analysis saved, id=%s job_id=%s for company=%s",
+            analysis_id, job_id, company_id,
+        )
 
-        # 8. Delete stale matches and re-trigger matching.
-        deleted = await asyncio.to_thread(db.delete_matches_for_company, company_id)
-        _logger.info("Re-evaluation: deleted %d stale matches for company=%s", deleted, company_id)
-
-        # Only trigger matching if the company has fundraising enabled.
+        # 8. Re-score existing VC matches in place (force_refresh upserts so
+        #    match ids stay stable → debate FK links survive). We DO NOT call
+        #    delete_matches_for_company here any more — doing so would cascade
+        #    through debates.match_id and destroy every debate for the company.
         company_fresh = await asyncio.to_thread(db.get_company_by_id, company_id)
         if company_fresh and company_fresh.get("fundraising"):
-            await _run_matching_background(company_id)
+            _append_progress(job_id, "Re-running VC matching (force_refresh)")
+            await _run_matching_background(company_id, force_refresh=True)
         else:
             _logger.info(
                 "Re-evaluation: fundraising=false for company=%s — matching not triggered", company_id
             )
 
+        # 8a. Post a system_note into every debate that was paused awaiting
+        #     founder input at the start of this run, so founders can see the
+        #     new analysis is ready and return to the debate.
+        if paused_debate_ids:
+            note_content = (
+                f"New analysis {analysis_id} saved (re-evaluation job {job_id}). "
+                f"Founder may return to the debate to confirm."
+            )
+            for debate_id in paused_debate_ids:
+                try:
+                    saved = await asyncio.to_thread(
+                        db.save_debate_message,
+                        debate_id=debate_id,
+                        round=0,
+                        speaker="system",
+                        content=note_content,
+                        citations=[],
+                        message_type="system_note",
+                        linked_reeval_job_id=job_id,
+                    )
+                    if saved:
+                        await _broadcast_debate_message(debate_id, saved)
+                except Exception as exc:
+                    _logger.warning(
+                        "Re-evaluation: failed to post success system_note to debate=%s: %s",
+                        debate_id, exc,
+                    )
+
+        _append_progress(job_id, "Re-evaluation complete")
+        _set_job_status(job_id, "done")
+
     except Exception as exc:
+        final_state_error = exc
         import logging as _lm  # noqa: PLC0415
         _lm.getLogger(__name__).error(
-            "Re-evaluation failed for company=%s: %s", company_id, exc, exc_info=True
+            "Re-evaluation failed for company=%s job=%s: %s",
+            company_id, job_id, exc, exc_info=True,
         )
+        try:
+            _append_progress(job_id, f"ERROR: {exc}", allow_stopped=True)
+        except Exception:
+            pass
+        _set_job_status(job_id, "error")
+
+        # Surface the failure into any paused debates so the founder sees a
+        # retry/decline prompt inside the debate panel instead of the run
+        # hanging silently.
+        failure_debate_ids = _reeval_debate_links.get(job_id, [])
+        if failure_debate_ids:
+            failure_note = (
+                f"Re-evaluation {job_id} failed: {exc}. "
+                f"Please try uploading again, or decline to provide the evidence."
+            )
+            for debate_id in failure_debate_ids:
+                try:
+                    saved = await asyncio.to_thread(
+                        db.save_debate_message,
+                        debate_id=debate_id,
+                        round=0,
+                        speaker="system",
+                        content=failure_note,
+                        citations=[],
+                        message_type="system_note",
+                        linked_reeval_job_id=job_id,
+                    )
+                    if saved:
+                        await _broadcast_debate_message(debate_id, saved)
+                except Exception as note_exc:
+                    _lm.getLogger(__name__).warning(
+                        "Re-evaluation: failed to post failure system_note to debate=%s: %s",
+                        debate_id, note_exc,
+                    )
+    finally:
+        # Drop the job → debates mapping so we don't leak memory over time.
+        _reeval_debate_links.pop(job_id, None)
 
 
 async def _run_full_analysis(company_id: str) -> None:
@@ -3901,6 +5289,11 @@ async def _run_full_analysis(company_id: str) -> None:
                 "company": company,
                 "config": config,
                 "all_qa_pairs": all_qa_pairs,
+                "scoring_signals": build_scoring_signals(
+                    company,
+                    evidence_store=store,
+                    all_qa_pairs=all_qa_pairs,
+                ),
                 "vc_context": "",
                 "slug": company_id,
                 "prompt_overrides": {},
@@ -4123,7 +5516,30 @@ async def upload_files(
 
 
 _URL_LIKE_RE = re.compile(r"^(?:https?://)?[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}(?:/.*)?$")
-IDENTITY_CONFIRMATION_REQUIRED_CODE = "identity_confirmation_required"
+_LEADGEN_SOURCE_DOMAINS = frozenset(
+    {
+        "angellist.com",
+        "bitbucket.org",
+        "bloomberg.com",
+        "crunchbase.com",
+        "dealroom.co",
+        "eu-startups.com",
+        "facebook.com",
+        "forbes.com",
+        "github.com",
+        "github.io",
+        "gitlab.com",
+        "gitlab.io",
+        "linkedin.com",
+        "medium.com",
+        "producthunt.com",
+        "techcrunch.com",
+        "twitter.com",
+        "wellfound.com",
+        "wikipedia.org",
+        "x.com",
+    }
+)
 
 
 def _normalize_url_for_intake(raw: str) -> str | None:
@@ -4137,117 +5553,98 @@ def _normalize_url_for_intake(raw: str) -> str | None:
     return s
 
 
-def _normalize_confirmed_company_url(raw: str | None) -> str | None:
-    normalized = _normalize_url_for_intake(raw or "")
-    if not normalized:
+def _url_value_for_intake_item(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("url") or "").strip()
+    return str(item or "").strip()
+
+
+def _normalize_url_item_for_intake(raw: Any) -> tuple[Any, str] | None:
+    if isinstance(raw, dict):
+        raw_url = raw.get("url") or raw.get("website") or raw.get("domain")
+        if not isinstance(raw_url, str):
+            return None
+        normalized = _normalize_url_for_intake(raw_url)
+        if normalized is None:
+            return None
+        item = {"url": normalized}
+        raw_name = raw.get("name") or raw.get("expected_name")
+        if isinstance(raw_name, str) and raw_name.strip():
+            item["name"] = raw_name.strip()
+        return item, normalized
+    if not isinstance(raw, str):
         return None
-    try:
-        from agent.ingest.specter_augmentation import _domain_root
-
-        domain = _domain_root(normalized)
-    except Exception:
-        domain = re.sub(r"^https?://", "", normalized.strip().lower()).split("/", 1)[0]
-    return domain or None
+    normalized = _normalize_url_for_intake(raw)
+    if normalized is None:
+        return None
+    return normalized, normalized
 
 
-def _is_single_pitchdeck_identity_gate_job(cache: dict[str, Any], req: AnalyzeRequest) -> bool:
-    if req.input_mode != "pitchdeck" or not req.use_specter_mcp:
-        return False
-    files = list(cache.get("files") or [])
-    return len(files) == 1
+def _normalize_url_items_for_intake(raw_urls: list[Any]) -> tuple[list[Any], list[str]]:
+    cleaned: list[Any] = []
+    invalid: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_urls:
+        normalized_item = _normalize_url_item_for_intake(raw)
+        if normalized_item is None:
+            invalid.append(raw if isinstance(raw, str) else repr(raw))
+            continue
+        item, normalized = normalized_item
+        if normalized not in seen:
+            seen.add(normalized)
+            cleaned.append(item)
+    return cleaned, invalid
 
 
-def _identity_confirmation_response(job_id: str, message: str) -> JSONResponse:
-    return JSONResponse(
-        status_code=409,
-        content={
-            "code": IDENTITY_CONFIRMATION_REQUIRED_CODE,
-            "job_id": job_id,
-            "candidate_url": None,
-            "message": message,
-        },
-    )
-
-
-def _set_pitchdeck_identity(
-    job_id: str,
+def _create_url_intake_job(
+    raw_urls: list[Any],
     *,
-    company_url: str,
-    identity_source: str,
-    specter_resolution_status: str = "pending",
-) -> None:
-    cache = _results_cache.setdefault(job_id, {})
-    cache["confirmed_company_url"] = company_url
-    cache["identity_source"] = identity_source
-    cache["specter_resolution_status"] = specter_resolution_status
-    run_config = cache.setdefault("run_config", {})
-    run_config["confirmed_company_url"] = company_url
-    run_config["identity_source"] = identity_source
-    run_config["specter_resolution_status"] = specter_resolution_status
-
-
-def _update_specter_resolution_status(job_id: str, status: str) -> None:
-    cache = _results_cache.setdefault(job_id, {})
-    cache["specter_resolution_status"] = status
-    if isinstance(cache.get("run_config"), dict):
-        cache["run_config"]["specter_resolution_status"] = status
-
-
-def _prepare_pitchdeck_identity_gate(
-    job_id: str,
-    *,
-    req: AnalyzeRequest,
-    upload_dir: Path,
-) -> JSONResponse | None:
-    cache = _results_cache.get(job_id, {})
-    if not _is_single_pitchdeck_identity_gate_job(cache, req):
-        return None
-
-    confirmed_url = _normalize_confirmed_company_url(req.confirmed_company_url)
-    if req.confirmed_company_url and not confirmed_url:
-        raise HTTPException(status_code=400, detail="Confirmed company URL is not valid.")
-
-    if confirmed_url:
-        _set_pitchdeck_identity(
-            job_id,
-            company_url=confirmed_url,
-            identity_source="user_confirmed",
+    job_id: str | None = None,
+    run_config_extra: dict[str, Any] | None = None,
+    source: str = "upload",
+) -> dict[str, Any]:
+    cleaned, invalid = _normalize_url_items_for_intake(raw_urls)
+    if not cleaned:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No valid URLs provided. Invalid entries: {invalid[:5]!r}",
         )
-        _append_progress_and_log(job_id, f"Company URL confirmed by user: {confirmed_url}")
-        return None
 
-    try:
-        from agent.ingest import ingest_startup_folder
-        from agent.ingest.specter_augmentation import extract_company_url
+    job_id = job_id or str(uuid.uuid4())[:8]
+    upload_dir = Path(tempfile.mkdtemp()) / job_id
+    upload_dir.mkdir(parents=True)
 
-        deck_store = ingest_startup_folder(upload_dir)
-        cache["pitchdeck_identity_store"] = deck_store
-        detected_url = extract_company_url(deck_store)
-    except Exception as exc:
-        print(f"identity-gate: failed to inspect deck for {job_id}: {exc}")
-        detected_url = None
-
-    if detected_url:
-        _set_pitchdeck_identity(
-            job_id,
-            company_url=detected_url,
-            identity_source="deck_detected",
-        )
-        _append_progress_and_log(job_id, f"Company URL detected from deck: {detected_url}")
-        return None
-
-    message = (
-        "We could not confidently identify the company URL from this pitch deck. "
-        "Confirm the company website before starting analysis."
+    _jobs[job_id] = AnalysisStatus(
+        job_id=job_id, status="pending", progress="URLs received"
     )
-    cache["identity_source"] = "confirmation_required"
-    cache["specter_resolution_status"] = "missing_url"
-    if isinstance(cache.get("run_config"), dict):
-        cache["run_config"]["identity_source"] = "confirmation_required"
-        cache["run_config"]["specter_resolution_status"] = "missing_url"
-    _set_job_status(job_id, "pending", message, source="identity_gate")
-    _append_progress_and_log(job_id, "Company URL confirmation required before analysis.")
-    return _identity_confirmation_response(job_id, message)
+    _results_cache[job_id] = {
+        "upload_dir": str(upload_dir),
+        "files": [],
+        "specter": {},
+        "specter_urls": cleaned,
+    }
+    if run_config_extra:
+        _results_cache[job_id]["run_config_extra"] = dict(run_config_extra)
+    if db and db.is_configured():
+        db.insert_analysis_event(
+            job_id,
+            message=f"Received {len(cleaned)} URLs for Specter MCP intake",
+            event_type=source,
+            payload={"num_urls": len(cleaned), "source": source},
+        )
+        db.insert_job_status_history(
+            job_id,
+            status="pending",
+            progress="URLs received",
+            source=source,
+        )
+
+    return {
+        "job_id": job_id,
+        "urls": [_url_value_for_intake_item(item) for item in cleaned],
+        "invalid": invalid,
+        "mode": "specter",
+    }
 
 
 @app.post("/api/upload-urls")
@@ -4272,75 +5669,595 @@ async def upload_urls(
     if not isinstance(raw_urls, list):
         raise HTTPException(status_code=400, detail="`urls` must be a list of strings")
 
-    cleaned: list[str] = []
-    invalid: list[str] = []
-    for raw in raw_urls:
-        if not isinstance(raw, str):
-            invalid.append(repr(raw))
-            continue
-        normalized = _normalize_url_for_intake(raw)
-        if normalized is None:
-            invalid.append(raw)
-            continue
-        if normalized not in cleaned:
-            cleaned.append(normalized)
+    return _create_url_intake_job(raw_urls, source="upload")
 
-    if not cleaned:
-        raise HTTPException(
-            status_code=400,
-            detail=f"No valid URLs provided. Invalid entries: {invalid[:5]!r}",
-        )
 
-    job_id = str(uuid.uuid4())[:8]
-    upload_dir = Path(tempfile.mkdtemp()) / job_id
-    upload_dir.mkdir(parents=True)
+def _leadgen_job_id(batch_id: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", batch_id.strip().lower()).strip("-")
+    slug = slug[:24] or "batch"
+    digest = hashlib.sha256(batch_id.encode("utf-8")).hexdigest()[:10]
+    return f"lg-{slug}-{digest}"
 
-    _jobs[job_id] = AnalysisStatus(
-        job_id=job_id, status="pending", progress="URLs received"
-    )
-    _results_cache[job_id] = {
-        "upload_dir": str(upload_dir),
-        "files": [],
-        "specter": {},
-        "specter_urls": cleaned,
-    }
+
+def _require_leadgen_api_key(x_api_key: str | None) -> None:
+    expected = (os.getenv("LEADGEN_API_KEY") or "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="Leadgen ingest is not configured.")
+    if not x_api_key or not hmac.compare_digest(x_api_key, expected):
+        raise HTTPException(status_code=401, detail="Invalid leadgen API key.")
+
+
+def _leadgen_existing_job_status(job_id: str) -> str | None:
+    job = _jobs.get(job_id)
+    if job is not None:
+        return job.status
     if db and db.is_configured():
-        db.insert_analysis_event(
-            job_id,
-            message=f"Received {len(cleaned)} URLs for Specter MCP intake",
-            event_type="upload",
-            payload={"num_urls": len(cleaned)},
+        load_status = getattr(db, "load_job_status", None)
+        if callable(load_status):
+            try:
+                status = load_status(job_id)
+            except Exception:
+                status = None
+            if isinstance(status, dict):
+                return str(status.get("status") or "pending")
+    return None
+
+
+def _leadgen_source_domain_match(domain: str | None) -> str | None:
+    text = (domain or "").strip().lower()
+    if not text:
+        return None
+    parts = text.split(".")
+    for index in range(len(parts)):
+        suffix = ".".join(parts[index:])
+        if suffix in _LEADGEN_SOURCE_DOMAINS:
+            return suffix
+    return None
+
+
+def _leadgen_source_domain_rejection(normalized_url: str) -> str | None:
+    source_domain = _leadgen_source_domain_match(_leadgen_domain_from_url(normalized_url))
+    if not source_domain:
+        return None
+    return (
+        f"Website/domain points to source platform {source_domain}, "
+        "not a company website."
+    )
+
+
+def _leadgen_url_from_item(item: LeadgenScoredLead) -> tuple[str | None, str | None, str | None]:
+    lead = item.lead
+    website = lead.get("website")
+    domain = lead.get("domain")
+    first_raw: str | None = None
+    first_source_rejection: str | None = None
+    for candidate in (website, domain):
+        if isinstance(candidate, str) and candidate.strip():
+            first_raw = first_raw or candidate
+            normalized = _normalize_url_for_intake(candidate)
+            if normalized:
+                source_rejection = _leadgen_source_domain_rejection(normalized)
+                if source_rejection:
+                    first_source_rejection = first_source_rejection or source_rejection
+                    continue
+                return candidate, normalized, None
+    return first_raw, None, first_source_rejection
+
+
+def _leadgen_lead_name(item: LeadgenScoredLead) -> str | None:
+    name = item.lead.get("name")
+    return name.strip() if isinstance(name, str) and name.strip() else None
+
+
+def _leadgen_context_for_item(
+    item: LeadgenScoredLead,
+    *,
+    normalized_url: str,
+    input_order: int,
+    thesis_key: str | None = None,
+    thesis_status: str | None = None,
+) -> dict[str, Any]:
+    lead = item.lead
+    score = item.score
+    return {
+        "input_order": input_order,
+        "name": _leadgen_lead_name(item),
+        "url": normalized_url,
+        "website": lead.get("website"),
+        "domain": lead.get("domain"),
+        "source": lead.get("source"),
+        "source_url": lead.get("source_url"),
+        "score": score.get("score"),
+        "bucket": score.get("bucket"),
+        "rationale": score.get("rationale"),
+        "scoring_version": score.get("version"),
+        "thesis_key": thesis_key,
+        "thesis_status": thesis_status,
+        "exclusion_flags": score.get("exclusion_flags") or [],
+        "evidence": score.get("evidence") or [],
+        "notes": score.get("notes") or [],
+    }
+
+
+def _leadgen_payload_hash(req: LeadgenBatchRequest) -> str:
+    raw = req.model_dump(mode="json")
+    serialized = json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _leadgen_normalize_token(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    return re.sub(r"[^a-z0-9]+", "_", text).strip("_") or None
+
+
+def _leadgen_first_value(source: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = source.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _leadgen_metadata_sources(item: LeadgenScoredLead, req: LeadgenBatchRequest) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    for root in (item.score, item.lead, req.summary):
+        if not isinstance(root, dict):
+            continue
+        for nested_key in ("qualification", "thesis", "thesis_fit", "metadata", "rockaway"):
+            nested = root.get(nested_key)
+            if isinstance(nested, dict):
+                sources.append(nested)
+        sources.append(root)
+    return sources
+
+
+def _leadgen_qualification(item: LeadgenScoredLead, req: LeadgenBatchRequest) -> tuple[str | None, str | None]:
+    thesis_key = None
+    thesis_status = None
+    for source in _leadgen_metadata_sources(item, req):
+        if thesis_key is None:
+            thesis_key = _leadgen_normalize_token(
+                _leadgen_first_value(
+                    source,
+                    ("thesis_key", "vc_thesis", "thesis", "strategy_key", "strategy"),
+                )
+            )
+        if thesis_status is None:
+            thesis_status = _leadgen_normalize_token(
+                _leadgen_first_value(
+                    source,
+                    ("thesis_status", "fit_status", "qualification_status", "status", "decision"),
+                )
+            )
+        if thesis_key and thesis_status:
+            break
+    if not (thesis_key and thesis_status):
+        # Compatibility for the current LeadGen exporter until it emits
+        # structured thesis metadata alongside the scored lead.
+        rationale = str((item.score or {}).get("rationale") or "").strip().lower()
+        if re.search(r"\brockaway\s+thesis\s+pass\b", rationale):
+            thesis_key = thesis_key or "rockaway"
+            thesis_status = thesis_status or "pass"
+    return thesis_key, thesis_status
+
+
+def _leadgen_is_rockaway_pass(thesis_key: str | None, thesis_status: str | None) -> bool:
+    return thesis_key == "rockaway" and thesis_status in {"pass", "passed"}
+
+
+def _leadgen_domain_from_url(url: str | None) -> str | None:
+    text = (url or "").strip().lower()
+    if not text:
+        return None
+    text = re.sub(r"^https?://", "", text)
+    text = re.sub(r"^www\.", "", text)
+    text = text.split("/", 1)[0].strip()
+    return text or None
+
+
+def _leadgen_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _leadgen_timestamp_for_db(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return text
+
+
+def _prepare_leadgen_intake(req: LeadgenBatchRequest) -> dict[str, Any]:
+    accepted_urls: list[str] = []
+    lead_rows: list[dict[str, Any]] = []
+    errors: list[LeadgenIngestError] = []
+    seen_urls: set[str] = set()
+    duplicate_count = 0
+
+    for idx, item in enumerate(req.leads, start=1):
+        raw_url, normalized_url, url_rejection_reason = _leadgen_url_from_item(item)
+        thesis_key, thesis_status = _leadgen_qualification(item, req)
+        approval_status = "pending"
+        rejection_reason = None
+        eligible = True
+        duplicate_of_url = None
+
+        if not normalized_url:
+            approval_status = "invalid"
+            rejection_reason = url_rejection_reason or "Missing or invalid website/domain."
+            eligible = False
+            errors.append(LeadgenIngestError(lead_name=_leadgen_lead_name(item), url=raw_url, reason=rejection_reason))
+        elif not _leadgen_is_rockaway_pass(thesis_key, thesis_status):
+            approval_status = "ineligible"
+            rejection_reason = "Only Rockaway PASS leads can be queued."
+            eligible = False
+            errors.append(LeadgenIngestError(lead_name=_leadgen_lead_name(item), url=raw_url, reason=rejection_reason))
+        elif normalized_url in seen_urls:
+            approval_status = "duplicate"
+            rejection_reason = "Duplicate URL within this LeadGen batch."
+            duplicate_of_url = normalized_url
+            duplicate_count += 1
+            eligible = False
+            errors.append(LeadgenIngestError(lead_name=_leadgen_lead_name(item), url=raw_url, reason=rejection_reason))
+        else:
+            seen_urls.add(normalized_url)
+            accepted_urls.append(normalized_url)
+
+        context_payload = _leadgen_context_for_item(
+            item,
+            normalized_url=normalized_url or raw_url or "",
+            input_order=idx,
+            thesis_key=thesis_key,
+            thesis_status=thesis_status,
         )
-        db.insert_job_status_history(
-            job_id,
-            status="pending",
-            progress="URLs received",
-            source="upload",
+        lead_rows.append(
+            {
+                "input_order": idx,
+                "company_name": _leadgen_lead_name(item),
+                "domain": _leadgen_domain_from_url(normalized_url) or _leadgen_domain_from_url(raw_url),
+                "url": normalized_url,
+                "leadgen_score": _leadgen_float(item.score.get("score")),
+                "leadgen_bucket": item.score.get("bucket"),
+                "thesis_key": thesis_key,
+                "thesis_status": thesis_status,
+                "eligible": eligible,
+                "approval_status": approval_status,
+                "rejection_reason": rejection_reason,
+                "duplicate_of_url": duplicate_of_url,
+                "raw_lead": item.lead,
+                "raw_score": item.score,
+                "context_payload": context_payload,
+            }
         )
 
     return {
-        "job_id": job_id,
-        "urls": cleaned,
-        "invalid": invalid,
-        "mode": "specter",
+        "accepted_urls": accepted_urls,
+        "lead_rows": lead_rows,
+        "errors": errors,
+        "duplicate_count": duplicate_count,
     }
 
 
-@app.post("/api/analyze/{job_id}")
-async def start_analysis(
-    job_id: str,
-    req: AnalyzeRequest = AnalyzeRequest(),
+def _leadgen_ingest_existing_status(batch: dict[str, Any]) -> str:
+    status = str(batch.get("status") or "").strip().lower()
+    if status == "rejected":
+        return "existing_rejected"
+    if batch.get("job_id_legacy") or status == "queued":
+        return "existing_queued"
+    return "existing_pending"
+
+
+def _require_leadgen_intake_storage() -> None:
+    if not db or not db.is_configured():
+        raise HTTPException(status_code=503, detail="LeadGen intake storage is not configured.")
+
+
+@app.post("/api/leadgen/ingest", response_model=LeadgenIngestResponse, status_code=202)
+@app.post("/api/leadgen/intake", response_model=LeadgenIngestResponse, status_code=202)
+async def leadgen_ingest(
+    req: LeadgenBatchRequest,
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+) -> LeadgenIngestResponse:
+    _require_leadgen_api_key(x_api_key)
+    _require_leadgen_intake_storage()
+
+    prepared = _prepare_leadgen_intake(req)
+    accepted_urls = prepared["accepted_urls"]
+    errors = prepared["errors"]
+    batch_payload = {
+        "batch_id": req.batch_id,
+        "generated_at": _leadgen_timestamp_for_db(req.generated_at),
+        "scoring_version": req.scoring_version,
+        "source": "leadgen",
+        "thesis_key": "rockaway",
+        "status": "pending" if accepted_urls else "rejected",
+        "lead_count": len(req.leads),
+        "accepted_count": len(accepted_urls),
+        "rejected_count": len(errors),
+        "duplicate_count": prepared["duplicate_count"],
+        "payload_hash": _leadgen_payload_hash(req),
+        "summary": req.summary,
+    }
+    create_intake = getattr(db, "create_leadgen_intake", None)
+    if not callable(create_intake):
+        raise HTTPException(status_code=503, detail="LeadGen intake storage is unavailable.")
+    result = create_intake(batch=batch_payload, leads=prepared["lead_rows"])
+    if not result:
+        raise HTTPException(status_code=503, detail="Failed to store LeadGen intake.")
+    if result.get("status") == "conflict":
+        raise HTTPException(
+            status_code=409,
+            detail="batch_id_conflict: this LeadGen batch_id already exists with different contents.",
+        )
+
+    batch = result.get("batch") or {}
+    response_status = (
+        _leadgen_ingest_existing_status(batch)
+        if result.get("status") == "existing"
+        else ("pending_approval" if accepted_urls else "rejected")
+    )
+    return LeadgenIngestResponse(
+        batch_id=req.batch_id,
+        intake_id=batch.get("intake_id") or batch.get("id"),
+        job_id=batch.get("job_id_legacy"),
+        status=response_status,  # type: ignore[arg-type]
+        accepted_count=int(batch.get("accepted_count") if batch.get("accepted_count") is not None else len(accepted_urls)),
+        rejected_count=int(batch.get("rejected_count") if batch.get("rejected_count") is not None else len(errors)),
+        accepted_urls=accepted_urls,
+        errors=errors,
+    )
+
+
+async def _require_leadgen_operator(
+    *,
+    session_id: str | None,
+    authorization: str | None,
+) -> dict[str, str | None]:
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    identity = await _require_supabase_identity(authorization)
+    if identity:
+        return identity
+    return {
+        "started_by_display_name": "Deal Intelligence",
+        "started_by_label": "Deal Intelligence approval",
+    }
+
+
+def _leadgen_detail_or_404(intake_id: str) -> dict[str, Any]:
+    _require_leadgen_intake_storage()
+    load_intake = getattr(db, "load_leadgen_intake", None)
+    if not callable(load_intake):
+        raise HTTPException(status_code=503, detail="LeadGen intake storage is unavailable.")
+    detail = load_intake(intake_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="LeadGen intake not found.")
+    return detail
+
+
+def _leadgen_approved_lead_context(lead: dict[str, Any]) -> dict[str, Any]:
+    context = dict(lead.get("context_payload") or {})
+    context["lead_id"] = lead.get("lead_id") or lead.get("id")
+    context["approval_status"] = "approved"
+    return context
+
+
+def _leadgen_specter_url_item(lead: dict[str, Any]) -> dict[str, str] | str:
+    url = str(lead.get("url") or "").strip()
+    name = str(lead.get("company_name") or "").strip()
+    if name:
+        return {"url": url, "name": name}
+    return url
+
+
+def _leadgen_run_config_for_approval(
+    *,
+    batch: dict[str, Any],
+    leads: list[dict[str, Any]],
+    actor: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "source": "leadgen",
+        "leadgen": {
+            "intake_id": batch.get("intake_id") or batch.get("id"),
+            "batch_id": batch.get("batch_id"),
+            "generated_at": batch.get("generated_at"),
+            "scoring_version": batch.get("scoring_version"),
+            "summary": batch.get("summary") or {},
+            "approved_lead_ids": [lead.get("lead_id") or lead.get("id") for lead in leads],
+            "leads": [_leadgen_approved_lead_context(lead) for lead in leads],
+            "approval": {
+                "approved_by_user_id": actor.get("started_by_user_id"),
+                "approved_by_email": actor.get("started_by_email"),
+                "approved_by_display_name": actor.get("started_by_display_name"),
+                "approved_by_label": actor.get("started_by_label"),
+            },
+        },
+    }
+
+
+@app.get("/api/leadgen/intakes")
+async def list_leadgen_intakes(
+    status: str = Query(default="pending"),
+    limit: int = Query(default=50, ge=1, le=200),
     session_id: str | None = Cookie(default=None),
-    authorization: str | None = Header(default=None),
 ):
     if not _check_session(session_id):
         raise HTTPException(status_code=401, detail="Not authenticated")
+    _require_leadgen_intake_storage()
+    list_intakes = getattr(db, "list_leadgen_intake_batches", None)
+    if not callable(list_intakes):
+        raise HTTPException(status_code=503, detail="LeadGen intake storage is unavailable.")
+    normalized_status = (status or "pending").strip().lower()
+    if normalized_status not in {"pending", "queued", "approved", "partially_approved", "rejected", "all"}:
+        normalized_status = "pending"
+    return {"batches": list_intakes(status=normalized_status, limit=limit)}
 
+
+@app.get("/api/leadgen/intakes/{intake_id}")
+async def get_leadgen_intake(
+    intake_id: str,
+    session_id: str | None = Cookie(default=None),
+):
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return _leadgen_detail_or_404(intake_id)
+
+
+@app.post("/api/leadgen/intakes/{intake_id}/approve")
+async def approve_leadgen_intake(
+    intake_id: str,
+    req: LeadgenApprovalRequest,
+    session_id: str | None = Cookie(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    actor = await _require_leadgen_operator(session_id=session_id, authorization=authorization)
+    detail = _leadgen_detail_or_404(intake_id)
+    batch = detail["batch"]
+    existing_job_id = batch.get("job_id_legacy")
+    if existing_job_id:
+        return {
+            "status": "existing_job",
+            "intake_id": batch.get("intake_id") or batch.get("id"),
+            "job_id": existing_job_id,
+            "approved_count": 0,
+            "approved_urls": [],
+        }
+
+    requested_ids = {str(item) for item in (req.lead_ids or []) if str(item or "").strip()}
+    if not req.approve_all_eligible and not requested_ids:
+        raise HTTPException(status_code=400, detail="Select at least one LeadGen company to approve.")
+
+    eligible_leads: list[dict[str, Any]] = []
+    for lead in detail.get("leads") or []:
+        lead_id = str(lead.get("lead_id") or lead.get("id") or "")
+        if not lead.get("eligible"):
+            continue
+        if str(lead.get("approval_status") or "").lower() != "pending":
+            continue
+        if req.approve_all_eligible or lead_id in requested_ids:
+            eligible_leads.append(lead)
+
+    if not eligible_leads:
+        raise HTTPException(status_code=400, detail="No eligible pending LeadGen companies matched the approval request.")
+
+    approved_url_items = [
+        _leadgen_specter_url_item(lead)
+        for lead in eligible_leads
+        if str(lead.get("url") or "").strip()
+    ]
+    approved_urls = [_url_value_for_intake_item(item) for item in approved_url_items]
+    if not approved_urls:
+        raise HTTPException(status_code=400, detail="Approved LeadGen companies do not contain valid URLs.")
+
+    job_id = _leadgen_job_id(str(batch.get("batch_id") or intake_id))
+    existing_status = _leadgen_existing_job_status(job_id)
+    if existing_status:
+        return {
+            "status": "existing_job",
+            "intake_id": batch.get("intake_id") or batch.get("id"),
+            "job_id": job_id,
+            "approved_count": len(eligible_leads),
+            "approved_urls": approved_urls,
+        }
+
+    _create_url_intake_job(
+        approved_url_items,
+        job_id=job_id,
+        run_config_extra=_leadgen_run_config_for_approval(batch=batch, leads=eligible_leads, actor=actor),
+        source="leadgen",
+    )
+    await _start_analysis_job(
+        job_id,
+        AnalyzeRequest(
+            use_web_search=True,
+            use_specter_mcp=True,
+            fetch_full_team=True,
+            input_mode="specter",
+            run_name=f"leadgen:{batch.get('batch_id') or intake_id}",
+        ),
+        started_by=actor,
+        require_identity=False,
+    )
+
+    mark_queued = getattr(db, "mark_leadgen_intake_queued", None)
+    if not callable(mark_queued):
+        raise HTTPException(status_code=503, detail="LeadGen intake approval storage is unavailable.")
+    updated = mark_queued(
+        intake_id=intake_id,
+        lead_ids=[str(lead.get("lead_id") or lead.get("id")) for lead in eligible_leads],
+        job_id_legacy=job_id,
+        actor=actor,
+    )
+    if not updated:
+        raise HTTPException(status_code=503, detail="LeadGen approval was queued but could not be recorded.")
+    return {
+        "status": "queued",
+        "intake_id": intake_id,
+        "job_id": job_id,
+        "approved_count": len(eligible_leads),
+        "approved_urls": approved_urls,
+        "batch": updated.get("batch"),
+    }
+
+
+@app.post("/api/leadgen/intakes/{intake_id}/reject")
+async def reject_leadgen_intake(
+    intake_id: str,
+    req: LeadgenRejectRequest,
+    session_id: str | None = Cookie(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    actor = await _require_leadgen_operator(session_id=session_id, authorization=authorization)
+    detail = _leadgen_detail_or_404(intake_id)
+    batch = detail["batch"]
+    if batch.get("job_id_legacy"):
+        raise HTTPException(status_code=409, detail="This LeadGen intake already has a queued job.")
+    requested_ids = [str(item) for item in (req.lead_ids or []) if str(item or "").strip()]
+    if not req.reject_all and not requested_ids:
+        raise HTTPException(status_code=400, detail="Select at least one LeadGen company to reject.")
+
+    reject_fn = getattr(db, "reject_leadgen_intake", None)
+    if not callable(reject_fn):
+        raise HTTPException(status_code=503, detail="LeadGen intake rejection storage is unavailable.")
+    updated = reject_fn(
+        intake_id=intake_id,
+        actor=actor,
+        reason=req.reason,
+        lead_ids=requested_ids,
+        reject_all=req.reject_all,
+    )
+    if not updated:
+        raise HTTPException(status_code=503, detail="Failed to reject LeadGen intake.")
+    return {"status": "rejected" if req.reject_all else "leads_rejected", **updated}
+
+
+async def _start_analysis_job(
+    job_id: str,
+    req: AnalyzeRequest,
+    *,
+    authorization: str | None = None,
+    started_by: dict[str, str | None] | None = None,
+    require_identity: bool = True,
+):
     if job_id not in _jobs:
         raise HTTPException(status_code=404, detail="Job not found")
 
     _cancel_scheduled_restart()
-    started_by = await _require_supabase_identity(authorization)
+    if started_by is None:
+        started_by = await _require_supabase_identity(authorization) if require_identity else {}
 
     quality_tier = normalize_quality_tier(req.quality_tier)
     pipeline_policy = None
@@ -4391,6 +6308,8 @@ async def start_analysis(
         effective_phase_models = None
         llm_display = llm_selection["label"]
 
+    _set_job_status(job_id, "running", "Starting analysis...", source="start_analysis")
+    _job_controls[job_id] = {"pause_requested": False, "stop_requested": False}
     cache = _results_cache[job_id]
     _jobs[job_id].started_by_user_id = started_by.get("started_by_user_id")
     _jobs[job_id].started_by_email = started_by.get("started_by_email")
@@ -4414,6 +6333,9 @@ async def start_analysis(
         premium_phase_models if quality_tier == "premium" else None
     )
     cache["effective_phase_models"] = effective_phase_models
+    run_config_extra = cache.get("run_config_extra")
+    if not isinstance(run_config_extra, dict):
+        run_config_extra = {}
     cache["run_config"] = {
         "input_mode": req.input_mode,
         "run_name": req.run_name,
@@ -4422,9 +6344,6 @@ async def start_analysis(
         "use_web_search": req.use_web_search,
         "use_specter_mcp": req.use_specter_mcp,
         "fetch_full_team": req.fetch_full_team,
-        "confirmed_company_url": None,
-        "identity_source": None,
-        "specter_resolution_status": None,
         "phase_models": phase_models if (req.phase_models or pipeline_policy is not None and quality_tier is None) else None,
         "quality_tier": quality_tier,
         "premium_phase_models": premium_phase_models if quality_tier == "premium" else None,
@@ -4433,32 +6352,15 @@ async def start_analysis(
         "llm_model": llm_selection["model"],
         "llm": llm_display,
         **started_by,
+        **run_config_extra,
     }
     cache["model_executions"] = []
     cache["run_costs_aggregate"] = _empty_run_costs_summary()
     cache["versions"] = _runtime_versions()
 
-    upload_dir_raw = cache.get("upload_dir")
-    upload_dir = Path(upload_dir_raw) if upload_dir_raw else None
-    if req.input_mode == "pitchdeck":
-        if upload_dir is None:
-            raise HTTPException(status_code=400, detail="Upload directory is unavailable.")
-        identity_response = _prepare_pitchdeck_identity_gate(
-            job_id,
-            req=req,
-            upload_dir=upload_dir,
-        )
-        if identity_response is not None:
-            return identity_response
-
     if db and db.is_configured():
         run_config = dict(cache["run_config"])
         db.upsert_job(job_id, run_config=run_config, versions=_runtime_versions())
-
-    _set_job_status(job_id, "running", "Starting analysis...", source="start_analysis")
-    _job_controls[job_id] = {"pause_requested": False, "stop_requested": False}
-
-    if db and db.is_configured():
         db.upsert_job_control(
             job_id,
             pause_requested=False,
@@ -4479,9 +6381,6 @@ async def start_analysis(
         _append_progress_and_log(job_id, f"Worker queue failed — {queue_error}")
         raise HTTPException(status_code=503, detail=f"Specter worker queue failed: {queue_error}")
 
-    if upload_dir is None:
-        raise HTTPException(status_code=400, detail="Upload directory is unavailable.")
-
     # Run the analysis loop in a dedicated thread/event-loop to keep
     # the main FastAPI loop responsive for pause/resume/stop controls.
     threading.Thread(
@@ -4501,6 +6400,27 @@ async def start_analysis(
         daemon=True,
     ).start()
     return {"status": "running", "use_web_search": req.use_web_search, "llm": llm_display}
+
+
+@app.post("/api/analyze/{job_id}")
+async def start_analysis(
+    job_id: str,
+    req: AnalyzeRequest = AnalyzeRequest(),
+    session_id: str | None = Cookie(default=None),
+    authorization: str | None = Header(default=None),
+):
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    # Direct unit calls receive FastAPI's Header sentinel instead of a resolved value.
+    direct_dependency_default = not isinstance(authorization, (str, type(None)))
+    authorization_value = authorization if isinstance(authorization, str) else None
+
+    return await _start_analysis_job(
+        job_id,
+        req,
+        authorization=authorization_value,
+        require_identity=not direct_dependency_default,
+    )
 
 
 @app.post("/api/jobs/{job_id}/control")
@@ -4574,6 +6494,39 @@ def _report_mode_hint(job_id: str, results_list: list[dict[str, Any]]) -> str:
     if len(results_list) == 1 and not any(item.get("skipped") for item in results_list):
         return "single"
     return "batch"
+
+
+SPECTER_PROFILE_BASE_URL = "https://app.tryspecter.com/signals/company/feed/"
+
+
+def _company_url_from_domain(domain: str | None) -> str | None:
+    text = (domain or "").strip()
+    if not text:
+        return None
+    if text.startswith(("http://", "https://")):
+        return text
+    text = text.lower().removeprefix("www.").split("/", 1)[0]
+    return f"https://{text}" if "." in text else None
+
+
+def _company_link_metadata(company: Any) -> dict[str, str]:
+    domain = (getattr(company, "domain", None) or "").strip()
+    company_url = (
+        (getattr(company, "company_url", None) or "").strip()
+        or _company_url_from_domain(domain)
+        or ""
+    )
+    specter_company_id = (getattr(company, "specter_company_id", None) or "").strip()
+    specter_profile_url = (
+        (getattr(company, "specter_profile_url", None) or "").strip()
+        or (f"{SPECTER_PROFILE_BASE_URL}{specter_company_id}" if specter_company_id else "")
+    )
+    return {
+        "domain": domain,
+        "company_url": company_url,
+        "specter_company_id": specter_company_id,
+        "specter_profile_url": specter_profile_url,
+    }
 
 
 def _merge_runtime_payload_metadata(job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -4663,6 +6616,7 @@ def _compose_results_payload(
 
         ranking = final_state.get("ranking_result")
         ranking_result = None
+        company_metadata = _company_link_metadata(company)
         if ranking:
             dimension_scores_payload = []
             for d in ranking.dimension_scores:
@@ -4670,8 +6624,18 @@ def _compose_results_payload(
                 dimension_scores_payload.append(
                     {
                         "dimension": d.dimension,
+                        "raw_score": d.raw_score,
                         "adjusted_score": display_score,
                         "confidence": d.confidence,
+                        "evidence_count": d.evidence_count,
+                        "top_qa_indices": list(d.top_qa_indices or []),
+                        "sub_scores": dict(getattr(d, "sub_scores", {}) or {}),
+                        "founder_archetype": getattr(d, "founder_archetype", "") or "",
+                        "stage_context": getattr(d, "stage_context", "") or "",
+                        "adjustment_policy": getattr(d, "adjustment_policy", "") or "",
+                        "upside_ceiling_score": getattr(d, "upside_ceiling_score", None),
+                        "risk_adjusted_potential_score": getattr(d, "risk_adjusted_potential_score", None),
+                        "scoring_signal_refs": list(getattr(d, "scoring_signal_refs", []) or []),
                         "evidence_snippets": d.evidence_snippets,
                         "critical_gaps": d.critical_gaps,
                     }
@@ -4683,6 +6647,8 @@ def _compose_results_payload(
                 "strategy_fit_score": ranking.strategy_fit_score,
                 "team_score": ranking.team_score,
                 "upside_score": ranking.upside_score,
+                "upside_ceiling_score": getattr(ranking, "upside_ceiling_score", None),
+                "risk_adjusted_potential_score": getattr(ranking, "risk_adjusted_potential_score", None),
                 "bucket": ranking.bucket,
                 "strategy_fit_summary": getattr(ranking, "strategy_fit_summary", "") or "",
                 "team_summary": getattr(ranking, "team_summary", "") or "",
@@ -4690,6 +6656,11 @@ def _compose_results_payload(
                 "key_points": getattr(ranking, "key_points", []) or [],
                 "red_flags": getattr(ranking, "red_flags", []) or [],
                 "dimension_scores": dimension_scores_payload,
+                "team_subscores": getattr(ranking, "team_subscores", {}) or {},
+                "potential_subscores": getattr(ranking, "potential_subscores", {}) or {},
+                "founder_archetype": getattr(ranking, "founder_archetype", "") or "",
+                "stage_context": getattr(ranking, "stage_context", "") or "",
+                "scoring_signals_used": getattr(ranking, "scoring_signals_used", {}) or {},
             }
 
         payload = {
@@ -4699,6 +6670,7 @@ def _compose_results_payload(
             "industry": company.industry or "N/A",
             "tagline": company.tagline or "",
             "about": company.about or "",
+            **company_metadata,
             "decision": final_state.get("final_decision", "unknown"),
             "total_score": round(total_score, 2),
             "avg_pro": round(avg_pro, 2),
@@ -4875,7 +6847,7 @@ def _queue_worker_backed_specter_job(job_id: str) -> tuple[bool, str | None]:
 
     cache = _results_cache.get(job_id, {})
     specter = cache.get("specter") or {}
-    specter_urls: list[str] = list(cache.get("specter_urls") or [])
+    specter_urls: list[Any] = list(cache.get("specter_urls") or [])
     companies_csv = specter.get("companies")
     companies_storage_path = specter.get("companies_storage_path")
 
@@ -4928,7 +6900,12 @@ def _queue_worker_backed_specter_job(job_id: str) -> tuple[bool, str | None]:
         for d in csv_descriptors
         if d.get("domain")
     }
-    deduped_urls = [u for u in specter_urls if u.lower() not in csv_domains]
+    deduped_urls = [
+        item
+        for item in specter_urls
+        if (_leadgen_domain_from_url(_url_value_for_intake_item(item)) or _url_value_for_intake_item(item).lower())
+        not in csv_domains
+    ]
 
     max_startups = _parse_max_startups_from_instructions(cache.get("instructions"))
     if max_startups is not None:
@@ -5152,6 +7129,7 @@ def _failure_result_payload(
     error_message: str,
 ) -> dict[str, Any]:
     founders = _extract_founders_from_company(company, slug)
+    company_metadata = _company_link_metadata(company)
     payload = {
         "mode": "single",
         "startup_slug": slug,
@@ -5159,6 +7137,7 @@ def _failure_result_payload(
         "industry": company.industry or "N/A",
         "tagline": company.tagline or "",
         "about": company.about or "",
+        **company_metadata,
         "decision": status,
         "total_score": None,
         "avg_pro": None,
@@ -5172,6 +7151,7 @@ def _failure_result_payload(
         "summary_rows": [{
             "startup_slug": slug,
             "company_name": company.name,
+            **company_metadata,
             "decision": status,
             "total_score": None,
             "avg_pro": None,
@@ -5571,34 +7551,22 @@ async def _run_document_analysis(
         ):
             try:
                 from agent.ingest import ingest_startup_folder
-                from agent.ingest.specter_augmentation import augment_with_specter_status
+                from agent.ingest.specter_augmentation import augment_with_specter
                 # The URL extracted from the deck text is the canonical
                 # company identifier. We deliberately do NOT pass
                 # expected_name: filename-derived names are noisy
                 # (e.g. "Zaitra PitchDeck Extended.pdf") and the MCP
                 # client's domain-root check already catches Specter
                 # cross-resolves like Scribe→Shopscribe.
-                cache = _results_cache.get(job_id, {})
-                confirmed_url = cache.get("confirmed_company_url")
-                deck_store = cache.get("pitchdeck_identity_store") or ingest_startup_folder(upload_dir)
-                augmentation = augment_with_specter_status(
+                deck_store = ingest_startup_folder(upload_dir)
+                seed_store, seed_company = augment_with_specter(
                     deck_store,
                     slug=upload_dir.name,
                     fetch_full_team=fetch_full_team,
-                    url_override=confirmed_url,
                     on_log=lambda m: (_append_progress(job_id, m), print(m)),
                 )
-                seed_store = augmentation["store"]
-                seed_company = augmentation["company"]
-                if augmentation.get("status") == "resolved":
-                    _update_specter_resolution_status(job_id, "resolved")
-                    _append_progress(job_id, "Specter resolved confirmed company URL.")
-                elif augmentation.get("url"):
-                    _update_specter_resolution_status(job_id, "deck_only")
-                    _append_progress(job_id, "Specter could not resolve the company URL; continuing deck-only.")
             except Exception as exc:  # noqa: BLE001 — augmentation is best-effort
                 print(f"specter-augment: pre-ingest failed for {upload_dir.name}: {exc}")
-                _update_specter_resolution_status(job_id, "deck_only")
                 seed_store = None
                 seed_company = None
 
@@ -5620,9 +7588,6 @@ async def _run_document_analysis(
                 source="run_document_analysis",
             )
             return
-        confirmed_url = (_results_cache.get(job_id, {}) or {}).get("confirmed_company_url")
-        if confirmed_url and result.get("company") is not None and not getattr(result["company"], "domain", None):
-            result["company"].domain = confirmed_url
         _persist_company_result_to_db(job_id, result)
         _append_progress(job_id, "Finalizing results...")
         _build_results_payload([result], job_id, upload_dir)
@@ -6635,6 +8600,31 @@ async def list_company_runs(session_id: str | None = Cookie(default=None)):
         payload,
         COMPANY_RUNS_CACHE_SECONDS,
     )
+
+
+@app.get("/api/company-runs/summary")
+async def list_company_run_summaries(
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    sort: str = Query(default="latest"),
+    session_id: str | None = Cookie(default=None),
+):
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return _list_company_run_summaries_for_ui(limit=limit, offset=offset, sort=sort)
+
+
+@app.get("/api/company-runs/detail/{company_lookup_key}")
+async def get_company_run_detail(
+    company_lookup_key: str,
+    session_id: str | None = Cookie(default=None),
+):
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    detail = _load_company_run_detail_for_ui(company_lookup_key)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Company run detail not found")
+    return {"company": detail}
 
 
 @app.get("/api/companies/{company_lookup_key}/chat")
