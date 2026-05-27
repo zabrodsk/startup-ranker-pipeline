@@ -2124,6 +2124,46 @@
       font-family: var(--font-body);
       font-size: 22px; font-weight: 700;
     }
+    .rank-company-title {
+      display: inline-flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      min-width: 0;
+    }
+    .rank-company-links {
+      display: inline-flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .rank-company-link {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      padding: 3px 8px;
+      border-radius: var(--radius-md);
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.035);
+      color: var(--text-mid);
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.2;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    .rank-company-link:hover {
+      color: var(--text-white);
+      border-color: var(--blue-border-accent);
+      background: var(--blue-surface-subtle);
+    }
+    .rank-company-link.specter {
+      color: var(--green);
+      border-color: var(--green-border);
+      background: var(--green-bg);
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
     .decision-badge {
       padding: 4px 12px;
       border-radius: var(--radius-sm);
@@ -3401,6 +3441,235 @@
       min-height: 0;
       padding: 16px 24px 24px;
     }
+    .leadgen-screen-content {
+      flex: 1;
+      min-height: 0;
+      padding: 16px 24px 24px;
+    }
+    .leadgen-page {
+      height: 100%;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(300px, 24%) minmax(0, 1fr);
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.018);
+    }
+    .leadgen-sidebar {
+      min-height: 0;
+      overflow: auto;
+      border-right: 1px solid var(--border);
+      background: var(--bg-surface);
+    }
+    .leadgen-sidebar-head {
+      padding: 22px 22px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .leadgen-sidebar-title-row,
+    .leadgen-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .leadgen-sidebar-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-white);
+    }
+    .leadgen-filter-select,
+    .leadgen-sort-select {
+      appearance: none;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: var(--radius-md);
+      background: rgba(0,0,0,0.28);
+      color: var(--text-light);
+      font: 12px var(--font-body);
+      padding: 8px 10px;
+      outline: none;
+    }
+    .leadgen-batch-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 0 10px 16px;
+    }
+    .leadgen-batch-card {
+      width: 100%;
+      text-align: left;
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: var(--radius-md);
+      background: rgba(0,0,0,0.24);
+      color: var(--text-light);
+      padding: 12px;
+      cursor: pointer;
+      transition: border-color 0.18s ease, background 0.18s ease, transform 0.12s ease;
+    }
+    .leadgen-batch-card:hover,
+    .leadgen-batch-card.selected {
+      border-color: var(--blue-border-accent);
+      background: var(--blue-surface-subtle);
+      transform: translateY(-1px);
+    }
+    .leadgen-batch-name {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-white);
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    .leadgen-batch-meta,
+    .leadgen-batch-submeta {
+      margin-top: 6px;
+      color: var(--text-gray);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .leadgen-detail {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      padding: 22px 24px 24px;
+    }
+    .leadgen-detail-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+    .leadgen-detail-title h1 {
+      font-size: 28px;
+      line-height: 1.1;
+      color: var(--text-white);
+      overflow-wrap: anywhere;
+    }
+    .leadgen-detail-title p {
+      margin-top: 7px;
+      color: var(--text-gray);
+      font-size: 13px;
+    }
+    .leadgen-action-group {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+    .leadgen-table-wrap {
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      overflow: auto;
+      background: rgba(0,0,0,0.22);
+    }
+    .leadgen-table {
+      width: 100%;
+      min-width: 860px;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    .leadgen-table th,
+    .leadgen-table td {
+      padding: 12px 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.055);
+      color: var(--text-light);
+      font-size: 13px;
+      line-height: 1.35;
+      vertical-align: top;
+    }
+    .leadgen-table th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #0c0f18;
+      color: var(--text-gray);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+    }
+    .leadgen-table td:first-child,
+    .leadgen-table th:first-child {
+      width: 42px;
+      text-align: center;
+    }
+    .leadgen-company-name {
+      color: var(--text-white);
+      font-weight: 700;
+      overflow-wrap: anywhere;
+    }
+    .leadgen-company-domain,
+    .leadgen-rationale {
+      margin-top: 4px;
+      color: var(--text-gray);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    .leadgen-badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 3px 8px;
+      border-radius: var(--radius-full);
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.04);
+      color: var(--text-light);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+    }
+    .leadgen-badge.pending,
+    .leadgen-badge.approved,
+    .leadgen-badge.queued {
+      border-color: var(--green-border-strong);
+      background: var(--green-surface-subtle);
+      color: var(--green);
+    }
+    .leadgen-badge.rejected,
+    .leadgen-badge.invalid,
+    .leadgen-badge.ineligible,
+    .leadgen-badge.duplicate {
+      border-color: var(--red-border);
+      background: rgba(255,107,107,0.08);
+      color: var(--red);
+    }
+    .leadgen-table input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--green);
+    }
+    .leadgen-empty {
+      min-height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 15px;
+      line-height: 1.6;
+      border: 1px dashed var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 32px;
+      background: rgba(255,255,255,0.01);
+    }
+    .leadgen-alert {
+      margin: 0 0 14px;
+      border: 1px solid var(--color-warn-border);
+      border-radius: var(--radius-md);
+      background: var(--color-warn-bg);
+      color: var(--text-light);
+      padding: 11px 12px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .leadgen-action-status {
+      min-height: 18px;
+      color: var(--text-gray);
+      font-size: 12px;
+      margin-top: 10px;
+    }
     .progress-log-modal-content {
       max-height: 400px; overflow-y: auto; font-size: 12px; font-family: monospace;
       white-space: pre-wrap; padding: 12px; color: var(--text-dim);
@@ -3599,6 +3868,12 @@
         transform: none;
       }
       .companies-page-detail { padding: 16px 0 0; }
+      .leadgen-screen-content { padding: 16px; }
+      .leadgen-page { grid-template-columns: 1fr; }
+      .leadgen-sidebar { border-right: none; border-bottom: 1px solid var(--border); max-height: 34vh; }
+      .leadgen-detail { padding: 16px 0 0; }
+      .leadgen-detail-head { flex-direction: column; align-items: stretch; }
+      .leadgen-action-group { justify-content: flex-start; }
 
       /* ── Empty states ────────────────────── */
       .empty-state-enhanced { padding: 32px 20px; }
@@ -4638,6 +4913,7 @@
       <button type="button" class="btn-ghost" id="info-open-docs-upload">Documentation</button>
       <button type="button" class="btn-ghost" id="analysis-open-upload" data-nav-section="analysis">Analysis</button>
       <button type="button" class="btn-ghost" id="saved-jobs-open-upload" data-nav-section="companies">Companies</button>
+      <button type="button" class="btn-ghost" id="leadgen-open-upload" data-nav-section="leadgen">LeadGen</button>
       <button type="button" class="btn-ghost is-active" id="new-analysis-btn-upload" data-nav-section="new-analysis" aria-current="page">New Analysis</button>
       <span id="settings-open" style="font-size:13px;color:var(--text-gray);cursor:pointer;display:inline-flex;align-items:center" title="Settings">
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px">
@@ -4883,6 +5159,7 @@
       <button type="button" class="btn-ghost" id="analysis-refresh-btn">Refresh</button>
       <button type="button" class="btn-ghost is-active" id="analysis-current-tab" data-nav-section="analysis" aria-current="page">Analysis</button>
       <button type="button" class="btn-ghost" id="saved-jobs-open-analysis" data-nav-section="companies">Companies</button>
+      <button type="button" class="btn-ghost" id="leadgen-open-analysis" data-nav-section="leadgen">LeadGen</button>
       <button class="btn-ghost" id="new-analysis-btn-history">New Analysis</button>
     </div>
   </div>
@@ -4907,10 +5184,36 @@
       <button type="button" class="btn-ghost" id="companies-refresh-btn">Refresh</button>
       <button type="button" class="btn-ghost" id="analysis-open-companies" data-nav-section="analysis">Analysis</button>
       <button type="button" class="btn-ghost is-active" id="companies-current-tab" data-nav-section="companies" aria-current="page">Companies</button>
+      <button type="button" class="btn-ghost" id="leadgen-open-companies" data-nav-section="leadgen">LeadGen</button>
       <button class="btn-ghost" id="new-analysis-btn-companies">New Analysis</button>
     </div>
   </div>
   <div id="companies-screen-content" class="companies-screen-content"></div>
+</div>
+
+<div id="leadgen-screen" class="screen">
+  <div class="header">
+    <a class="logo" href="/">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3" y="12" width="4" height="8" rx="1.2"></rect>
+          <rect x="10" y="7" width="4" height="13" rx="1.2"></rect>
+          <rect x="17" y="3" width="4" height="17" rx="1.2"></rect>
+        </svg>
+      </div>
+      <div class="logo-lockup">
+        <div class="logo-name">Deal Intelligence</div>
+      </div>
+    </a>
+    <div class="header-right">
+      <button type="button" class="btn-ghost" id="leadgen-refresh-btn">Refresh</button>
+      <button type="button" class="btn-ghost" id="analysis-open-leadgen" data-nav-section="analysis">Analysis</button>
+      <button type="button" class="btn-ghost" id="saved-jobs-open-leadgen" data-nav-section="companies">Companies</button>
+      <button type="button" class="btn-ghost is-active" id="leadgen-current-tab" data-nav-section="leadgen" aria-current="page">LeadGen</button>
+      <button class="btn-ghost" id="new-analysis-btn-leadgen">New Analysis</button>
+    </div>
+  </div>
+  <div id="leadgen-screen-content" class="leadgen-screen-content"></div>
 </div>
 
 <!-- ═══════════════════ PROCESSING SCREEN ═══════════════════ -->
@@ -4931,6 +5234,7 @@
     <div class="header-right">
       <button type="button" class="btn-ghost" id="analysis-open-processing" data-nav-section="analysis">Analysis</button>
       <button type="button" class="btn-ghost" id="saved-jobs-open-processing" data-nav-section="companies">Companies</button>
+      <button type="button" class="btn-ghost" id="leadgen-open-processing" data-nav-section="leadgen">LeadGen</button>
     </div>
   </div>
   <div class="processing-screen-body">
@@ -4971,6 +5275,7 @@
     <div class="header-right">
       <button class="btn-ghost" id="analysis-open-results" data-nav-section="analysis">Analysis</button>
       <button type="button" class="btn-ghost" id="saved-jobs-open-results" data-nav-section="companies">Companies</button>
+      <button type="button" class="btn-ghost" id="leadgen-open-results" data-nav-section="leadgen">LeadGen</button>
       <button class="btn-ghost" id="new-analysis-btn">New Analysis</button>
     </div>
   </div>
@@ -5116,6 +5421,7 @@ const SHOW_PRO_CONTRA_ARGUMENTS = true;
 const SHOW_AVG_PRO_CONTRA_SCORES = false;
 const DEFAULT_RANKINGS_SORT = 'top_scored';
 const DEFAULT_SAVED_COMPANY_SORT = 'top_scored';
+const COMPANY_SUMMARY_PAGE_SIZE = 200;
 const COMPANIES_SIDEBAR_COLLAPSED_KEY = 'companies_sidebar_collapsed_v1';
 const COMPANY_ASSESSMENT_COLLAPSED_KEY = 'company_assessment_collapsed_v1';
 let vcInvestmentStrategy = localStorage.getItem(VC_STRATEGY_KEY) || '';
@@ -5125,6 +5431,12 @@ let statusWatchdogTimer = null;
 let savedJobsCache = [];
 let savedJobsLoaded = false;
 let savedCompaniesCache = [];
+let savedCompanyDetailsCache = {};
+let savedCompanyDetailLoadState = {};
+let savedCompaniesSummaryTotal = 0;
+let savedCompaniesSummaryLoading = false;
+let savedCompaniesSummaryError = '';
+let savedCompaniesFetchToken = 0;
 let companiesFetched = false;
 let savedJobsRefreshTimer = null;
 let savedCompanySortMode = DEFAULT_SAVED_COMPANY_SORT;
@@ -5132,6 +5444,15 @@ let savedCompanySearch = '';
 let savedCompanySearchDebounce = null;
 let selectedCompanyKey = null;
 let selectedCompanyJobId = null;
+let leadgenBatchesCache = [];
+let leadgenDetailCache = {};
+let leadgenSelectedIntakeId = null;
+let leadgenSelectedLeadIds = new Set();
+let leadgenStatusFilter = 'pending';
+let leadgenSortMode = 'source';
+let leadgenLoading = false;
+let leadgenActionStatus = '';
+let leadgenError = '';
 /** Set of company_key that have runs collapsed (hidden). Empty = all expanded. */
 let companyRunsCollapsed = new Set();
 let companyChatStateByKey = {};
@@ -5144,6 +5465,7 @@ let companiesDetailScrollTop = 0;
 let previousScreenBeforeCompanies = 'upload-screen';
 let previousScreenBeforeAnalysis = 'upload-screen';
 let previousScreenBeforeInfo = 'upload-screen';
+let previousScreenBeforeLeadgen = 'upload-screen';
 let activeInfoPage = 'how-it-works';
 let screenTransitionToken = 0;
 let renderedTeamMembersBySlug = {};
@@ -5257,6 +5579,7 @@ function syncPrimaryHeaderNav(screenId = null) {
   const activeScreenId = screenId || getActiveScreenId();
   let activeSection = null;
   if (activeScreenId === 'companies-screen') activeSection = 'companies';
+  else if (activeScreenId === 'leadgen-screen') activeSection = 'leadgen';
   else if (activeScreenId === 'upload-screen') activeSection = 'new-analysis';
   else if (['analysis-screen', 'processing-screen', 'results-screen'].includes(activeScreenId || '')) activeSection = 'analysis';
 
@@ -7106,18 +7429,23 @@ function getSavedCompanySortLabel(mode) {
 }
 
 function getCompanyDimScores(company) {
+  const summaryScores = {
+    strategy_fit: company.latest_strategy_fit_score ?? null,
+    team: company.latest_team_score ?? null,
+    upside: company.latest_upside_score ?? null,
+  };
   const latestRun = (company.runs || [])[0] || {};
   const result = latestRun.results || {};
   const ranking = result.ranking_result || {};
   const summary = (result.summary_rows || [])[0] || {};
-  const dimScores = {};
+  const dimScores = { ...summaryScores };
   // 1. dimension_scores array (single-mode runs with full ranking)
   if (ranking.dimension_scores?.length) {
     for (const d of ranking.dimension_scores) {
       dimScores[d.dimension] = d.adjusted_score ?? d.score ?? null;
     }
   }
-  if (!Object.keys(dimScores).length && summary.dimension_scores?.length) {
+  if (!Object.values(dimScores).some((value) => value != null) && summary.dimension_scores?.length) {
     for (const d of summary.dimension_scores) {
       dimScores[d.dimension] = d.adjusted_score ?? d.score ?? null;
     }
@@ -7182,6 +7510,41 @@ function getCompanyLookupKey(company) {
   return company?.company_lookup_key || company?.company_key || '';
 }
 
+function getCompanyDetailState(companyLookupKey) {
+  return savedCompanyDetailLoadState[companyLookupKey] || { loading: false, loaded: false, error: '' };
+}
+
+function getCompanyWithCachedDetail(company) {
+  if (!company) return null;
+  const companyLookupKey = getCompanyLookupKey(company);
+  const detail = savedCompanyDetailsCache[companyLookupKey];
+  if (!detail) return company;
+  return { ...company, ...detail, runs: detail.runs || [] };
+}
+
+function buildLatestRunFromCompanySummary(company) {
+  if (!company) return {};
+  return {
+    job_id: company.latest_job_id || null,
+    startup_slug: company.latest_startup_slug || null,
+    decision: company.latest_decision || null,
+    total_score: company.latest_total_score ?? null,
+    composite_score: company.latest_composite_score ?? company.latest_score ?? null,
+    strategy_fit_score: company.latest_strategy_fit_score ?? null,
+    team_score: company.latest_team_score ?? null,
+    upside_score: company.latest_upside_score ?? null,
+    bucket: company.latest_bucket || null,
+    mode: company.latest_mode || null,
+    input_order: company.latest_input_order ?? null,
+    created_at: company.latest_run_at || null,
+    started_by_user_id: company.started_by_user_id || null,
+    started_by_email: company.started_by_email || null,
+    started_by_display_name: company.started_by_display_name || null,
+    started_by_label: company.started_by_label || null,
+    results: null,
+  };
+}
+
 function getSelectedCompanyState(companies) {
   const ordered = companies || [];
   let company = ordered.find((item) => getCompanyLookupKey(item) === selectedCompanyKey) || null;
@@ -7189,6 +7552,7 @@ function getSelectedCompanyState(companies) {
     company = ordered[0];
     selectedCompanyKey = getCompanyLookupKey(company);
   }
+  company = getCompanyWithCachedDetail(company);
   let run = company?.runs?.find((item) => item.job_id === selectedCompanyJobId) || null;
   if (!run && company?.runs?.length) {
     run = company.runs[0];
@@ -7682,7 +8046,7 @@ function renderCompanyDetail(company, run) {
   const assessmentCardHtml = companyAssessmentCollapsed ? '' : `<div class="rank-card">
         <div class="rank-top">
           ${rank ? `<span class="rank-badge first">#${escapeHtml(String(rank))}</span>` : ''}
-          <span class="rank-name">${escapeHtml(companyName)}</span>
+          ${buildRankCompanyTitleHtml(companyName, result, summary, company, run)}
           ${bucketLabel ? `<span class="bucket-badge bucket-${bucket.replace(/_/g, '-')}">${bucketLabel}</span>` : ''}
           <div class="rank-top-actions">${auditButtonHtml}</div>
         </div>
@@ -7772,7 +8136,7 @@ function renderSavedCompaniesWindow() {
   }
   const savedPageScrollTop = window.scrollY;
 
-  const totalCount = savedCompaniesCache.length;
+  const totalCount = savedCompaniesSummaryTotal || savedCompaniesCache.length;
   if (!savedCompaniesCache.length) {
     if (companiesFetched) {
       // Truly no companies — show enhanced empty state
@@ -7800,10 +8164,11 @@ function renderSavedCompaniesWindow() {
   const { company: activeCompany, run: activeRun } = getSelectedCompanyState(companies);
   const sidebarHtml = companies.map((company) => {
     const companyLookupKey = getCompanyLookupKey(company);
-    const latestRun = (company.runs || [])[0] || {};
+    const detailedCompany = getCompanyWithCachedDetail(company) || company;
+    const runs = detailedCompany.runs || [];
+    const latestRun = runs[0] || buildLatestRunFromCompanySummary(company);
     const latestScore = latestRun.composite_score ?? latestRun.total_score;
-    const runs = company.runs || [];
-    const runCount = (company.runs || []).length;
+    const runCount = Number(company.run_count ?? runs.length ?? 0);
     const isSelected = companyLookupKey === getCompanyLookupKey(activeCompany);
     const latestMode = latestRun.mode ? getRunModeLabel({ input_mode: latestRun.mode }) : '';
     const summaryBits = [
@@ -7814,6 +8179,7 @@ function renderSavedCompaniesWindow() {
       ? '—'
       : Number(latestScore).toFixed(1);
     const isExpanded = !companyRunsCollapsed.has(companyLookupKey);
+    const detailState = getCompanyDetailState(companyLookupKey);
     const runsHtml = isExpanded && runs.length
       ? `<div class="saved-company-runs">${runs.map((run, index) => {
           const runScore = run.composite_score ?? run.total_score;
@@ -7836,6 +8202,8 @@ function renderSavedCompaniesWindow() {
             <div class="saved-company-run-score${runScoreDisplay === '—' ? ' is-empty' : ''}">${escapeHtml(runScoreDisplay)}</div>
           </button>`;
         }).join('')}</div>`
+      : isExpanded && detailState.loading
+        ? `<div class="saved-company-runs"><div class="saved-company-run"><div class="saved-company-run-main"><div class="saved-company-run-title">Loading runs</div><div class="saved-company-run-summary">Fetching this company's history…</div></div></div></div>`
       : '';
 
     return `<div class="saved-company-card${isSelected ? ' selected' : ''}" data-company-select="${escapeHtml(companyLookupKey)}">
@@ -7850,9 +8218,20 @@ function renderSavedCompaniesWindow() {
     </div>`;
   }).join('');
 
-  const detailHtml = activeCompany && activeRun
+  const activeCompanyKey = getCompanyLookupKey(activeCompany);
+  const activeDetailState = getCompanyDetailState(activeCompanyKey);
+  const detailHtml = activeCompany && activeRun && activeRun.results
     ? renderCompanyDetail(activeCompany, activeRun)
-    : `<div class="companies-page-empty">
+    : activeCompany && activeDetailState.error
+      ? `<div class="companies-page-empty">
+          <div class="empty-state-icon" style="margin-bottom:4px">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          </div>
+          ${escapeHtml(activeDetailState.error)}
+        </div>`
+      : activeCompany
+        ? renderCompaniesLoadingState()
+        : `<div class="companies-page-empty">
         <div class="empty-state-icon" style="margin-bottom:4px">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         </div>
@@ -7953,13 +8332,9 @@ function renderSavedCompaniesWindow() {
   content.querySelectorAll('[data-company-select]').forEach((el) => {
     el.addEventListener('click', (event) => {
       const key = el.dataset.companySelect || '';
-      if (companyRunsCollapsed.has(key)) {
-        companyRunsCollapsed.delete(key);
-        selectCompanyRun(key, null);
-      } else {
-        companyRunsCollapsed.add(key);
-        renderSavedCompaniesWindow();
-      }
+      companyRunsCollapsed.delete(key);
+      selectCompanyRun(key, null);
+      fetchCompanyDetail(key);
     });
   });
   content.querySelectorAll('[data-company-run-open]').forEach((el) => {
@@ -7976,6 +8351,9 @@ function renderSavedCompaniesWindow() {
   });
   bindCompanyChatActions(content, activeCompany, activeRun);
   if (activeCompany) {
+    fetchCompanyDetail(getCompanyLookupKey(activeCompany));
+  }
+  if (activeCompany && activeRun?.results) {
     const chatState = getCompanyChatState(getCompanyLookupKey(activeCompany));
     if (chatState && !chatState.loaded && !chatState.loading && !chatState.sending && !chatState.error) {
       fetchCompanyChat(getCompanyLookupKey(activeCompany), { silent: true });
@@ -8143,10 +8521,67 @@ async function fetchSavedJobs({ silent = true } = {}) {
   }
 }
 
-async function fetchSavedCompanies({ silent = true } = {}) {
+function mergeCompanySummaries(nextCompanies) {
+  const byKey = new Map(savedCompaniesCache.map((company) => [getCompanyLookupKey(company), company]));
+  for (const company of nextCompanies || []) {
+    const key = getCompanyLookupKey(company);
+    if (!key) continue;
+    byKey.set(key, { ...(byKey.get(key) || {}), ...company });
+  }
+  savedCompaniesCache = Array.from(byKey.values());
+}
+
+async function fetchCompanyDetail(companyLookupKey) {
+  const key = (companyLookupKey || '').trim();
+  if (!key || savedCompanyDetailsCache[key] || savedCompanyDetailLoadState[key]?.loading) {
+    return savedCompanyDetailsCache[key] || null;
+  }
+  savedCompanyDetailLoadState[key] = { loading: true, loaded: false, error: '' };
   try {
-    const data = await api('/api/company-runs', { timeoutMs: 30000, retries: 1 });
-    savedCompaniesCache = data.companies || [];
+    const data = await api(`/api/company-runs/detail/${encodeURIComponent(key)}`, { timeoutMs: 20000, retries: 1 });
+    const company = data.company || null;
+    if (company) {
+      savedCompanyDetailsCache[key] = company;
+      savedCompanyDetailLoadState[key] = { loading: false, loaded: true, error: '' };
+      if (selectedCompanyKey === key && !selectedCompanyJobId && company.runs?.length) {
+        selectedCompanyJobId = company.runs[0].job_id || null;
+      }
+      renderSavedCompaniesWindow();
+    }
+    return company;
+  } catch (err) {
+    savedCompanyDetailLoadState[key] = {
+      loading: false,
+      loaded: false,
+      error: err.message || 'Failed to load company details.',
+    };
+    renderSavedCompaniesWindow();
+    return null;
+  }
+}
+
+async function fetchSavedCompanies({ silent = true } = {}) {
+  const fetchToken = ++savedCompaniesFetchToken;
+  savedCompaniesSummaryLoading = true;
+  savedCompaniesSummaryError = '';
+  try {
+    savedCompaniesCache = [];
+    savedCompanyDetailsCache = {};
+    savedCompanyDetailLoadState = {};
+    savedCompaniesSummaryTotal = 0;
+    companiesFetched = false;
+    let offset = 0;
+    let nextOffset = 0;
+    do {
+      const data = await api(`/api/company-runs/summary?limit=${COMPANY_SUMMARY_PAGE_SIZE}&offset=${offset}&sort=${encodeURIComponent(savedCompanySortMode)}`, { timeoutMs: 15000, retries: 1 });
+      if (fetchToken !== savedCompaniesFetchToken) return savedCompaniesCache;
+      mergeCompanySummaries(data.companies || []);
+      savedCompaniesSummaryTotal = Number(data.total || savedCompaniesCache.length || 0);
+      nextOffset = data.next_offset;
+      companiesFetched = savedCompaniesCache.length > 0;
+      renderSavedCompaniesWindow();
+      offset = Number(nextOffset || 0);
+    } while (nextOffset !== null && nextOffset !== undefined);
     if (!savedCompaniesCache.length) {
       const jobsData = await api('/api/jobs', { timeoutMs: 30000, retries: 1 });
       const jobs = (jobsData.jobs || []).map((job) => ({
@@ -8164,17 +8599,386 @@ async function fetchSavedCompanies({ silent = true } = {}) {
         llm: job.llm || null,
       }));
       savedCompaniesCache = buildCompaniesFromJobs(jobs);
+      savedCompaniesSummaryTotal = savedCompaniesCache.length;
     }
+    savedCompaniesSummaryLoading = false;
     companiesFetched = true;
     renderSavedCompaniesWindow();
+    const { company } = getSelectedCompanyState(filterSavedCompanies(sortSavedCompanies(savedCompaniesCache)));
+    if (company) fetchCompanyDetail(getCompanyLookupKey(company));
     return savedCompaniesCache;
   } catch (err) {
+    savedCompaniesSummaryLoading = false;
+    savedCompaniesSummaryError = err.message || 'Failed to load company history.';
+    companiesFetched = true;
     if (!silent) {
       const content = getCompaniesContentEl();
       if (content) content.innerHTML = `<div class="saved-jobs-empty">${escapeHtml(err.message || 'Failed to load company history.')}</div>`;
     }
     return [];
   }
+}
+
+function getLeadgenContentEl() {
+  return $('#leadgen-screen-content');
+}
+
+function leadgenStatusLabel(value) {
+  const raw = String(value || 'pending').replace(/_/g, ' ');
+  return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : 'Pending';
+}
+
+function leadgenFormatSource(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const normalized = raw.toLowerCase().replace(/\s+/g, '_');
+  const labels = {
+    a16z_speedrun: 'a16z Speedrun',
+    accelerator: 'Accelerator',
+    apify: 'Apify',
+    ewor: 'EWOR',
+    github: 'GitHub',
+    github_api: 'GitHub',
+    github_search: 'GitHub Search',
+    github_trends: 'GitHub Trends',
+    rss: 'RSS',
+    specter: 'Specter',
+    techstars: 'Techstars',
+    yc: 'YC',
+    y_combinator: 'YC',
+  };
+  if (labels[normalized]) return labels[normalized];
+  return raw
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function leadgenSourceFromUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw.startsWith('http') ? raw : `https://${raw}`);
+    const host = parsed.hostname.replace(/^www\./, '').toLowerCase();
+    if (host.includes('ycombinator.com')) return 'YC';
+    if (host.includes('ewor.com')) return 'EWOR';
+    if (host.includes('techstars.com')) return 'Techstars';
+    if (host.includes('github.com')) return 'GitHub';
+    if (host.includes('a16z.com')) return 'a16z Speedrun';
+    return host;
+  } catch (err) {
+    return '';
+  }
+}
+
+function leadgenSourceLabel(lead) {
+  const rawLead = lead?.raw_lead || {};
+  const rawNested = rawLead?.raw || {};
+  const rawDeep = rawNested?.raw || {};
+  const context = lead?.context_payload || {};
+  const candidates = [
+    rawNested.source,
+    rawNested.source_key,
+    rawDeep.source,
+    rawDeep.source_key,
+    rawLead.source_key,
+    context.source_key,
+    rawDeep.__provider,
+    rawLead.__provider,
+    context.provider,
+    context.source,
+    rawLead.source,
+  ];
+  const source = candidates.find((value) => String(value || '').trim());
+  if (source) return leadgenFormatSource(source);
+  return leadgenSourceFromUrl(rawNested.source_url || rawDeep.source_url || context.source_url || rawLead.source_url || lead?.url) || '—';
+}
+
+function leadgenSelectedBatch() {
+  return leadgenBatchesCache.find((batch) => String(batch.intake_id || batch.id) === String(leadgenSelectedIntakeId || '')) || null;
+}
+
+function leadgenSelectedDetail() {
+  return leadgenSelectedIntakeId ? leadgenDetailCache[leadgenSelectedIntakeId] || null : null;
+}
+
+function sortLeadgenLeads(leads) {
+  const list = [...(leads || [])];
+  const value = (lead) => {
+    if (leadgenSortMode === 'source') return leadgenSourceLabel(lead).toLowerCase();
+    if (leadgenSortMode === 'company') return String(lead.company_name || '').toLowerCase();
+    if (leadgenSortMode === 'status') return String(lead.approval_status || '');
+    if (leadgenSortMode === 'order') return Number(lead.input_order || 0);
+    return Number(lead.input_order || 0);
+  };
+  list.sort((a, b) => {
+    const av = value(a);
+    const bv = value(b);
+    if (typeof av === 'number' && typeof bv === 'number') return leadgenSortMode === 'order' ? av - bv : bv - av;
+    return String(av).localeCompare(String(bv));
+  });
+  return list;
+}
+
+function renderLeadgenPage() {
+  const content = getLeadgenContentEl();
+  if (!content) return;
+  const selectedBatch = leadgenSelectedBatch();
+  const detail = leadgenSelectedDetail();
+  const batchesHtml = leadgenBatchesCache.length
+    ? leadgenBatchesCache.map((batch) => {
+      const intakeId = batch.intake_id || batch.id || '';
+      const isSelected = String(intakeId) === String(leadgenSelectedIntakeId || '');
+      const status = String(batch.status || 'pending').toLowerCase();
+      const meta = [
+        `${Number(batch.accepted_count || 0)} eligible`,
+        `${Number(batch.rejected_count || 0)} held back`,
+        formatRunTimestamp(batch.created_at),
+      ].filter(Boolean).join('  •  ');
+      const jobLine = batch.job_id_legacy ? `Job ${batch.job_id_legacy}` : `${Number(batch.lead_count || 0)} leads`;
+      return `<button type="button" class="leadgen-batch-card${isSelected ? ' selected' : ''}" data-leadgen-batch="${escapeHtml(intakeId)}">
+        <div class="leadgen-batch-name">${escapeHtml(batch.batch_id || 'Untitled batch')}</div>
+        <div class="leadgen-batch-meta"><span class="leadgen-badge ${escapeHtml(status)}">${escapeHtml(leadgenStatusLabel(status))}</span></div>
+        <div class="leadgen-batch-submeta">${escapeHtml(meta)}</div>
+        <div class="leadgen-batch-submeta">${escapeHtml(jobLine)}</div>
+      </button>`;
+    }).join('')
+    : `<div class="leadgen-empty">${leadgenLoading ? 'Loading LeadGen batches...' : 'No LeadGen batches found.'}</div>`;
+
+  const filterOptions = [
+    ['pending', 'Pending'],
+    ['queued', 'Queued'],
+    ['rejected', 'Rejected'],
+    ['all', 'All'],
+  ].map(([value, label]) => `<option value="${value}" ${leadgenStatusFilter === value ? 'selected' : ''}>${label}</option>`).join('');
+
+  let detailHtml = `<div class="leadgen-empty">Select a LeadGen batch.</div>`;
+  if (leadgenError) {
+    detailHtml = `<div class="leadgen-empty">${escapeHtml(leadgenError)}</div>`;
+  } else if (selectedBatch && !detail) {
+    detailHtml = `<div class="leadgen-empty">Loading ${escapeHtml(selectedBatch.batch_id || 'batch')}...</div>`;
+  } else if (selectedBatch && detail) {
+    const batch = detail.batch || selectedBatch;
+    const leads = sortLeadgenLeads(detail.leads || []);
+    const hasJob = Boolean(batch.job_id_legacy);
+    const identityMissing = isSupabaseAuthRequired() && !getSupabaseAccessToken();
+    const pendingEligible = leads.filter((lead) => lead.eligible && String(lead.approval_status || '').toLowerCase() === 'pending');
+    const selectedCount = [...leadgenSelectedLeadIds].filter((id) => pendingEligible.some((lead) => String(lead.lead_id || lead.id) === id)).length;
+    const warning = identityMissing
+      ? `<div class="leadgen-alert">Supabase sign-in is required before approval.</div>`
+      : '';
+    const rows = leads.map((lead) => {
+      const leadId = String(lead.lead_id || lead.id || '');
+      const status = String(lead.approval_status || 'pending').toLowerCase();
+      const selectable = !hasJob && lead.eligible && status === 'pending';
+      const checked = leadgenSelectedLeadIds.has(leadId);
+      const rationale = lead.raw_score?.rationale || lead.context_payload?.rationale || lead.rejection_reason || '';
+      const source = leadgenSourceLabel(lead);
+      return `<tr>
+        <td><input type="checkbox" data-leadgen-lead="${escapeHtml(leadId)}" ${checked ? 'checked' : ''} ${selectable ? '' : 'disabled'}></td>
+        <td>
+          <div class="leadgen-company-name">${escapeHtml(lead.company_name || 'Unknown company')}</div>
+          <div class="leadgen-company-domain">${escapeHtml(lead.domain || lead.url || '')}</div>
+        </td>
+        <td>${escapeHtml(source)}</td>
+        <td><span class="leadgen-badge">${escapeHtml(lead.leadgen_bucket || 'lead')}</span></td>
+        <td><span class="leadgen-badge ${escapeHtml(status)}">${escapeHtml(leadgenStatusLabel(status))}</span></td>
+        <td>${escapeHtml([lead.thesis_key, lead.thesis_status].filter(Boolean).join(' / ') || '—')}</td>
+        <td><div class="leadgen-rationale">${escapeHtml(rationale || '—')}</div></td>
+      </tr>`;
+    }).join('');
+    const actionDisabled = hasJob || identityMissing || pendingEligible.length === 0;
+    detailHtml = `${warning}
+      <div class="leadgen-detail-head">
+        <div class="leadgen-detail-title">
+          <h1>${escapeHtml(batch.batch_id || 'LeadGen batch')}</h1>
+          <p>${escapeHtml(`${Number(batch.accepted_count || 0)} eligible • ${Number(batch.rejected_count || 0)} held back • ${formatRunTimestamp(batch.created_at)}`)}</p>
+        </div>
+        <div class="leadgen-action-group">
+          <button type="button" class="btn-ghost" data-leadgen-select-all ${actionDisabled ? 'disabled' : ''}>Select All</button>
+          <button type="button" class="btn-ghost" data-leadgen-reject-selected ${actionDisabled || selectedCount === 0 ? 'disabled' : ''}>Reject Selected</button>
+          <button type="button" class="btn-ghost" data-leadgen-reject-batch ${hasJob || identityMissing ? 'disabled' : ''}>Reject Batch</button>
+          <button type="button" class="btn-green" data-leadgen-approve-selected ${actionDisabled || selectedCount === 0 ? 'disabled' : ''}>Approve Selected & Start</button>
+          <button type="button" class="btn-green" data-leadgen-approve-all ${actionDisabled ? 'disabled' : ''}>Approve All Eligible & Start</button>
+          ${batch.job_id_legacy ? `<button type="button" class="btn-ghost" data-leadgen-open-job="${escapeHtml(batch.job_id_legacy)}">Open Job</button>` : ''}
+        </div>
+      </div>
+      <div class="leadgen-actions">
+        <label class="leadgen-sidebar-sort">Sort
+          <select class="leadgen-sort-select" id="leadgen-sort-select">
+            <option value="source" ${leadgenSortMode === 'source' ? 'selected' : ''}>Source</option>
+            <option value="company" ${leadgenSortMode === 'company' ? 'selected' : ''}>Company</option>
+            <option value="status" ${leadgenSortMode === 'status' ? 'selected' : ''}>Status</option>
+            <option value="order" ${leadgenSortMode === 'order' ? 'selected' : ''}>Input Order</option>
+          </select>
+        </label>
+        <div class="leadgen-action-status">${escapeHtml(leadgenActionStatus)}</div>
+      </div>
+      <div class="leadgen-table-wrap">
+        <table class="leadgen-table">
+          <thead><tr><th></th><th>Company</th><th>Source</th><th>Bucket</th><th>Status</th><th>Thesis</th><th>Rationale</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="7">No leads in this batch.</td></tr>'}</tbody>
+        </table>
+      </div>`;
+  }
+
+  content.innerHTML = `<div class="leadgen-page">
+    <aside class="leadgen-sidebar">
+      <div class="leadgen-sidebar-head">
+        <div class="leadgen-sidebar-title-row">
+          <div class="leadgen-sidebar-title">LeadGen Intake</div>
+          <select class="leadgen-filter-select" id="leadgen-status-filter">${filterOptions}</select>
+        </div>
+      </div>
+      <div class="leadgen-batch-list">${batchesHtml}</div>
+    </aside>
+    <main class="leadgen-detail">${detailHtml}</main>
+  </div>`;
+
+  bindLeadgenActions(content);
+}
+
+async function fetchLeadgenIntakes({ silent = true } = {}) {
+  leadgenLoading = true;
+  leadgenError = '';
+  if (!silent) renderLeadgenPage();
+  try {
+    const data = await api(`/api/leadgen/intakes?status=${encodeURIComponent(leadgenStatusFilter)}&limit=100`, { timeoutMs: 15000, retries: 1 });
+    leadgenBatchesCache = data.batches || [];
+    if (!leadgenSelectedIntakeId && leadgenBatchesCache.length) {
+      leadgenSelectedIntakeId = leadgenBatchesCache[0].intake_id || leadgenBatchesCache[0].id;
+    }
+    if (leadgenSelectedIntakeId) fetchLeadgenDetail(leadgenSelectedIntakeId);
+    leadgenLoading = false;
+    renderLeadgenPage();
+  } catch (err) {
+    leadgenLoading = false;
+    leadgenError = err.message || 'Failed to load LeadGen batches.';
+    renderLeadgenPage();
+  }
+}
+
+async function fetchLeadgenDetail(intakeId) {
+  const key = String(intakeId || '').trim();
+  if (!key) return null;
+  try {
+    const data = await api(`/api/leadgen/intakes/${encodeURIComponent(key)}`, { timeoutMs: 15000, retries: 1 });
+    leadgenDetailCache[key] = data;
+    if (leadgenSelectedIntakeId === key) renderLeadgenPage();
+    return data;
+  } catch (err) {
+    leadgenError = err.message || 'Failed to load LeadGen batch.';
+    renderLeadgenPage();
+    return null;
+  }
+}
+
+function leadgenAuthHeaders() {
+  const token = getSupabaseAccessToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function approveLeadgenIntake({ approveAll = false } = {}) {
+  const intakeId = leadgenSelectedIntakeId;
+  if (!intakeId) return;
+  leadgenActionStatus = 'Queuing approved companies...';
+  renderLeadgenPage();
+  try {
+    const body = approveAll
+      ? { approve_all_eligible: true }
+      : { lead_ids: [...leadgenSelectedLeadIds] };
+    const result = await api(`/api/leadgen/intakes/${encodeURIComponent(intakeId)}/approve`, {
+      method: 'POST',
+      headers: leadgenAuthHeaders(),
+      body: JSON.stringify(body),
+      timeoutMs: 30000,
+      retries: 0,
+    });
+    leadgenActionStatus = result.job_id ? `Queued job ${result.job_id}.` : 'Approval recorded.';
+    leadgenStatusFilter = 'all';
+    leadgenSelectedLeadIds = new Set();
+    await fetchLeadgenDetail(intakeId);
+    await fetchLeadgenIntakes({ silent: true });
+  } catch (err) {
+    leadgenActionStatus = err.message || 'Failed to approve LeadGen batch.';
+    renderLeadgenPage();
+  }
+}
+
+async function rejectLeadgenIntake({ rejectAll = false } = {}) {
+  const intakeId = leadgenSelectedIntakeId;
+  if (!intakeId) return;
+  leadgenActionStatus = rejectAll ? 'Rejecting batch...' : 'Rejecting selected companies...';
+  renderLeadgenPage();
+  try {
+    await api(`/api/leadgen/intakes/${encodeURIComponent(intakeId)}/reject`, {
+      method: 'POST',
+      headers: leadgenAuthHeaders(),
+      body: JSON.stringify(rejectAll ? { reject_all: true } : { lead_ids: [...leadgenSelectedLeadIds] }),
+      timeoutMs: 15000,
+      retries: 0,
+    });
+    leadgenActionStatus = rejectAll ? 'Batch rejected.' : 'Selected companies rejected.';
+    if (rejectAll) leadgenStatusFilter = 'all';
+    leadgenSelectedLeadIds = new Set();
+    await fetchLeadgenDetail(intakeId);
+    await fetchLeadgenIntakes({ silent: true });
+  } catch (err) {
+    leadgenActionStatus = err.message || 'Failed to reject LeadGen batch.';
+    renderLeadgenPage();
+  }
+}
+
+function bindLeadgenActions(root) {
+  root.querySelector('#leadgen-status-filter')?.addEventListener('change', (event) => {
+    leadgenStatusFilter = event.target.value || 'pending';
+    leadgenSelectedIntakeId = null;
+    leadgenSelectedLeadIds = new Set();
+    fetchLeadgenIntakes({ silent: false });
+  });
+  root.querySelector('#leadgen-sort-select')?.addEventListener('change', (event) => {
+    leadgenSortMode = event.target.value || 'source';
+    renderLeadgenPage();
+  });
+  root.querySelectorAll('[data-leadgen-batch]').forEach((button) => {
+    button.addEventListener('click', () => {
+      leadgenSelectedIntakeId = button.dataset.leadgenBatch || null;
+      leadgenSelectedLeadIds = new Set();
+      leadgenActionStatus = '';
+      renderLeadgenPage();
+      fetchLeadgenDetail(leadgenSelectedIntakeId);
+    });
+  });
+  root.querySelectorAll('[data-leadgen-lead]').forEach((checkbox) => {
+    checkbox.addEventListener('change', () => {
+      const id = checkbox.dataset.leadgenLead || '';
+      if (!id) return;
+      if (checkbox.checked) leadgenSelectedLeadIds.add(id);
+      else leadgenSelectedLeadIds.delete(id);
+      renderLeadgenPage();
+    });
+  });
+  root.querySelector('[data-leadgen-select-all]')?.addEventListener('click', () => {
+    const detail = leadgenSelectedDetail();
+    const leads = (detail?.leads || []).filter((lead) => lead.eligible && String(lead.approval_status || '').toLowerCase() === 'pending');
+    leadgenSelectedLeadIds = new Set(leads.map((lead) => String(lead.lead_id || lead.id)));
+    renderLeadgenPage();
+  });
+  root.querySelector('[data-leadgen-approve-selected]')?.addEventListener('click', () => approveLeadgenIntake({ approveAll: false }));
+  root.querySelector('[data-leadgen-approve-all]')?.addEventListener('click', () => approveLeadgenIntake({ approveAll: true }));
+  root.querySelector('[data-leadgen-reject-selected]')?.addEventListener('click', () => rejectLeadgenIntake({ rejectAll: false }));
+  root.querySelector('[data-leadgen-reject-batch]')?.addEventListener('click', () => rejectLeadgenIntake({ rejectAll: true }));
+  root.querySelector('[data-leadgen-open-job]')?.addEventListener('click', (event) => {
+    const jobId = event.currentTarget.dataset.leadgenOpenJob;
+    if (jobId) openAnalysisPage({ focusJobId: jobId });
+  });
+}
+
+function openLeadgenPage() {
+  const activeScreenId = getActiveScreenId();
+  if (activeScreenId && activeScreenId !== 'leadgen-screen') previousScreenBeforeLeadgen = activeScreenId;
+  showScreen('leadgen-screen');
+  renderLeadgenPage();
+  fetchLeadgenIntakes({ silent: false });
 }
 
 function openCompaniesPage() {
@@ -10349,6 +11153,65 @@ function renderRunCostStrip(runCosts, fallbackLlmLabel = '') {
   initializeRunCostCardHover(container);
 }
 
+const SPECTER_PROFILE_BASE_URL = 'https://app.tryspecter.com/signals/company/feed/';
+
+function firstNonEmptyFromSources(sources, keys) {
+  for (const source of sources) {
+    if (!source || typeof source !== 'object') continue;
+    for (const key of keys) {
+      const value = source[key];
+      if (value !== undefined && value !== null && String(value).trim()) {
+        return String(value).trim();
+      }
+    }
+  }
+  return '';
+}
+
+function normalizeCompanyWebsiteUrl(value) {
+  let raw = String(value || '').trim();
+  if (!raw) return '';
+  if (!/^https?:\/\//i.test(raw)) raw = `https://${raw.replace(/^\/+/, '')}`;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+    return parsed.href;
+  } catch (err) {
+    return '';
+  }
+}
+
+function companyWebsiteLabel(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./i, '');
+  } catch (err) {
+    return url;
+  }
+}
+
+function buildSpecterCompanyProfileUrl(specterCompanyId) {
+  const id = String(specterCompanyId || '').trim();
+  return id ? `${SPECTER_PROFILE_BASE_URL}${encodeURIComponent(id)}` : '';
+}
+
+function buildCompanyLinkControlsHtml(...sources) {
+  const websiteUrl = normalizeCompanyWebsiteUrl(firstNonEmptyFromSources(sources, ['company_url', 'website', 'url', 'domain']));
+  const specterCompanyId = firstNonEmptyFromSources(sources, ['specter_company_id', 'specterCompanyId']);
+  const specterUrl = buildSpecterCompanyProfileUrl(specterCompanyId);
+  const controls = [];
+  if (websiteUrl) {
+    controls.push(`<a class="rank-company-link website" href="${escapeHtml(websiteUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(companyWebsiteLabel(websiteUrl))}</a>`);
+  }
+  if (specterUrl) {
+    controls.push(`<a class="rank-company-link specter" href="${escapeHtml(specterUrl)}" target="_blank" rel="noopener noreferrer">Specter</a>`);
+  }
+  return controls.length ? `<span class="rank-company-links">${controls.join('')}</span>` : '';
+}
+
+function buildRankCompanyTitleHtml(companyName, ...sources) {
+  return `<span class="rank-company-title"><span class="rank-name">${escapeHtml(companyName || 'Unknown company')}</span>${buildCompanyLinkControlsHtml(...sources)}</span>`;
+}
+
 function renderSingleResult(r) {
   renderedTeamMembersBySlug = {};
   const sortWrap = $('#rankings-sort-wrap');
@@ -10402,7 +11265,7 @@ function renderSingleResult(r) {
     <div class="rank-card">
       <div class="rank-top">
         <span class="rank-badge first">#${rank || 1}</span>
-        <span class="rank-name">${r.company_name}</span>
+        ${buildRankCompanyTitleHtml(r.company_name, r, (r.summary_rows || [])[0] || {})}
         ${bucketLabel ? `<span class="bucket-badge bucket-${bucket.replace(/_/g,'-')}">${bucketLabel}</span>` : ''}
         <div class="rank-top-actions">${auditButtonHtml}</div>
       </div>
@@ -10506,7 +11369,7 @@ function renderBatchResults(r) {
       <div class="rank-card">
         <div class="rank-top">
           <span class="rank-badge ${badge}">#${rankNum}</span>
-          <span class="rank-name">${row.company_name || row.startup_slug}</span>
+          ${buildRankCompanyTitleHtml(row.company_name || row.startup_slug, row)}
           ${bucketLabel ? `<span class="bucket-badge bucket-${bucket.replace(/_/g,'-')}">${bucketLabel}</span>` : ''}
           <div class="rank-top-actions">${auditButtonHtml}</div>
         </div>
@@ -11100,14 +11963,19 @@ $('#progress-log-modal-close').addEventListener('click', hideProgressLogModal);
 $('#progress-log-modal-overlay').addEventListener('click', (e) => {
   if (e.target === $('#progress-log-modal-overlay')) hideProgressLogModal();
 });
-['#saved-jobs-open-upload', '#saved-jobs-open-processing', '#saved-jobs-open-results', '#saved-jobs-open-analysis'].forEach((sel) => {
+['#saved-jobs-open-upload', '#saved-jobs-open-processing', '#saved-jobs-open-results', '#saved-jobs-open-analysis', '#saved-jobs-open-leadgen'].forEach((sel) => {
   const el = $(sel);
   if (el) el.addEventListener('click', openCompaniesPage);
 });
-['#analysis-open-upload', '#analysis-open-processing', '#analysis-open-results', '#analysis-open-companies'].forEach((sel) => {
+['#analysis-open-upload', '#analysis-open-processing', '#analysis-open-results', '#analysis-open-companies', '#analysis-open-leadgen'].forEach((sel) => {
   const el = $(sel);
   if (el) el.addEventListener('click', openAnalysisPage);
 });
+['#leadgen-open-upload', '#leadgen-open-processing', '#leadgen-open-results', '#leadgen-open-analysis', '#leadgen-open-companies'].forEach((sel) => {
+  const el = $(sel);
+  if (el) el.addEventListener('click', openLeadgenPage);
+});
+$('#leadgen-refresh-btn')?.addEventListener('click', () => fetchLeadgenIntakes({ silent: false }));
 $('#info-open-how-upload')?.addEventListener('click', () => openInfoPage('how-it-works'));
 $('#info-open-docs-upload')?.addEventListener('click', () => openInfoPage('documentation'));
 
@@ -11295,6 +12163,7 @@ $('#new-analysis-btn').addEventListener('click', openNewAnalysis);
 $('#new-analysis-btn-upload')?.addEventListener('click', openNewAnalysis);
 $('#new-analysis-btn-companies').addEventListener('click', openNewAnalysis);
 $('#new-analysis-btn-history').addEventListener('click', openNewAnalysis);
+$('#new-analysis-btn-leadgen')?.addEventListener('click', openNewAnalysis);
 
 window.addEventListener('storage', (event) => {
   if (event.key === RECENT_RUNS_KEY) {

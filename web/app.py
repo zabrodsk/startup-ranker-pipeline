@@ -83,7 +83,7 @@ if not any(isinstance(h, _InMemoryLogHandler) for h in _root_logger.handlers):
         _root_logger.setLevel(logging.DEBUG)
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, Body, Cookie, FastAPI, File, Form, Header, HTTPException, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, Body, Cookie, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -1071,12 +1071,36 @@ class LeadgenIngestError(BaseModel):
 
 class LeadgenIngestResponse(BaseModel):
     batch_id: str
+    intake_id: str | None = None
     job_id: str | None = None
-    status: Literal["created", "existing", "rejected"]
+    status: Literal[
+        "pending_approval",
+        "existing_pending",
+        "existing_queued",
+        "existing_rejected",
+        "rejected",
+    ]
     accepted_count: int
     rejected_count: int
     accepted_urls: list[str] = Field(default_factory=list)
     errors: list[LeadgenIngestError] = Field(default_factory=list)
+
+
+class LeadgenApprovalRequest(BaseModel):
+    approve_all_eligible: bool = False
+    lead_ids: list[str] = Field(default_factory=list)
+
+
+class LeadgenRejectRequest(BaseModel):
+    reject_all: bool = False
+    lead_ids: list[str] = Field(default_factory=list)
+    reason: str | None = None
+
+    @field_validator("reason")
+    @classmethod
+    def _validate_reason(cls, v: str | None) -> str | None:
+        text = (v or "").strip()
+        return text[:1000] if text else None
 
 
 for _leadgen_model in (
@@ -1084,6 +1108,8 @@ for _leadgen_model in (
     LeadgenBatchRequest,
     LeadgenIngestError,
     LeadgenIngestResponse,
+    LeadgenApprovalRequest,
+    LeadgenRejectRequest,
 ):
     _leadgen_model.model_rebuild()
 
@@ -1942,6 +1968,23 @@ def _list_company_runs_for_ui() -> list[dict[str, Any]]:
         limit_runs=COMPANY_RUNS_OVERVIEW_LIMIT,
         perform_maintenance=False,
     )
+
+
+def _list_company_run_summaries_for_ui(
+    *,
+    limit: int = 200,
+    offset: int = 0,
+    sort: str = "latest",
+) -> dict[str, Any]:
+    if not db or not db.is_configured():
+        return {"companies": [], "total": 0, "next_offset": None}
+    return db.list_company_summaries(limit=limit, offset=offset, sort=sort)
+
+
+def _load_company_run_detail_for_ui(company_lookup_key: str) -> dict[str, Any] | None:
+    if not db or not db.is_configured():
+        return None
+    return db.load_company_history_detail(company_lookup_key)
 
 
 def _check_session(session_id: str | None) -> bool:
@@ -5473,6 +5516,30 @@ async def upload_files(
 
 
 _URL_LIKE_RE = re.compile(r"^(?:https?://)?[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}(?:/.*)?$")
+_LEADGEN_SOURCE_DOMAINS = frozenset(
+    {
+        "angellist.com",
+        "bitbucket.org",
+        "bloomberg.com",
+        "crunchbase.com",
+        "dealroom.co",
+        "eu-startups.com",
+        "facebook.com",
+        "forbes.com",
+        "github.com",
+        "github.io",
+        "gitlab.com",
+        "gitlab.io",
+        "linkedin.com",
+        "medium.com",
+        "producthunt.com",
+        "techcrunch.com",
+        "twitter.com",
+        "wellfound.com",
+        "wikipedia.org",
+        "x.com",
+    }
+)
 
 
 def _normalize_url_for_intake(raw: str) -> str | None:
@@ -5486,19 +5553,46 @@ def _normalize_url_for_intake(raw: str) -> str | None:
     return s
 
 
-def _normalize_url_items_for_intake(raw_urls: list[Any]) -> tuple[list[str], list[str]]:
-    cleaned: list[str] = []
-    invalid: list[str] = []
-    for raw in raw_urls:
-        if not isinstance(raw, str):
-            invalid.append(repr(raw))
-            continue
-        normalized = _normalize_url_for_intake(raw)
+def _url_value_for_intake_item(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("url") or "").strip()
+    return str(item or "").strip()
+
+
+def _normalize_url_item_for_intake(raw: Any) -> tuple[Any, str] | None:
+    if isinstance(raw, dict):
+        raw_url = raw.get("url") or raw.get("website") or raw.get("domain")
+        if not isinstance(raw_url, str):
+            return None
+        normalized = _normalize_url_for_intake(raw_url)
         if normalized is None:
-            invalid.append(raw)
+            return None
+        item = {"url": normalized}
+        raw_name = raw.get("name") or raw.get("expected_name")
+        if isinstance(raw_name, str) and raw_name.strip():
+            item["name"] = raw_name.strip()
+        return item, normalized
+    if not isinstance(raw, str):
+        return None
+    normalized = _normalize_url_for_intake(raw)
+    if normalized is None:
+        return None
+    return normalized, normalized
+
+
+def _normalize_url_items_for_intake(raw_urls: list[Any]) -> tuple[list[Any], list[str]]:
+    cleaned: list[Any] = []
+    invalid: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_urls:
+        normalized_item = _normalize_url_item_for_intake(raw)
+        if normalized_item is None:
+            invalid.append(raw if isinstance(raw, str) else repr(raw))
             continue
-        if normalized not in cleaned:
-            cleaned.append(normalized)
+        item, normalized = normalized_item
+        if normalized not in seen:
+            seen.add(normalized)
+            cleaned.append(item)
     return cleaned, invalid
 
 
@@ -5547,7 +5641,7 @@ def _create_url_intake_job(
 
     return {
         "job_id": job_id,
-        "urls": cleaned,
+        "urls": [_url_value_for_intake_item(item) for item in cleaned],
         "invalid": invalid,
         "mode": "specter",
     }
@@ -5609,18 +5703,45 @@ def _leadgen_existing_job_status(job_id: str) -> str | None:
     return None
 
 
-def _leadgen_url_from_item(item: LeadgenScoredLead) -> tuple[str | None, str | None]:
+def _leadgen_source_domain_match(domain: str | None) -> str | None:
+    text = (domain or "").strip().lower()
+    if not text:
+        return None
+    parts = text.split(".")
+    for index in range(len(parts)):
+        suffix = ".".join(parts[index:])
+        if suffix in _LEADGEN_SOURCE_DOMAINS:
+            return suffix
+    return None
+
+
+def _leadgen_source_domain_rejection(normalized_url: str) -> str | None:
+    source_domain = _leadgen_source_domain_match(_leadgen_domain_from_url(normalized_url))
+    if not source_domain:
+        return None
+    return (
+        f"Website/domain points to source platform {source_domain}, "
+        "not a company website."
+    )
+
+
+def _leadgen_url_from_item(item: LeadgenScoredLead) -> tuple[str | None, str | None, str | None]:
     lead = item.lead
     website = lead.get("website")
     domain = lead.get("domain")
     first_raw: str | None = None
+    first_source_rejection: str | None = None
     for candidate in (website, domain):
         if isinstance(candidate, str) and candidate.strip():
             first_raw = first_raw or candidate
             normalized = _normalize_url_for_intake(candidate)
             if normalized:
-                return candidate, normalized
-    return first_raw, None
+                source_rejection = _leadgen_source_domain_rejection(normalized)
+                if source_rejection:
+                    first_source_rejection = first_source_rejection or source_rejection
+                    continue
+                return candidate, normalized, None
+    return first_raw, None, first_source_rejection
 
 
 def _leadgen_lead_name(item: LeadgenScoredLead) -> str | None:
@@ -5633,6 +5754,8 @@ def _leadgen_context_for_item(
     *,
     normalized_url: str,
     input_order: int,
+    thesis_key: str | None = None,
+    thesis_status: str | None = None,
 ) -> dict[str, Any]:
     lead = item.lead
     score = item.score
@@ -5648,79 +5771,412 @@ def _leadgen_context_for_item(
         "bucket": score.get("bucket"),
         "rationale": score.get("rationale"),
         "scoring_version": score.get("version"),
+        "thesis_key": thesis_key,
+        "thesis_status": thesis_status,
         "exclusion_flags": score.get("exclusion_flags") or [],
         "evidence": score.get("evidence") or [],
         "notes": score.get("notes") or [],
     }
 
 
+def _leadgen_payload_hash(req: LeadgenBatchRequest) -> str:
+    raw = req.model_dump(mode="json")
+    serialized = json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _leadgen_normalize_token(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    return re.sub(r"[^a-z0-9]+", "_", text).strip("_") or None
+
+
+def _leadgen_first_value(source: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = source.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _leadgen_metadata_sources(item: LeadgenScoredLead, req: LeadgenBatchRequest) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    for root in (item.score, item.lead, req.summary):
+        if not isinstance(root, dict):
+            continue
+        for nested_key in ("qualification", "thesis", "thesis_fit", "metadata", "rockaway"):
+            nested = root.get(nested_key)
+            if isinstance(nested, dict):
+                sources.append(nested)
+        sources.append(root)
+    return sources
+
+
+def _leadgen_qualification(item: LeadgenScoredLead, req: LeadgenBatchRequest) -> tuple[str | None, str | None]:
+    thesis_key = None
+    thesis_status = None
+    for source in _leadgen_metadata_sources(item, req):
+        if thesis_key is None:
+            thesis_key = _leadgen_normalize_token(
+                _leadgen_first_value(
+                    source,
+                    ("thesis_key", "vc_thesis", "thesis", "strategy_key", "strategy"),
+                )
+            )
+        if thesis_status is None:
+            thesis_status = _leadgen_normalize_token(
+                _leadgen_first_value(
+                    source,
+                    ("thesis_status", "fit_status", "qualification_status", "status", "decision"),
+                )
+            )
+        if thesis_key and thesis_status:
+            break
+    if not (thesis_key and thesis_status):
+        # Compatibility for the current LeadGen exporter until it emits
+        # structured thesis metadata alongside the scored lead.
+        rationale = str((item.score or {}).get("rationale") or "").strip().lower()
+        if re.search(r"\brockaway\s+thesis\s+pass\b", rationale):
+            thesis_key = thesis_key or "rockaway"
+            thesis_status = thesis_status or "pass"
+    return thesis_key, thesis_status
+
+
+def _leadgen_is_rockaway_pass(thesis_key: str | None, thesis_status: str | None) -> bool:
+    return thesis_key == "rockaway" and thesis_status in {"pass", "passed"}
+
+
+def _leadgen_domain_from_url(url: str | None) -> str | None:
+    text = (url or "").strip().lower()
+    if not text:
+        return None
+    text = re.sub(r"^https?://", "", text)
+    text = re.sub(r"^www\.", "", text)
+    text = text.split("/", 1)[0].strip()
+    return text or None
+
+
+def _leadgen_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _leadgen_timestamp_for_db(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return text
+
+
+def _prepare_leadgen_intake(req: LeadgenBatchRequest) -> dict[str, Any]:
+    accepted_urls: list[str] = []
+    lead_rows: list[dict[str, Any]] = []
+    errors: list[LeadgenIngestError] = []
+    seen_urls: set[str] = set()
+    duplicate_count = 0
+
+    for idx, item in enumerate(req.leads, start=1):
+        raw_url, normalized_url, url_rejection_reason = _leadgen_url_from_item(item)
+        thesis_key, thesis_status = _leadgen_qualification(item, req)
+        approval_status = "pending"
+        rejection_reason = None
+        eligible = True
+        duplicate_of_url = None
+
+        if not normalized_url:
+            approval_status = "invalid"
+            rejection_reason = url_rejection_reason or "Missing or invalid website/domain."
+            eligible = False
+            errors.append(LeadgenIngestError(lead_name=_leadgen_lead_name(item), url=raw_url, reason=rejection_reason))
+        elif not _leadgen_is_rockaway_pass(thesis_key, thesis_status):
+            approval_status = "ineligible"
+            rejection_reason = "Only Rockaway PASS leads can be queued."
+            eligible = False
+            errors.append(LeadgenIngestError(lead_name=_leadgen_lead_name(item), url=raw_url, reason=rejection_reason))
+        elif normalized_url in seen_urls:
+            approval_status = "duplicate"
+            rejection_reason = "Duplicate URL within this LeadGen batch."
+            duplicate_of_url = normalized_url
+            duplicate_count += 1
+            eligible = False
+            errors.append(LeadgenIngestError(lead_name=_leadgen_lead_name(item), url=raw_url, reason=rejection_reason))
+        else:
+            seen_urls.add(normalized_url)
+            accepted_urls.append(normalized_url)
+
+        context_payload = _leadgen_context_for_item(
+            item,
+            normalized_url=normalized_url or raw_url or "",
+            input_order=idx,
+            thesis_key=thesis_key,
+            thesis_status=thesis_status,
+        )
+        lead_rows.append(
+            {
+                "input_order": idx,
+                "company_name": _leadgen_lead_name(item),
+                "domain": _leadgen_domain_from_url(normalized_url) or _leadgen_domain_from_url(raw_url),
+                "url": normalized_url,
+                "leadgen_score": _leadgen_float(item.score.get("score")),
+                "leadgen_bucket": item.score.get("bucket"),
+                "thesis_key": thesis_key,
+                "thesis_status": thesis_status,
+                "eligible": eligible,
+                "approval_status": approval_status,
+                "rejection_reason": rejection_reason,
+                "duplicate_of_url": duplicate_of_url,
+                "raw_lead": item.lead,
+                "raw_score": item.score,
+                "context_payload": context_payload,
+            }
+        )
+
+    return {
+        "accepted_urls": accepted_urls,
+        "lead_rows": lead_rows,
+        "errors": errors,
+        "duplicate_count": duplicate_count,
+    }
+
+
+def _leadgen_ingest_existing_status(batch: dict[str, Any]) -> str:
+    status = str(batch.get("status") or "").strip().lower()
+    if status == "rejected":
+        return "existing_rejected"
+    if batch.get("job_id_legacy") or status == "queued":
+        return "existing_queued"
+    return "existing_pending"
+
+
+def _require_leadgen_intake_storage() -> None:
+    if not db or not db.is_configured():
+        raise HTTPException(status_code=503, detail="LeadGen intake storage is not configured.")
+
+
 @app.post("/api/leadgen/ingest", response_model=LeadgenIngestResponse, status_code=202)
+@app.post("/api/leadgen/intake", response_model=LeadgenIngestResponse, status_code=202)
 async def leadgen_ingest(
     req: LeadgenBatchRequest,
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> LeadgenIngestResponse:
     _require_leadgen_api_key(x_api_key)
+    _require_leadgen_intake_storage()
 
-    accepted_urls: list[str] = []
-    lead_context: list[dict[str, Any]] = []
-    errors: list[LeadgenIngestError] = []
-    seen_urls: set[str] = set()
-    for idx, item in enumerate(req.leads, start=1):
-        raw_url, normalized_url = _leadgen_url_from_item(item)
-        if not normalized_url:
-            errors.append(
-                LeadgenIngestError(
-                    lead_name=_leadgen_lead_name(item),
-                    url=raw_url,
-                    reason="Missing or invalid website/domain.",
-                )
-            )
-            continue
-        if normalized_url in seen_urls:
-            continue
-        seen_urls.add(normalized_url)
-        accepted_urls.append(normalized_url)
-        lead_context.append(
-            _leadgen_context_for_item(item, normalized_url=normalized_url, input_order=idx)
+    prepared = _prepare_leadgen_intake(req)
+    accepted_urls = prepared["accepted_urls"]
+    errors = prepared["errors"]
+    batch_payload = {
+        "batch_id": req.batch_id,
+        "generated_at": _leadgen_timestamp_for_db(req.generated_at),
+        "scoring_version": req.scoring_version,
+        "source": "leadgen",
+        "thesis_key": "rockaway",
+        "status": "pending" if accepted_urls else "rejected",
+        "lead_count": len(req.leads),
+        "accepted_count": len(accepted_urls),
+        "rejected_count": len(errors),
+        "duplicate_count": prepared["duplicate_count"],
+        "payload_hash": _leadgen_payload_hash(req),
+        "summary": req.summary,
+    }
+    create_intake = getattr(db, "create_leadgen_intake", None)
+    if not callable(create_intake):
+        raise HTTPException(status_code=503, detail="LeadGen intake storage is unavailable.")
+    result = create_intake(batch=batch_payload, leads=prepared["lead_rows"])
+    if not result:
+        raise HTTPException(status_code=503, detail="Failed to store LeadGen intake.")
+    if result.get("status") == "conflict":
+        raise HTTPException(
+            status_code=409,
+            detail="batch_id_conflict: this LeadGen batch_id already exists with different contents.",
         )
 
-    job_id = _leadgen_job_id(req.batch_id)
-    existing_status = _leadgen_existing_job_status(job_id)
-    if existing_status:
-        return LeadgenIngestResponse(
-            batch_id=req.batch_id,
-            job_id=job_id,
-            status="existing",
-            accepted_count=len(accepted_urls),
-            rejected_count=len(errors),
-            accepted_urls=accepted_urls,
-            errors=errors,
-        )
+    batch = result.get("batch") or {}
+    response_status = (
+        _leadgen_ingest_existing_status(batch)
+        if result.get("status") == "existing"
+        else ("pending_approval" if accepted_urls else "rejected")
+    )
+    return LeadgenIngestResponse(
+        batch_id=req.batch_id,
+        intake_id=batch.get("intake_id") or batch.get("id"),
+        job_id=batch.get("job_id_legacy"),
+        status=response_status,  # type: ignore[arg-type]
+        accepted_count=int(batch.get("accepted_count") if batch.get("accepted_count") is not None else len(accepted_urls)),
+        rejected_count=int(batch.get("rejected_count") if batch.get("rejected_count") is not None else len(errors)),
+        accepted_urls=accepted_urls,
+        errors=errors,
+    )
 
-    if not accepted_urls:
-        return LeadgenIngestResponse(
-            batch_id=req.batch_id,
-            status="rejected",
-            accepted_count=0,
-            rejected_count=len(errors),
-            accepted_urls=[],
-            errors=errors,
-        )
 
-    run_config_extra = {
+async def _require_leadgen_operator(
+    *,
+    session_id: str | None,
+    authorization: str | None,
+) -> dict[str, str | None]:
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    identity = await _require_supabase_identity(authorization)
+    if identity:
+        return identity
+    return {
+        "started_by_display_name": "Deal Intelligence",
+        "started_by_label": "Deal Intelligence approval",
+    }
+
+
+def _leadgen_detail_or_404(intake_id: str) -> dict[str, Any]:
+    _require_leadgen_intake_storage()
+    load_intake = getattr(db, "load_leadgen_intake", None)
+    if not callable(load_intake):
+        raise HTTPException(status_code=503, detail="LeadGen intake storage is unavailable.")
+    detail = load_intake(intake_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="LeadGen intake not found.")
+    return detail
+
+
+def _leadgen_approved_lead_context(lead: dict[str, Any]) -> dict[str, Any]:
+    context = dict(lead.get("context_payload") or {})
+    context["lead_id"] = lead.get("lead_id") or lead.get("id")
+    context["approval_status"] = "approved"
+    return context
+
+
+def _leadgen_specter_url_item(lead: dict[str, Any]) -> dict[str, str] | str:
+    url = str(lead.get("url") or "").strip()
+    name = str(lead.get("company_name") or "").strip()
+    if name:
+        return {"url": url, "name": name}
+    return url
+
+
+def _leadgen_run_config_for_approval(
+    *,
+    batch: dict[str, Any],
+    leads: list[dict[str, Any]],
+    actor: dict[str, Any],
+) -> dict[str, Any]:
+    return {
         "source": "leadgen",
         "leadgen": {
-            "batch_id": req.batch_id,
-            "generated_at": req.generated_at,
-            "scoring_version": req.scoring_version,
-            "summary": req.summary,
-            "leads": lead_context,
+            "intake_id": batch.get("intake_id") or batch.get("id"),
+            "batch_id": batch.get("batch_id"),
+            "generated_at": batch.get("generated_at"),
+            "scoring_version": batch.get("scoring_version"),
+            "summary": batch.get("summary") or {},
+            "approved_lead_ids": [lead.get("lead_id") or lead.get("id") for lead in leads],
+            "leads": [_leadgen_approved_lead_context(lead) for lead in leads],
+            "approval": {
+                "approved_by_user_id": actor.get("started_by_user_id"),
+                "approved_by_email": actor.get("started_by_email"),
+                "approved_by_display_name": actor.get("started_by_display_name"),
+                "approved_by_label": actor.get("started_by_label"),
+            },
         },
     }
+
+
+@app.get("/api/leadgen/intakes")
+async def list_leadgen_intakes(
+    status: str = Query(default="pending"),
+    limit: int = Query(default=50, ge=1, le=200),
+    session_id: str | None = Cookie(default=None),
+):
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    _require_leadgen_intake_storage()
+    list_intakes = getattr(db, "list_leadgen_intake_batches", None)
+    if not callable(list_intakes):
+        raise HTTPException(status_code=503, detail="LeadGen intake storage is unavailable.")
+    normalized_status = (status or "pending").strip().lower()
+    if normalized_status not in {"pending", "queued", "approved", "partially_approved", "rejected", "all"}:
+        normalized_status = "pending"
+    return {"batches": list_intakes(status=normalized_status, limit=limit)}
+
+
+@app.get("/api/leadgen/intakes/{intake_id}")
+async def get_leadgen_intake(
+    intake_id: str,
+    session_id: str | None = Cookie(default=None),
+):
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return _leadgen_detail_or_404(intake_id)
+
+
+@app.post("/api/leadgen/intakes/{intake_id}/approve")
+async def approve_leadgen_intake(
+    intake_id: str,
+    req: LeadgenApprovalRequest,
+    session_id: str | None = Cookie(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    actor = await _require_leadgen_operator(session_id=session_id, authorization=authorization)
+    detail = _leadgen_detail_or_404(intake_id)
+    batch = detail["batch"]
+    existing_job_id = batch.get("job_id_legacy")
+    if existing_job_id:
+        return {
+            "status": "existing_job",
+            "intake_id": batch.get("intake_id") or batch.get("id"),
+            "job_id": existing_job_id,
+            "approved_count": 0,
+            "approved_urls": [],
+        }
+
+    requested_ids = {str(item) for item in (req.lead_ids or []) if str(item or "").strip()}
+    if not req.approve_all_eligible and not requested_ids:
+        raise HTTPException(status_code=400, detail="Select at least one LeadGen company to approve.")
+
+    eligible_leads: list[dict[str, Any]] = []
+    for lead in detail.get("leads") or []:
+        lead_id = str(lead.get("lead_id") or lead.get("id") or "")
+        if not lead.get("eligible"):
+            continue
+        if str(lead.get("approval_status") or "").lower() != "pending":
+            continue
+        if req.approve_all_eligible or lead_id in requested_ids:
+            eligible_leads.append(lead)
+
+    if not eligible_leads:
+        raise HTTPException(status_code=400, detail="No eligible pending LeadGen companies matched the approval request.")
+
+    approved_url_items = [
+        _leadgen_specter_url_item(lead)
+        for lead in eligible_leads
+        if str(lead.get("url") or "").strip()
+    ]
+    approved_urls = [_url_value_for_intake_item(item) for item in approved_url_items]
+    if not approved_urls:
+        raise HTTPException(status_code=400, detail="Approved LeadGen companies do not contain valid URLs.")
+
+    job_id = _leadgen_job_id(str(batch.get("batch_id") or intake_id))
+    existing_status = _leadgen_existing_job_status(job_id)
+    if existing_status:
+        return {
+            "status": "existing_job",
+            "intake_id": batch.get("intake_id") or batch.get("id"),
+            "job_id": job_id,
+            "approved_count": len(eligible_leads),
+            "approved_urls": approved_urls,
+        }
+
     _create_url_intake_job(
-        accepted_urls,
+        approved_url_items,
         job_id=job_id,
-        run_config_extra=run_config_extra,
+        run_config_extra=_leadgen_run_config_for_approval(batch=batch, leads=eligible_leads, actor=actor),
         source="leadgen",
     )
     await _start_analysis_job(
@@ -5730,23 +6186,62 @@ async def leadgen_ingest(
             use_specter_mcp=True,
             fetch_full_team=True,
             input_mode="specter",
-            run_name=f"leadgen:{req.batch_id}",
+            run_name=f"leadgen:{batch.get('batch_id') or intake_id}",
         ),
-        started_by={
-            "started_by_display_name": "Leadgen",
-            "started_by_label": "Leadgen",
-        },
+        started_by=actor,
         require_identity=False,
     )
-    return LeadgenIngestResponse(
-        batch_id=req.batch_id,
-        job_id=job_id,
-        status="created",
-        accepted_count=len(accepted_urls),
-        rejected_count=len(errors),
-        accepted_urls=accepted_urls,
-        errors=errors,
+
+    mark_queued = getattr(db, "mark_leadgen_intake_queued", None)
+    if not callable(mark_queued):
+        raise HTTPException(status_code=503, detail="LeadGen intake approval storage is unavailable.")
+    updated = mark_queued(
+        intake_id=intake_id,
+        lead_ids=[str(lead.get("lead_id") or lead.get("id")) for lead in eligible_leads],
+        job_id_legacy=job_id,
+        actor=actor,
     )
+    if not updated:
+        raise HTTPException(status_code=503, detail="LeadGen approval was queued but could not be recorded.")
+    return {
+        "status": "queued",
+        "intake_id": intake_id,
+        "job_id": job_id,
+        "approved_count": len(eligible_leads),
+        "approved_urls": approved_urls,
+        "batch": updated.get("batch"),
+    }
+
+
+@app.post("/api/leadgen/intakes/{intake_id}/reject")
+async def reject_leadgen_intake(
+    intake_id: str,
+    req: LeadgenRejectRequest,
+    session_id: str | None = Cookie(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    actor = await _require_leadgen_operator(session_id=session_id, authorization=authorization)
+    detail = _leadgen_detail_or_404(intake_id)
+    batch = detail["batch"]
+    if batch.get("job_id_legacy"):
+        raise HTTPException(status_code=409, detail="This LeadGen intake already has a queued job.")
+    requested_ids = [str(item) for item in (req.lead_ids or []) if str(item or "").strip()]
+    if not req.reject_all and not requested_ids:
+        raise HTTPException(status_code=400, detail="Select at least one LeadGen company to reject.")
+
+    reject_fn = getattr(db, "reject_leadgen_intake", None)
+    if not callable(reject_fn):
+        raise HTTPException(status_code=503, detail="LeadGen intake rejection storage is unavailable.")
+    updated = reject_fn(
+        intake_id=intake_id,
+        actor=actor,
+        reason=req.reason,
+        lead_ids=requested_ids,
+        reject_all=req.reject_all,
+    )
+    if not updated:
+        raise HTTPException(status_code=503, detail="Failed to reject LeadGen intake.")
+    return {"status": "rejected" if req.reject_all else "leads_rejected", **updated}
 
 
 async def _start_analysis_job(
@@ -6001,6 +6496,39 @@ def _report_mode_hint(job_id: str, results_list: list[dict[str, Any]]) -> str:
     return "batch"
 
 
+SPECTER_PROFILE_BASE_URL = "https://app.tryspecter.com/signals/company/feed/"
+
+
+def _company_url_from_domain(domain: str | None) -> str | None:
+    text = (domain or "").strip()
+    if not text:
+        return None
+    if text.startswith(("http://", "https://")):
+        return text
+    text = text.lower().removeprefix("www.").split("/", 1)[0]
+    return f"https://{text}" if "." in text else None
+
+
+def _company_link_metadata(company: Any) -> dict[str, str]:
+    domain = (getattr(company, "domain", None) or "").strip()
+    company_url = (
+        (getattr(company, "company_url", None) or "").strip()
+        or _company_url_from_domain(domain)
+        or ""
+    )
+    specter_company_id = (getattr(company, "specter_company_id", None) or "").strip()
+    specter_profile_url = (
+        (getattr(company, "specter_profile_url", None) or "").strip()
+        or (f"{SPECTER_PROFILE_BASE_URL}{specter_company_id}" if specter_company_id else "")
+    )
+    return {
+        "domain": domain,
+        "company_url": company_url,
+        "specter_company_id": specter_company_id,
+        "specter_profile_url": specter_profile_url,
+    }
+
+
 def _merge_runtime_payload_metadata(job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     merged = dict(payload)
     pipeline_meta = _resolve_job_pipeline_meta(job_id, results=merged)
@@ -6088,6 +6616,7 @@ def _compose_results_payload(
 
         ranking = final_state.get("ranking_result")
         ranking_result = None
+        company_metadata = _company_link_metadata(company)
         if ranking:
             dimension_scores_payload = []
             for d in ranking.dimension_scores:
@@ -6141,6 +6670,7 @@ def _compose_results_payload(
             "industry": company.industry or "N/A",
             "tagline": company.tagline or "",
             "about": company.about or "",
+            **company_metadata,
             "decision": final_state.get("final_decision", "unknown"),
             "total_score": round(total_score, 2),
             "avg_pro": round(avg_pro, 2),
@@ -6317,7 +6847,7 @@ def _queue_worker_backed_specter_job(job_id: str) -> tuple[bool, str | None]:
 
     cache = _results_cache.get(job_id, {})
     specter = cache.get("specter") or {}
-    specter_urls: list[str] = list(cache.get("specter_urls") or [])
+    specter_urls: list[Any] = list(cache.get("specter_urls") or [])
     companies_csv = specter.get("companies")
     companies_storage_path = specter.get("companies_storage_path")
 
@@ -6370,7 +6900,12 @@ def _queue_worker_backed_specter_job(job_id: str) -> tuple[bool, str | None]:
         for d in csv_descriptors
         if d.get("domain")
     }
-    deduped_urls = [u for u in specter_urls if u.lower() not in csv_domains]
+    deduped_urls = [
+        item
+        for item in specter_urls
+        if (_leadgen_domain_from_url(_url_value_for_intake_item(item)) or _url_value_for_intake_item(item).lower())
+        not in csv_domains
+    ]
 
     max_startups = _parse_max_startups_from_instructions(cache.get("instructions"))
     if max_startups is not None:
@@ -6594,6 +7129,7 @@ def _failure_result_payload(
     error_message: str,
 ) -> dict[str, Any]:
     founders = _extract_founders_from_company(company, slug)
+    company_metadata = _company_link_metadata(company)
     payload = {
         "mode": "single",
         "startup_slug": slug,
@@ -6601,6 +7137,7 @@ def _failure_result_payload(
         "industry": company.industry or "N/A",
         "tagline": company.tagline or "",
         "about": company.about or "",
+        **company_metadata,
         "decision": status,
         "total_score": None,
         "avg_pro": None,
@@ -6614,6 +7151,7 @@ def _failure_result_payload(
         "summary_rows": [{
             "startup_slug": slug,
             "company_name": company.name,
+            **company_metadata,
             "decision": status,
             "total_score": None,
             "avg_pro": None,
@@ -8062,6 +8600,31 @@ async def list_company_runs(session_id: str | None = Cookie(default=None)):
         payload,
         COMPANY_RUNS_CACHE_SECONDS,
     )
+
+
+@app.get("/api/company-runs/summary")
+async def list_company_run_summaries(
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    sort: str = Query(default="latest"),
+    session_id: str | None = Cookie(default=None),
+):
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return _list_company_run_summaries_for_ui(limit=limit, offset=offset, sort=sort)
+
+
+@app.get("/api/company-runs/detail/{company_lookup_key}")
+async def get_company_run_detail(
+    company_lookup_key: str,
+    session_id: str | None = Cookie(default=None),
+):
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    detail = _load_company_run_detail_for_ui(company_lookup_key)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Company run detail not found")
+    return {"company": detail}
 
 
 @app.get("/api/companies/{company_lookup_key}/chat")

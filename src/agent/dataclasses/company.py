@@ -12,6 +12,9 @@ class Company(BaseModel):
     about: Optional[str] = None
     team: Optional[List["Person"]] = None
     domain: Optional[str] = None
+    company_url: Optional[str] = None
+    specter_company_id: Optional[str] = None
+    specter_profile_url: Optional[str] = None
     
     def _get_team_summary(self) -> str:
         """Format team data focusing on team members with their details.

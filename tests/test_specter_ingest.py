@@ -46,8 +46,8 @@ def test_list_specter_companies_returns_lightweight_descriptors(tmp_path: Path) 
     companies_path = tmp_path / "specter-export.csv"
     pd.DataFrame(
         [
-            {"Company Name": "Alpha Health", "Industry": "Health", "Domain": "alpha.example"},
-            {"Company Name": "Beta AI", "Industry": "AI", "Domain": "beta.example"},
+            {"Company Name": "Alpha Health", "Industry": "Health", "Domain": "alpha.example", "Specter - ID": "specter-alpha"},
+            {"Company Name": "Beta AI", "Industry": "AI", "Domain": "beta.example", "Specter - Company ID": "specter-beta"},
         ]
     ).to_csv(companies_path, index=False)
 
@@ -60,6 +60,9 @@ def test_list_specter_companies_returns_lightweight_descriptors(tmp_path: Path) 
             "slug": "alpha-health",
             "industry": "Health",
             "domain": "alpha.example",
+            "company_url": "https://alpha.example",
+            "specter_company_id": "specter-alpha",
+            "specter_profile_url": "https://app.tryspecter.com/signals/company/feed/specter-alpha",
         },
         {
             "index": 1,
@@ -67,6 +70,9 @@ def test_list_specter_companies_returns_lightweight_descriptors(tmp_path: Path) 
             "slug": "beta-ai",
             "industry": "AI",
             "domain": "beta.example",
+            "company_url": "https://beta.example",
+            "specter_company_id": "specter-beta",
+            "specter_profile_url": "https://app.tryspecter.com/signals/company/feed/specter-beta",
         },
     ]
 
@@ -88,6 +94,7 @@ def test_ingest_specter_company_builds_only_selected_company(tmp_path: Path) -> 
                 "Industry": "Fintech",
                 "Description": "Beta company",
                 "Domain": "beta.com",
+                "Specter - ID": "specter-beta",
                 "Founders": '[{"specter_person_id":"p-2"}]',
             },
         ]
@@ -116,6 +123,10 @@ def test_ingest_specter_company_builds_only_selected_company(tmp_path: Path) -> 
     )
 
     assert company.name == "Beta"
+    assert company.domain == "beta.com"
+    assert company.company_url == "https://beta.com"
+    assert company.specter_company_id == "specter-beta"
+    assert company.specter_profile_url == "https://app.tryspecter.com/signals/company/feed/specter-beta"
     assert store.startup_slug == "beta"
     assert company.team and [member.name for member in company.team] == ["Bob Founder"]
     assert any("Beta" in chunk.text for chunk in store.chunks)

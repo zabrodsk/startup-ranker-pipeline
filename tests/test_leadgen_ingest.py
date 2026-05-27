@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from copy import deepcopy
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -15,6 +18,17 @@ def leadgen_runtime(monkeypatch):
     web_app._job_controls.clear()
     web_app._results_cache.clear()
     monkeypatch.setenv("LEADGEN_API_KEY", "leadgen-secret")
+    monkeypatch.setattr(web_app, "_check_session", lambda session_id: True)
+
+    async def fake_require_identity(_authorization):
+        return {
+            "started_by_user_id": "user-1",
+            "started_by_email": "operator@rockaway.vc",
+            "started_by_display_name": "Operator",
+            "started_by_label": "Operator",
+        }
+
+    monkeypatch.setattr(web_app, "_require_supabase_identity", fake_require_identity)
     monkeypatch.setattr(
         web_app,
         "build_default_phase_model_policy",
@@ -30,7 +44,22 @@ def leadgen_runtime(monkeypatch):
         "queued": [],
         "upserted": {},
         "events": [],
+        "batches": {},
+        "batch_by_id": {},
+        "leads": {},
+        "next_intake": 1,
+        "next_lead": 1,
     }
+
+    def detail(intake_id: str):
+        batch = state["batches"].get(intake_id)
+        if not batch:
+            return None
+        return {
+            "batch": deepcopy(batch),
+            "leads": deepcopy(state["leads"].get(intake_id, [])),
+            "events": [],
+        }
 
     class FakeDb:
         @staticmethod
@@ -80,6 +109,62 @@ def leadgen_runtime(monkeypatch):
             }
             return True
 
+        @staticmethod
+        def create_leadgen_intake(*, batch, leads):
+            existing_id = state["batch_by_id"].get(batch["batch_id"])
+            if existing_id:
+                existing = state["batches"][existing_id]
+                if existing["payload_hash"] != batch["payload_hash"]:
+                    return {"status": "conflict", "batch": deepcopy(existing)}
+                return {"status": "existing", "batch": deepcopy(existing)}
+
+            intake_id = f"intake-{state['next_intake']}"
+            state["next_intake"] += 1
+            stored_batch = {**deepcopy(batch), "id": intake_id, "intake_id": intake_id, "created_at": "2026-05-25T10:00:00Z"}
+            state["batches"][intake_id] = stored_batch
+            state["batch_by_id"][stored_batch["batch_id"]] = intake_id
+            stored_leads = []
+            for lead in leads:
+                lead_id = f"lead-{state['next_lead']}"
+                state["next_lead"] += 1
+                stored_leads.append({**deepcopy(lead), "id": lead_id, "lead_id": lead_id, "intake_id": intake_id})
+            state["leads"][intake_id] = stored_leads
+            return {"status": "created", "batch": deepcopy(stored_batch)}
+
+        @staticmethod
+        def list_leadgen_intake_batches(*, status="pending", limit=50):
+            rows = list(state["batches"].values())
+            if status != "all":
+                rows = [row for row in rows if row.get("status") == status]
+            return deepcopy(rows[:limit])
+
+        @staticmethod
+        def load_leadgen_intake(intake_id):
+            return detail(intake_id)
+
+        @staticmethod
+        def mark_leadgen_intake_queued(*, intake_id, lead_ids, job_id_legacy, actor):
+            batch = state["batches"][intake_id]
+            batch["status"] = "queued"
+            batch["job_id_legacy"] = job_id_legacy
+            batch["approved_by_email"] = actor.get("started_by_email")
+            for lead in state["leads"][intake_id]:
+                if lead["lead_id"] in lead_ids:
+                    lead["approval_status"] = "approved"
+            return detail(intake_id)
+
+        @staticmethod
+        def reject_leadgen_intake(*, intake_id, actor=None, reason=None, lead_ids=None, reject_all=False):
+            batch = state["batches"][intake_id]
+            if reject_all:
+                batch["status"] = "rejected"
+            for lead in state["leads"][intake_id]:
+                if reject_all or lead["lead_id"] in set(lead_ids or []):
+                    lead["approval_status"] = "rejected"
+                    lead["eligible"] = False
+                    lead["rejection_reason"] = reason
+            return detail(intake_id)
+
     monkeypatch.setattr(web_app, "db", FakeDb())
     try:
         yield state
@@ -91,15 +176,15 @@ def leadgen_runtime(monkeypatch):
 
 
 def _batch_payload() -> dict:
+    rockaway_pass = {"thesis_key": "rockaway", "thesis_status": "pass"}
     return {
         "batch_id": "smoke-rdi-1",
         "generated_at": "2026-05-23T06:30:04+00:00",
         "scoring_version": "phase1-rubric-v1",
         "summary": {
-            "lead_count": 4,
-            "high_priority_count": 1,
+            "lead_count": 5,
+            "rockaway_pass_count": 3,
             "review_count": 1,
-            "archive_count": 1,
         },
         "leads": [
             {
@@ -109,11 +194,12 @@ def _batch_payload() -> dict:
                     "domain": "alpha.example",
                     "source": "specter",
                     "source_url": "https://source.example/alpha",
+                    **rockaway_pass,
                 },
                 "score": {
                     "score": 100,
                     "bucket": "high_priority",
-                    "rationale": "Strong fit.",
+                    "rationale": "Rockaway thesis PASS.",
                     "version": "phase1-rubric-v1",
                 },
             },
@@ -123,17 +209,30 @@ def _batch_payload() -> dict:
                     "website": "not a url",
                     "domain": "beta.example",
                     "source": "specter",
+                    **rockaway_pass,
                 },
-                "score": {"score": 72, "bucket": "review", "version": "phase1-rubric-v1"},
+                "score": {"score": 92, "bucket": "high_priority", "version": "phase1-rubric-v1"},
             },
             {
                 "lead": {
-                    "name": "Archive Co",
-                    "website": "https://archive.example",
-                    "domain": "archive.example",
+                    "name": "Alpha Duplicate",
+                    "website": "https://alpha.example",
+                    "domain": "alpha.example",
                     "source": "specter",
+                    **rockaway_pass,
                 },
-                "score": {"score": 25, "bucket": "archive", "version": "phase1-rubric-v1"},
+                "score": {"score": 88, "bucket": "high_priority", "version": "phase1-rubric-v1"},
+            },
+            {
+                "lead": {
+                    "name": "Review Co",
+                    "website": "https://review.example",
+                    "domain": "review.example",
+                    "source": "specter",
+                    "thesis_key": "rockaway",
+                    "thesis_status": "review",
+                },
+                "score": {"score": 72, "bucket": "review", "version": "phase1-rubric-v1"},
             },
             {
                 "lead": {
@@ -141,6 +240,7 @@ def _batch_payload() -> dict:
                     "website": "",
                     "domain": "",
                     "source": "specter",
+                    **rockaway_pass,
                 },
                 "score": {"score": 10, "bucket": "archive", "version": "phase1-rubric-v1"},
             },
@@ -148,7 +248,7 @@ def _batch_payload() -> dict:
     }
 
 
-def test_leadgen_ingest_creates_one_forced_specter_url_job(leadgen_runtime) -> None:
+def test_leadgen_ingest_stores_pending_intake_without_queueing_job(leadgen_runtime) -> None:
     with TestClient(app) as client:
         response = client.post(
             "/api/leadgen/ingest",
@@ -158,69 +258,136 @@ def test_leadgen_ingest_creates_one_forced_specter_url_job(leadgen_runtime) -> N
 
     assert response.status_code == 202
     payload = response.json()
-    assert payload["status"] == "created"
-    assert payload["accepted_count"] == 3
-    assert payload["rejected_count"] == 1
-    assert payload["accepted_urls"] == [
-        "https://alpha.example",
-        "beta.example",
-        "https://archive.example",
-    ]
-    assert payload["errors"] == [
-        {
-            "lead_name": "No URL",
-            "url": None,
-            "reason": "Missing or invalid website/domain.",
-        }
+    assert payload["status"] == "pending_approval"
+    assert payload["intake_id"] == "intake-1"
+    assert payload["job_id"] is None
+    assert payload["accepted_count"] == 2
+    assert payload["rejected_count"] == 3
+    assert payload["accepted_urls"] == ["https://alpha.example", "beta.example"]
+    assert leadgen_runtime["queued"] == []
+    assert web_app._jobs == {}
+
+    stored_leads = leadgen_runtime["leads"]["intake-1"]
+    assert [lead["approval_status"] for lead in stored_leads] == [
+        "pending",
+        "pending",
+        "duplicate",
+        "ineligible",
+        "invalid",
     ]
 
-    job_id = payload["job_id"]
-    cache = web_app._results_cache[job_id]
-    run_config = cache["run_config"]
-    assert cache["specter_urls"] == payload["accepted_urls"]
-    assert run_config["source"] == "leadgen"
-    assert run_config["run_name"] == "leadgen:smoke-rdi-1"
-    assert run_config["input_mode"] == "specter"
-    assert run_config["use_web_search"] is True
-    assert run_config["use_specter_mcp"] is True
-    assert run_config["fetch_full_team"] is True
-    assert run_config["leadgen"]["batch_id"] == "smoke-rdi-1"
-    assert run_config["leadgen"]["scoring_version"] == "phase1-rubric-v1"
-    assert [lead["bucket"] for lead in run_config["leadgen"]["leads"]] == [
-        "high_priority",
-        "review",
-        "archive",
-    ]
-    assert len(leadgen_runtime["queued"]) == 1
-    assert leadgen_runtime["queued"][0]["job_id"] == job_id
-    assert leadgen_runtime["queued"][0]["run_config"]["specter_urls"] == payload["accepted_urls"]
 
-
-def test_leadgen_ingest_retry_returns_existing_job_without_requeue(leadgen_runtime) -> None:
+def test_leadgen_intake_alias_uses_same_pending_behavior(leadgen_runtime) -> None:
     with TestClient(app) as client:
-        first = client.post(
-            "/api/leadgen/ingest",
+        response = client.post(
+            "/api/leadgen/intake",
             headers={"X-API-Key": "leadgen-secret"},
             json=_batch_payload(),
         )
-        second = client.post(
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "pending_approval"
+    assert leadgen_runtime["queued"] == []
+
+
+def test_leadgen_ingest_accepts_current_legacy_rockaway_pass_rationale(leadgen_runtime) -> None:
+    payload = _batch_payload()
+    payload["leads"][0]["lead"].pop("thesis_key")
+    payload["leads"][0]["lead"].pop("thesis_status")
+
+    with TestClient(app) as client:
+        response = client.post(
             "/api/leadgen/ingest",
             headers={"X-API-Key": "leadgen-secret"},
-            json=_batch_payload(),
+            json=payload,
         )
+
+    assert response.status_code == 202
+    assert response.json()["accepted_urls"][0] == "https://alpha.example"
+    stored_lead = leadgen_runtime["leads"]["intake-1"][0]
+    assert stored_lead["thesis_key"] == "rockaway"
+    assert stored_lead["thesis_status"] == "pass"
+
+
+def test_leadgen_ingest_retry_is_idempotent_and_conflicts_on_changed_payload(leadgen_runtime) -> None:
+    payload = _batch_payload()
+    changed = deepcopy(payload)
+    changed["leads"][0]["score"]["score"] = 99
+
+    with TestClient(app) as client:
+        first = client.post("/api/leadgen/ingest", headers={"X-API-Key": "leadgen-secret"}, json=payload)
+        second = client.post("/api/leadgen/ingest", headers={"X-API-Key": "leadgen-secret"}, json=payload)
+        conflict = client.post("/api/leadgen/ingest", headers={"X-API-Key": "leadgen-secret"}, json=changed)
 
     assert first.status_code == 202
     assert second.status_code == 202
-    assert second.json()["status"] == "existing"
-    assert second.json()["job_id"] == first.json()["job_id"]
+    assert second.json()["status"] == "existing_pending"
+    assert second.json()["intake_id"] == first.json()["intake_id"]
+    assert conflict.status_code == 409
+    assert leadgen_runtime["queued"] == []
+
+
+def test_approval_queues_one_specter_job_for_selected_leads(leadgen_runtime) -> None:
+    with TestClient(app) as client:
+        intake = client.post(
+            "/api/leadgen/ingest",
+            headers={"X-API-Key": "leadgen-secret"},
+            json=_batch_payload(),
+        ).json()
+        detail = client.get(f"/api/leadgen/intakes/{intake['intake_id']}").json()
+        selected_id = detail["leads"][1]["lead_id"]
+        response = client.post(
+            f"/api/leadgen/intakes/{intake['intake_id']}/approve",
+            json={"lead_ids": [selected_id]},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "queued"
+    assert body["approved_count"] == 1
+    assert body["approved_urls"] == ["beta.example"]
     assert len(leadgen_runtime["queued"]) == 1
+
+    job_id = body["job_id"]
+    cache = web_app._results_cache[job_id]
+    run_config = cache["run_config"]
+    assert cache["specter_urls"] == [{"url": "beta.example", "name": "Beta"}]
+    assert run_config["specter_urls"] == [{"url": "beta.example", "name": "Beta"}]
+    assert run_config["source"] == "leadgen"
+    assert run_config["run_name"] == "leadgen:smoke-rdi-1"
+    assert run_config["leadgen"]["intake_id"] == "intake-1"
+    assert run_config["leadgen"]["approved_lead_ids"] == [selected_id]
+    assert run_config["leadgen"]["leads"][0]["name"] == "Beta"
+    assert run_config["started_by_email"] == "operator@rockaway.vc"
+
+
+def test_approval_requires_selection_and_does_not_queue(leadgen_runtime) -> None:
+    with TestClient(app) as client:
+        intake = client.post(
+            "/api/leadgen/ingest",
+            headers={"X-API-Key": "leadgen-secret"},
+            json=_batch_payload(),
+        ).json()
+        response = client.post(
+            f"/api/leadgen/intakes/{intake['intake_id']}/approve",
+            json={"lead_ids": []},
+        )
+
+    assert response.status_code == 400
+    assert leadgen_runtime["queued"] == []
 
 
 def test_leadgen_ingest_rejects_invalid_urls_without_job(leadgen_runtime) -> None:
     payload = _batch_payload()
     payload["leads"] = [
-        {"lead": {"name": "No URL", "website": "", "domain": ""}, "score": {"bucket": "archive"}},
-        {"lead": {"name": "Bad URL", "website": "not a url"}, "score": {"bucket": "high_priority"}},
+        {
+            "lead": {"name": "No URL", "website": "", "domain": "", "thesis_key": "rockaway", "thesis_status": "pass"},
+            "score": {"bucket": "high_priority"},
+        },
+        {
+            "lead": {"name": "Bad URL", "website": "not a url", "thesis_key": "rockaway", "thesis_status": "pass"},
+            "score": {"bucket": "high_priority"},
+        },
     ]
 
     with TestClient(app) as client:
@@ -237,6 +404,53 @@ def test_leadgen_ingest_rejects_invalid_urls_without_job(leadgen_runtime) -> Non
     assert body["accepted_count"] == 0
     assert body["rejected_count"] == 2
     assert leadgen_runtime["queued"] == []
+
+
+def test_leadgen_ingest_rejects_source_platform_domains(leadgen_runtime) -> None:
+    payload = _batch_payload()
+    payload["leads"] = [
+        {
+            "lead": {
+                "name": "Repo Signal Co",
+                "website": "",
+                "domain": "github.com",
+                "source": "github_trends",
+                "source_url": "https://github.com/example/repo",
+                "thesis_key": "rockaway",
+                "thesis_status": "pass",
+            },
+            "score": {"bucket": "high_priority"},
+        },
+        {
+            "lead": {
+                "name": "Domain Fallback Co",
+                "website": "https://github.com/example/repo",
+                "domain": "fallback.example",
+                "source": "github_trends",
+                "source_url": "https://github.com/example/repo",
+                "thesis_key": "rockaway",
+                "thesis_status": "pass",
+            },
+            "score": {"bucket": "high_priority"},
+        },
+    ]
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/leadgen/ingest",
+            headers={"X-API-Key": "leadgen-secret"},
+            json=payload,
+        )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["status"] == "pending_approval"
+    assert body["accepted_urls"] == ["fallback.example"]
+    assert body["errors"][0]["reason"] == "Website/domain points to source platform github.com, not a company website."
+
+    stored_leads = leadgen_runtime["leads"]["intake-1"]
+    assert stored_leads[0]["approval_status"] == "invalid"
+    assert stored_leads[1]["approval_status"] == "pending"
 
 
 def test_leadgen_ingest_requires_configured_api_key(monkeypatch) -> None:

@@ -38,3 +38,31 @@ def test_scoring_signals_are_summarized_not_dumped() -> None:
     assert "Specter team highlights:" in html
     assert "duplicate Specter highlights hidden" not in html
     assert "signals.specter_highlights.map(h => h.label || h).join(', ')" not in html
+
+
+def test_company_rank_cards_render_website_and_specter_links() -> None:
+    html = (Path(__file__).resolve().parents[1] / "web" / "static" / "index.html").read_text()
+
+    assert "const SPECTER_PROFILE_BASE_URL = 'https://app.tryspecter.com/signals/company/feed/';" in html
+    assert "function buildCompanyLinkControlsHtml(...sources)" in html
+    assert "function buildRankCompanyTitleHtml(companyName, ...sources)" in html
+    assert "target=\"_blank\" rel=\"noopener noreferrer\"" in html
+    assert "buildSpecterCompanyProfileUrl(specterCompanyId)" in html
+    assert "buildRankCompanyTitleHtml(companyName, result, summary, company, run)" in html
+    assert "buildRankCompanyTitleHtml(row.company_name || row.startup_slug, row)" in html
+
+
+def test_leadgen_intake_screen_uses_human_approval_api() -> None:
+    html = (Path(__file__).resolve().parents[1] / "web" / "static" / "index.html").read_text()
+
+    assert 'id="leadgen-screen"' in html
+    assert "function openLeadgenPage()" in html
+    assert "`/api/leadgen/intakes?status=${encodeURIComponent(leadgenStatusFilter)}&limit=100`" in html
+    assert "`/api/leadgen/intakes/${encodeURIComponent(intakeId)}/approve`" in html
+    assert "Approve Selected & Start" in html
+    assert "Approve All Eligible & Start" in html
+    assert "let leadgenSortMode = 'source';" in html
+    assert "function leadgenSourceLabel(lead)" in html
+    assert '<th>Source</th>' in html
+    assert '<option value="source" ${leadgenSortMode === \'source\' ? \'selected\' : \'\'}>Source</option>' in html
+    assert '<th>Score</th><th>Bucket</th>' not in html

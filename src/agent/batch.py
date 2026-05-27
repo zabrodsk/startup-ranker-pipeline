@@ -40,6 +40,8 @@ from agent.run_context import (
     use_stage_context,
 )
 
+SPECTER_PROFILE_BASE_URL = "https://app.tryspecter.com/signals/company/feed/"
+
 
 def _read_positive_int_env(name: str, default: int) -> int:
     raw = os.getenv(name)
@@ -58,6 +60,38 @@ DECOMPOSITION_TIMEOUT_SECONDS = _read_positive_int_env("DECOMPOSITION_TIMEOUT_SE
 DECOMPOSITION_HEARTBEAT_SECONDS = _read_positive_int_env("DECOMPOSITION_HEARTBEAT_SECONDS", 20)
 QA_TIMEOUT_SECONDS = _read_positive_int_env("QA_TIMEOUT_SECONDS", 1800)
 QA_HEARTBEAT_SECONDS = _read_positive_int_env("QA_HEARTBEAT_SECONDS", 20)
+
+
+def _company_url_from_domain(domain: str | None) -> str | None:
+    text = (domain or "").strip()
+    if not text:
+        return None
+    if text.startswith(("http://", "https://")):
+        return text
+    text = text.lower()
+    text = text.removeprefix("www.")
+    text = text.split("/", 1)[0]
+    return f"https://{text}" if "." in text else None
+
+
+def _company_link_metadata(company: Company) -> dict[str, str]:
+    domain = (getattr(company, "domain", None) or "").strip()
+    company_url = (
+        (getattr(company, "company_url", None) or "").strip()
+        or _company_url_from_domain(domain)
+        or ""
+    )
+    specter_company_id = (getattr(company, "specter_company_id", None) or "").strip()
+    specter_profile_url = (
+        (getattr(company, "specter_profile_url", None) or "").strip()
+        or (f"{SPECTER_PROFILE_BASE_URL}{specter_company_id}" if specter_company_id else "")
+    )
+    return {
+        "domain": domain,
+        "company_url": company_url,
+        "specter_company_id": specter_company_id,
+        "specter_profile_url": specter_profile_url,
+    }
 
 
 async def _await_with_heartbeat(
@@ -1070,6 +1104,7 @@ def build_summary_rows(results: List[Dict[str, Any]]) -> List[Dict]:
             "total_score": round(total_score, 2),
             "avg_pro": round(avg_pro, 2),
             "avg_contra": round(avg_contra, 2),
+            **_company_link_metadata(company),
         }
 
         if ranking:
