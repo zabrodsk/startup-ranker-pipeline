@@ -5468,6 +5468,8 @@ let previousScreenBeforeInfo = 'upload-screen';
 let previousScreenBeforeLeadgen = 'upload-screen';
 let activeInfoPage = 'how-it-works';
 let screenTransitionToken = 0;
+let startupNavigationInProgress = true;
+let startupNavigationClaimedByUser = false;
 let renderedTeamMembersBySlug = {};
 let analysisConfig = null;
 let selectedLlmKey = null;
@@ -5589,6 +5591,12 @@ function syncPrimaryHeaderNav(screenId = null) {
     if (isActive) button.setAttribute('aria-current', 'page');
     else button.removeAttribute('aria-current');
   });
+}
+
+function claimStartupNavigation() {
+  if (startupNavigationInProgress) {
+    startupNavigationClaimedByUser = true;
+  }
 }
 
 function deepClone(value) {
@@ -10326,16 +10334,28 @@ async function loadConfirmedTerminalResults(jobId, fallbackResults = null) {
         await fetchSavedJobs();
         fetchSavedCompanies();
         backfillRecentRunsWithLlm();
+        if (startupNavigationClaimedByUser) {
+          startupNavigationInProgress = false;
+          syncFeedbackButtonVisibility();
+          return;
+        }
         const resumed = await resumeActiveJob();
-        if (!resumed) {
+        if (!resumed && !startupNavigationClaimedByUser) {
           openNewAnalysis();
-        } else {
+        } else if (resumed) {
           fetchSavedCompanies();
         }
+        startupNavigationInProgress = false;
         return;
       }
     } catch {}
   }
+  if (startupNavigationClaimedByUser) {
+    startupNavigationInProgress = false;
+    syncFeedbackButtonVisibility();
+    return;
+  }
+  startupNavigationInProgress = false;
   syncRoute();
 })();
 
@@ -11965,15 +11985,24 @@ $('#progress-log-modal-overlay').addEventListener('click', (e) => {
 });
 ['#saved-jobs-open-upload', '#saved-jobs-open-processing', '#saved-jobs-open-results', '#saved-jobs-open-analysis', '#saved-jobs-open-leadgen'].forEach((sel) => {
   const el = $(sel);
-  if (el) el.addEventListener('click', openCompaniesPage);
+  if (el) el.addEventListener('click', () => {
+    claimStartupNavigation();
+    openCompaniesPage();
+  });
 });
 ['#analysis-open-upload', '#analysis-open-processing', '#analysis-open-results', '#analysis-open-companies', '#analysis-open-leadgen'].forEach((sel) => {
   const el = $(sel);
-  if (el) el.addEventListener('click', openAnalysisPage);
+  if (el) el.addEventListener('click', () => {
+    claimStartupNavigation();
+    openAnalysisPage();
+  });
 });
 ['#leadgen-open-upload', '#leadgen-open-processing', '#leadgen-open-results', '#leadgen-open-analysis', '#leadgen-open-companies'].forEach((sel) => {
   const el = $(sel);
-  if (el) el.addEventListener('click', openLeadgenPage);
+  if (el) el.addEventListener('click', () => {
+    claimStartupNavigation();
+    openLeadgenPage();
+  });
 });
 $('#leadgen-refresh-btn')?.addEventListener('click', () => fetchLeadgenIntakes({ silent: false }));
 $('#info-open-how-upload')?.addEventListener('click', () => openInfoPage('how-it-works'));

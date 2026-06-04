@@ -66,3 +66,32 @@ def test_leadgen_intake_screen_uses_human_approval_api() -> None:
     assert '<th>Source</th>' in html
     assert '<option value="source" ${leadgenSortMode === \'source\' ? \'selected\' : \'\'}>Source</option>' in html
     assert '<th>Score</th><th>Bucket</th>' not in html
+
+
+def test_startup_navigation_does_not_override_companies_click() -> None:
+    html = (Path(__file__).resolve().parents[1] / "web" / "static" / "index.html").read_text()
+
+    assert "let startupNavigationInProgress = true;" in html
+    assert "let startupNavigationClaimedByUser = false;" in html
+    assert "function claimStartupNavigation()" in html
+
+    bootstrap_guard = re.search(
+        r"if \(startupNavigationClaimedByUser\) \{\s*"
+        r"startupNavigationInProgress = false;\s*"
+        r"syncFeedbackButtonVisibility\(\);\s*"
+        r"return;\s*"
+        r"\}\s*"
+        r"const resumed = await resumeActiveJob\(\);",
+        html,
+        re.S,
+    )
+    assert bootstrap_guard is not None
+
+    companies_handler = re.search(
+        r"el\.addEventListener\('click', \(\) => \{\s*"
+        r"claimStartupNavigation\(\);\s*"
+        r"openCompaniesPage\(\);",
+        html,
+        re.S,
+    )
+    assert companies_handler is not None
