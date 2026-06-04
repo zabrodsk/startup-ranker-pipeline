@@ -14,6 +14,11 @@ from typing import Any
 from dotenv import load_dotenv
 from supabase import Client, create_client
 from agent.run_context import build_run_costs_from_model_executions
+from web.analysis_quality import (
+    is_failed_analysis_status,
+    normalize_company_display_name,
+    safe_company_slug_for_key,
+)
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
@@ -115,6 +120,67 @@ def _normalize_company_key(name: str | None, domain: str | None = None, slug: st
     text = (name or "").strip().lower()
     text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
     return f"name:{text or 'unknown'}"
+
+
+def _record_company_identity_guardrail(
+    *,
+    job_id_legacy: str | None,
+    company_slug: str | None,
+    raw_name: str | None,
+    reason: str,
+) -> None:
+    logger.warning(
+        "Company persistence blocked by identity guardrail: job_id_legacy=%s company_slug=%s raw_name=%r reason=%s",
+        job_id_legacy or "-",
+        company_slug or "-",
+        raw_name,
+        reason,
+    )
+    if not job_id_legacy:
+        return
+    try:
+        insert_analysis_error(
+            job_id_legacy,
+            message=f"Company persistence blocked: {reason}"[:1000],
+            stage="company_identity_guardrail",
+            error_type="QualityPreflightError",
+            details={"raw_name": raw_name, "reason": reason},
+            company_slug=company_slug,
+        )
+    except Exception:
+        pass
+
+
+def _normalize_persisted_company_name(
+    raw_name: str | None,
+    *,
+    job_id_legacy: str | None,
+    company_slug: str | None,
+    source: str = "persistence",
+    record_error: bool = True,
+) -> str | None:
+    normalized = normalize_company_display_name(raw_name, source=source)
+    if normalized.valid and normalized.value:
+        return normalized.value
+    if record_error:
+        _record_company_identity_guardrail(
+            job_id_legacy=job_id_legacy,
+            company_slug=company_slug,
+            raw_name=raw_name,
+            reason=normalized.reason or "Company name is invalid.",
+        )
+    return None
+
+
+def _apply_company_name_to_payload(payload: dict[str, Any], company_name: str) -> dict[str, Any]:
+    serialized = _serialize(payload or {})
+    serialized["company_name"] = company_name
+    summary_rows = serialized.get("summary_rows")
+    if isinstance(summary_rows, list):
+        for row in summary_rows:
+            if isinstance(row, dict):
+                row["company_name"] = company_name
+    return serialized
 
 
 def _normalize_text_token(value: str | None) -> str:
@@ -698,8 +764,30 @@ def _persist_company_analysis_row(
     store = result_row.get("evidence_store")
     analysis_status = str(result_row.get("analysis_status") or "done")
     company_name = getattr(company, "name", None) or result_row.get("company_name") or slug
+    if is_failed_analysis_status(analysis_status) or is_failed_analysis_status(
+        company_payload.get("decision")
+    ):
+        _record_company_identity_guardrail(
+            job_id_legacy=job_id_legacy,
+            company_slug=slug,
+            raw_name=company_name,
+            reason=f"Failed analysis rows are not persisted as companies (status={analysis_status}).",
+        )
+        return False
+
+    normalized_company_name = _normalize_persisted_company_name(
+        company_name,
+        job_id_legacy=job_id_legacy,
+        company_slug=slug,
+        source="persistence",
+    )
+    if not normalized_company_name:
+        return False
+    company_name = normalized_company_name
+    company_payload = _apply_company_name_to_payload(company_payload, company_name)
     company_domain = getattr(company, "domain", None)
-    company_key = _normalize_company_key(company_name, company_domain, slug)
+    safe_slug = safe_company_slug_for_key(company_name, slug)
+    company_key = _normalize_company_key(company_name, company_domain, safe_slug)
     company_lookup_key = _company_lookup_key_from_values(company_name, slug, company_key)
     ranking_result = company_payload.get("ranking_result") or {}
     summary_row = ((company_payload.get("summary_rows") or [{}]) or [{}])[0]
@@ -1553,9 +1641,19 @@ def mark_leadgen_intake_queued(
             }
         ).eq("intake_id", intake_id).in_("id", safe_lead_ids).execute()
 
+        remaining = (
+            client.table("leadgen_intake_leads")
+            .select("id", count="exact", head=True)
+            .eq("intake_id", intake_id)
+            .eq("approval_status", "pending")
+            .eq("eligible", True)
+            .execute()
+        )
+        batch_status = "partially_approved" if (remaining.count or 0) > 0 else "queued"
+
         client.table("leadgen_intake_batches").update(
             {
-                "status": "queued",
+                "status": batch_status,
                 "job_id_legacy": job_id_legacy,
                 "approved_at": now,
                 **_leadgen_actor_batch_fields("approved", actor),
@@ -1568,7 +1666,12 @@ def mark_leadgen_intake_queued(
             intake_id=intake_id,
             event_type="approved_and_queued",
             actor=actor,
-            payload={"job_id_legacy": job_id_legacy, "lead_ids": safe_lead_ids},
+            payload={
+                "job_id_legacy": job_id_legacy,
+                "lead_ids": safe_lead_ids,
+                "status": batch_status,
+                "remaining_pending_count": remaining.count or 0,
+            },
         )
         return load_leadgen_intake(intake_id)
     except Exception as exc:
@@ -3778,8 +3881,21 @@ def _extract_company_runs_from_payload(
     payload_mode = serialized.get("mode")
     started_by_fields = _extract_started_by_fields(started_by)
     if payload_mode == "single":
-        company_name = serialized.get("company_name") or serialized.get("startup_slug") or job_id_legacy
-        company_key = _normalize_company_key(company_name, None, serialized.get("startup_slug"))
+        if is_failed_analysis_status(serialized.get("decision")) or is_failed_analysis_status(serialized.get("job_status")):
+            return []
+        raw_company_name = serialized.get("company_name") or serialized.get("startup_slug") or job_id_legacy
+        company_name = _normalize_persisted_company_name(
+            raw_company_name,
+            job_id_legacy=job_id_legacy,
+            company_slug=serialized.get("startup_slug"),
+            source="payload",
+            record_error=False,
+        )
+        if not company_name:
+            return []
+        serialized = _apply_company_name_to_payload(serialized, company_name)
+        safe_slug = safe_company_slug_for_key(company_name, serialized.get("startup_slug"))
+        company_key = _normalize_company_key(company_name, None, safe_slug)
         company_lookup_key = _company_lookup_key_from_values(company_name, serialized.get("startup_slug"), company_key)
         ranking = _serialize(serialized.get("ranking_result") or {})
         dimension_fields = _company_run_dimension_fields(serialized)
@@ -3803,9 +3919,23 @@ def _extract_company_runs_from_payload(
 
     rows: list[dict[str, Any]] = []
     for summary_row in serialized.get("summary_rows") or []:
-        company_name = summary_row.get("company_name") or summary_row.get("startup_slug") or job_id_legacy
+        if is_failed_analysis_status(summary_row.get("decision")):
+            continue
+        raw_company_name = summary_row.get("company_name") or summary_row.get("startup_slug") or job_id_legacy
         startup_slug = summary_row.get("startup_slug")
-        company_key = _normalize_company_key(company_name, None, startup_slug)
+        company_name = _normalize_persisted_company_name(
+            raw_company_name,
+            job_id_legacy=job_id_legacy,
+            company_slug=startup_slug,
+            source="payload_summary",
+            record_error=False,
+        )
+        if not company_name:
+            continue
+        summary_row = dict(summary_row)
+        summary_row["company_name"] = company_name
+        safe_slug = safe_company_slug_for_key(company_name, startup_slug)
+        company_key = _normalize_company_key(company_name, None, safe_slug)
         company_lookup_key = _company_lookup_key_from_values(company_name, startup_slug, company_key)
         row_payload = _compact_company_run_payload(
             {

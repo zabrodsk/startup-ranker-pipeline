@@ -145,12 +145,18 @@ def leadgen_runtime(monkeypatch):
         @staticmethod
         def mark_leadgen_intake_queued(*, intake_id, lead_ids, job_id_legacy, actor):
             batch = state["batches"][intake_id]
-            batch["status"] = "queued"
             batch["job_id_legacy"] = job_id_legacy
             batch["approved_by_email"] = actor.get("started_by_email")
+            selected_ids = set(lead_ids or [])
             for lead in state["leads"][intake_id]:
-                if lead["lead_id"] in lead_ids:
+                if lead["lead_id"] in selected_ids:
                     lead["approval_status"] = "approved"
+            remaining_pending = [
+                lead
+                for lead in state["leads"][intake_id]
+                if lead.get("eligible") and lead.get("approval_status") == "pending"
+            ]
+            batch["status"] = "partially_approved" if remaining_pending else "queued"
             return detail(intake_id)
 
         @staticmethod
@@ -346,6 +352,7 @@ def test_approval_queues_one_specter_job_for_selected_leads(leadgen_runtime) -> 
     assert body["status"] == "queued"
     assert body["approved_count"] == 1
     assert body["approved_urls"] == ["beta.example"]
+    assert body["batch"]["status"] == "partially_approved"
     assert len(leadgen_runtime["queued"]) == 1
 
     job_id = body["job_id"]
@@ -374,6 +381,30 @@ def test_approval_requires_selection_and_does_not_queue(leadgen_runtime) -> None
         )
 
     assert response.status_code == 400
+    assert leadgen_runtime["queued"] == []
+
+
+def test_approval_rechecks_stored_source_platform_domain(leadgen_runtime) -> None:
+    with TestClient(app) as client:
+        intake = client.post(
+            "/api/leadgen/ingest",
+            headers={"X-API-Key": "leadgen-secret"},
+            json=_batch_payload(),
+        ).json()
+
+        stale_lead = leadgen_runtime["leads"][intake["intake_id"]][0]
+        stale_lead["url"] = "github.com"
+        stale_lead["domain"] = "github.com"
+        stale_lead["eligible"] = True
+        stale_lead["approval_status"] = "pending"
+
+        response = client.post(
+            f"/api/leadgen/intakes/{intake['intake_id']}/approve",
+            json={"lead_ids": [stale_lead["lead_id"]]},
+        )
+
+    assert response.status_code == 400
+    assert "source platform github.com" in response.json()["detail"]
     assert leadgen_runtime["queued"] == []
 
 

@@ -85,7 +85,7 @@ if not any(isinstance(h, _InMemoryLogHandler) for h in _root_logger.handlers):
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Body, Cookie, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -139,6 +139,12 @@ try:
     import web.db as db
 except ImportError:
     db = None
+from web.analysis_quality import (
+    ALLOWED_INPUT_MODES,
+    QUALITY_PREFLIGHT_FAILED_CODE,
+    normalize_company_display_name,
+    normalize_company_from_domain,
+)
 from agent.person_intel.models import (
     BulkFounderJobRequest,
     PersonProfileJobRequest,
@@ -283,6 +289,12 @@ def _lazy_import_ingest_specter_company():
     from agent.ingest.specter_ingest import ingest_specter_company
 
     return ingest_specter_company
+
+
+def _lazy_import_fetch_specter_company():
+    from agent.ingest.specter_mcp_client import fetch_specter_company
+
+    return fetch_specter_company
 
 
 def build_argument_rows(results_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -904,7 +916,7 @@ class AnalyzeRequest(BaseModel):
     use_specter_mcp: bool = True
     fetch_full_team: bool = False
     instructions: str | None = None
-    input_mode: str = "pitchdeck"  # pitchdeck | specter | original
+    input_mode: Literal["pitchdeck", "specter", "original"] = "pitchdeck"
     run_name: str | None = None
     vc_investment_strategy: str | None = None
     phase_models: dict[str, dict[str, Any]] | None = None
@@ -6062,6 +6074,14 @@ def _leadgen_specter_url_item(lead: dict[str, Any]) -> dict[str, str] | str:
     return url
 
 
+def _leadgen_stored_lead_rejection(lead: dict[str, Any]) -> str | None:
+    raw_url = str(lead.get("url") or lead.get("domain") or "").strip()
+    normalized = _normalize_url_for_intake(raw_url)
+    if not normalized:
+        return "Stored LeadGen company is missing a valid website/domain."
+    return _leadgen_source_domain_rejection(normalized)
+
+
 def _leadgen_run_config_for_approval(
     *,
     batch: dict[str, Any],
@@ -6141,6 +6161,7 @@ async def approve_leadgen_intake(
         raise HTTPException(status_code=400, detail="Select at least one LeadGen company to approve.")
 
     eligible_leads: list[dict[str, Any]] = []
+    invalid_selected: list[str] = []
     for lead in detail.get("leads") or []:
         lead_id = str(lead.get("lead_id") or lead.get("id") or "")
         if not lead.get("eligible"):
@@ -6148,8 +6169,18 @@ async def approve_leadgen_intake(
         if str(lead.get("approval_status") or "").lower() != "pending":
             continue
         if req.approve_all_eligible or lead_id in requested_ids:
+            rejection_reason = _leadgen_stored_lead_rejection(lead)
+            if rejection_reason:
+                label = str(lead.get("company_name") or lead_id or "LeadGen company")
+                invalid_selected.append(f"{label}: {rejection_reason}")
+                continue
             eligible_leads.append(lead)
 
+    if invalid_selected and not req.approve_all_eligible:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Selected LeadGen companies include invalid URLs: {'; '.join(invalid_selected[:5])}",
+        )
     if not eligible_leads:
         raise HTTPException(status_code=400, detail="No eligible pending LeadGen companies matched the approval request.")
 
@@ -6190,6 +6221,7 @@ async def approve_leadgen_intake(
         ),
         started_by=actor,
         require_identity=False,
+        skip_quality_preflight=True,
     )
 
     mark_queued = getattr(db, "mark_leadgen_intake_queued", None)
@@ -6244,6 +6276,404 @@ async def reject_leadgen_intake(
     return {"status": "rejected" if req.reject_all else "leads_rejected", **updated}
 
 
+def _quality_report(job_id: str, input_mode: str) -> dict[str, Any]:
+    return {
+        "code": QUALITY_PREFLIGHT_FAILED_CODE,
+        "job_id": job_id,
+        "input_mode": input_mode,
+        "message": "Analysis quality preflight blocked this run.",
+        "invalid_inputs": [],
+        "warnings": [],
+        "normalized_companies": [],
+        "remediation": "Fix or remove the invalid inputs, then start analysis again.",
+    }
+
+
+def _quality_invalid(
+    report: dict[str, Any],
+    *,
+    input_ref: str,
+    reason: str,
+    remediation: str | None = None,
+) -> None:
+    report["invalid_inputs"].append(
+        {
+            "input": input_ref,
+            "reason": reason,
+            "remediation": remediation
+            or "Provide a real company website, Specter company export, or a clearer company document.",
+        }
+    )
+
+
+def _quality_normalized(
+    report: dict[str, Any],
+    *,
+    input_ref: str,
+    raw_name: str | None,
+    company_name: str,
+    source: str,
+    domain: str | None = None,
+) -> None:
+    item = {
+        "input": input_ref,
+        "raw_name": raw_name,
+        "company_name": company_name,
+        "source": source,
+    }
+    if domain:
+        item["domain"] = domain
+    report["normalized_companies"].append(item)
+
+
+def _quality_failure_response(report: dict[str, Any]) -> JSONResponse | None:
+    if not report["invalid_inputs"]:
+        return None
+    return JSONResponse(status_code=409, content=report)
+
+
+def _extract_preflight_store_for_file(path: Path, *, startup_slug: str) -> tuple[Any | None, str | None]:
+    if not path.exists():
+        return None, "Uploaded file is missing from the analysis workspace."
+    if path.stat().st_size <= 0:
+        return None, "Uploaded file is empty."
+
+    suffix = path.suffix.lower()
+    try:
+        from agent.ingest import _EXTENSION_MAP, _TEXT_EXTENSIONS  # noqa: PLC0415
+        from agent.ingest.chunking import smart_chunk_texts  # noqa: PLC0415
+
+        extractor = _EXTENSION_MAP.get(suffix)
+        if extractor is not None:
+            raw_items = extractor(path)
+        elif suffix in _TEXT_EXTENSIONS:
+            text = path.read_text(encoding="utf-8", errors="replace").strip()
+            raw_items = (
+                [{"text": text, "page_or_slide": "N/A", "source_file": path.name}]
+                if text else []
+            )
+        else:
+            return None, f"Unsupported file type '{suffix or 'none'}'."
+        chunks = smart_chunk_texts(raw_items)
+    except Exception as exc:
+        return None, f"Could not extract evidence from file: {exc}"
+
+    if not chunks:
+        return None, "No extractable evidence chunks were found."
+
+    _, EvidenceStore = _lazy_import_ingest_store()
+    return EvidenceStore(startup_slug=startup_slug, chunks=chunks), None
+
+
+def _quality_name_from_url_or_filename(
+    *,
+    raw_name: str | None,
+    detected_url: str | None,
+    source: str,
+) -> tuple[str | None, str | None, str]:
+    if detected_url:
+        normalized = normalize_company_from_domain(detected_url, source="detected_url")
+        if normalized.valid and normalized.value:
+            return normalized.value, None, "detected_url"
+
+    normalized = normalize_company_display_name(raw_name, source=source)
+    if normalized.valid and normalized.value:
+        return normalized.value, None, source
+    return None, normalized.reason or "Company identity is not usable.", source
+
+
+async def _resolve_specter_url_for_preflight(item: Any) -> tuple[Any | None, str | None]:
+    identifier = _url_value_for_intake_item(item)
+    if not identifier:
+        return None, "URL is empty."
+    expected_name = item.get("name") if isinstance(item, dict) else None
+    try:
+        fetch_specter_company = _lazy_import_fetch_specter_company()
+        company, _store = await asyncio.to_thread(
+            fetch_specter_company,
+            identifier,
+            expected_name=expected_name,
+            fetch_full_team=False,
+        )
+        return company, None
+    except Exception as exc:
+        return None, str(exc)[:500] or type(exc).__name__
+
+
+async def _preflight_specter_inputs(
+    job_id: str,
+    req: AnalyzeRequest,
+    report: dict[str, Any],
+) -> None:
+    cache = _results_cache.get(job_id, {})
+    upload_dir = Path(cache.get("upload_dir") or "")
+    specter = cache.get("specter") or {}
+    files = list(cache.get("files") or [])
+    specter_urls = list(cache.get("specter_urls") or [])
+
+    companies_csv = specter.get("companies")
+    if not companies_csv and files:
+        companies_csv = str(upload_dir / files[0]["name"])
+
+    descriptor_count = 0
+    if companies_csv:
+        try:
+            descriptors = list_specter_companies(companies_csv)
+        except Exception as exc:
+            descriptors = []
+            _quality_invalid(
+                report,
+                input_ref=Path(str(companies_csv)).name,
+                reason=f"Could not parse Specter company data: {exc}",
+                remediation="Upload a valid Specter companies CSV/XLSX export.",
+            )
+        descriptor_count = len(descriptors)
+        if descriptor_count == 0:
+            _quality_invalid(
+                report,
+                input_ref=Path(str(companies_csv)).name,
+                reason="No analyzable companies found in Specter data.",
+                remediation="Upload a Specter companies export with at least one company row.",
+            )
+        for descriptor in descriptors:
+            raw_name = descriptor.get("name")
+            normalized = normalize_company_display_name(raw_name, source="specter_csv")
+            input_ref = str(raw_name or descriptor.get("slug") or "Specter row")
+            if not normalized.valid or not normalized.value:
+                _quality_invalid(
+                    report,
+                    input_ref=input_ref,
+                    reason=normalized.reason or "Specter CSV company name is invalid.",
+                    remediation="Use the canonical company name, not a domain, hash, or export artifact.",
+                )
+                continue
+            _quality_normalized(
+                report,
+                input_ref=input_ref,
+                raw_name=str(raw_name or ""),
+                company_name=normalized.value,
+                source="specter_csv",
+                domain=descriptor.get("domain"),
+            )
+
+    if specter_urls and not ENABLE_SPECTER_WORKER_SERVICE:
+        _quality_invalid(
+            report,
+            input_ref="Specter URL list",
+            reason="Specter URL-only analysis requires the worker service.",
+            remediation="Enable the Specter worker service or upload Specter CSV exports instead.",
+        )
+
+    for item in specter_urls:
+        identifier = _url_value_for_intake_item(item)
+        company, error = await _resolve_specter_url_for_preflight(item)
+        if error or company is None:
+            _quality_invalid(
+                report,
+                input_ref=identifier or "Specter URL",
+                reason=f"Specter could not resolve this URL before run start: {error}",
+                remediation="Replace it with a company website that Specter resolves, or remove it from the batch.",
+            )
+            continue
+        raw_name = getattr(company, "name", None)
+        normalized = normalize_company_display_name(raw_name, source="specter_url")
+        if not normalized.valid or not normalized.value:
+            normalized = normalize_company_from_domain(
+                getattr(company, "domain", None) or identifier,
+                source="specter_url_domain",
+            )
+        if not normalized.valid or not normalized.value:
+            _quality_invalid(
+                report,
+                input_ref=identifier,
+                reason=normalized.reason or "Resolved Specter company has no usable name.",
+                remediation="Use a URL that resolves to a company with a canonical Specter profile.",
+            )
+            continue
+        _quality_normalized(
+            report,
+            input_ref=identifier,
+            raw_name=str(raw_name or identifier),
+            company_name=normalized.value,
+            source="specter_url",
+            domain=getattr(company, "domain", None),
+        )
+
+    if descriptor_count == 0 and not specter_urls:
+        _quality_invalid(
+            report,
+            input_ref="Specter input",
+            reason="Specter mode has zero usable company inputs.",
+            remediation="Upload a Specter companies export or provide resolvable company URLs.",
+        )
+
+
+async def _preflight_document_inputs(
+    job_id: str,
+    req: AnalyzeRequest,
+    report: dict[str, Any],
+) -> None:
+    cache = _results_cache.get(job_id, {})
+    upload_dir = Path(cache.get("upload_dir") or "")
+    files = list(cache.get("files") or [])
+    if not files:
+        _quality_invalid(
+            report,
+            input_ref="Upload",
+            reason="No files found for document analysis.",
+            remediation="Upload at least one company document before starting analysis.",
+        )
+        return
+
+    identities: dict[str, dict[str, str | None]] = {}
+    combined_chunks = []
+    detected_domain: str | None = None
+
+    for file_info in files:
+        filename = str(file_info.get("name") or "")
+        file_path = Path(str(file_info.get("local_path") or upload_dir / filename))
+        store, error = _extract_preflight_store_for_file(
+            file_path,
+            startup_slug=_sanitize_slug(filename or file_path.name),
+        )
+        if error or store is None:
+            _quality_invalid(
+                report,
+                input_ref=filename or file_path.name,
+                reason=error or "File is not analyzable.",
+                remediation="Upload a readable PDF, PPTX, DOCX, XLSX, CSV, TXT, or MD company document.",
+            )
+            continue
+
+        combined_chunks.extend(getattr(store, "chunks", []) or [])
+        detected_url = None
+        try:
+            from agent.ingest.specter_augmentation import extract_company_url  # noqa: PLC0415
+
+            detected_url = extract_company_url(store)
+        except Exception:
+            detected_url = None
+        detected_domain = detected_domain or detected_url
+
+        raw_identity = req.run_name if req.input_mode == "original" and req.run_name else filename
+        company_name, reason, source = _quality_name_from_url_or_filename(
+            raw_name=raw_identity,
+            detected_url=detected_url,
+            source="filename",
+        )
+        if not company_name:
+            _quality_invalid(
+                report,
+                input_ref=filename,
+                reason=reason or "Could not derive a usable company identity.",
+                remediation="Rename the file or provide a run name containing the company name.",
+            )
+            continue
+
+        identity = {
+            "company_name": company_name,
+            "domain": detected_url,
+            "source": source,
+        }
+        identities[filename] = identity
+        identities[_sanitize_slug(filename)] = identity
+        _quality_normalized(
+            report,
+            input_ref=filename,
+            raw_name=raw_identity,
+            company_name=company_name,
+            source=source,
+            domain=detected_url,
+        )
+
+    if req.input_mode == "original" and len(files) > 1:
+        if not combined_chunks:
+            return
+        raw_identity = req.run_name
+        if not raw_identity:
+            company_name, reason, source = _quality_name_from_url_or_filename(
+                raw_name=None,
+                detected_url=detected_domain,
+                source="run_name",
+            )
+            if not company_name:
+                _quality_invalid(
+                    report,
+                    input_ref="Original mode",
+                    reason="Multi-file original mode needs a company identity.",
+                    remediation="Provide a run name with the company name or include a detectable company URL.",
+                )
+                return
+        else:
+            normalized = normalize_company_display_name(raw_identity, source="run_name")
+            if not normalized.valid or not normalized.value:
+                _quality_invalid(
+                    report,
+                    input_ref="Original mode run name",
+                    reason=normalized.reason or "Run name is not a usable company name.",
+                    remediation="Use the company name as the run name.",
+                )
+                return
+            company_name = normalized.value
+            source = "run_name"
+        identity = {"company_name": company_name, "domain": detected_domain, "source": source}
+        identities["__original__"] = identity
+
+    cache["quality_preflight_document_identities"] = identities
+
+
+def _company_seed_from_quality_preflight(job_id: str, key: str | None) -> Any | None:
+    cache = _results_cache.get(job_id, {})
+    identities = cache.get("quality_preflight_document_identities") or {}
+    identity = identities.get(str(key or "")) or identities.get(_sanitize_slug(str(key or "")))
+    if not isinstance(identity, dict) or not identity.get("company_name"):
+        return None
+    Company = _lazy_import_company()
+    domain = identity.get("domain")
+    company_url = _company_url_from_domain(domain)
+    return Company(
+        name=identity["company_name"],
+        domain=domain,
+        company_url=company_url,
+    )
+
+
+async def _run_analysis_quality_preflight(
+    job_id: str,
+    req: AnalyzeRequest,
+) -> JSONResponse | None:
+    report = _quality_report(job_id, req.input_mode)
+
+    if req.input_mode not in ALLOWED_INPUT_MODES:
+        _quality_invalid(
+            report,
+            input_ref="input_mode",
+            reason=f"Unsupported input mode {req.input_mode!r}.",
+            remediation=f"Use one of: {', '.join(ALLOWED_INPUT_MODES)}.",
+        )
+    elif req.input_mode == "specter":
+        await _preflight_specter_inputs(job_id, req, report)
+    else:
+        await _preflight_document_inputs(job_id, req, report)
+
+    cache = _results_cache.get(job_id, {})
+    cache["quality_preflight"] = {
+        "status": "blocked" if report["invalid_inputs"] else "ready",
+        "invalid_inputs": report["invalid_inputs"],
+        "warnings": report["warnings"],
+        "normalized_companies": report["normalized_companies"],
+    }
+    response = _quality_failure_response(report)
+    if response is not None:
+        _set_job_status(
+            job_id,
+            "pending",
+            "Analysis blocked by quality preflight.",
+            source="quality_preflight",
+        )
+    return response
+
+
 async def _start_analysis_job(
     job_id: str,
     req: AnalyzeRequest,
@@ -6251,6 +6681,7 @@ async def _start_analysis_job(
     authorization: str | None = None,
     started_by: dict[str, str | None] | None = None,
     require_identity: bool = True,
+    skip_quality_preflight: bool = False,
 ):
     if job_id not in _jobs:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -6258,6 +6689,11 @@ async def _start_analysis_job(
     _cancel_scheduled_restart()
     if started_by is None:
         started_by = await _require_supabase_identity(authorization) if require_identity else {}
+
+    if not skip_quality_preflight:
+        preflight_response = await _run_analysis_quality_preflight(job_id, req)
+        if preflight_response is not None:
+            return preflight_response
 
     quality_tier = normalize_quality_tier(req.quality_tier)
     pipeline_policy = None
@@ -7570,6 +8006,12 @@ async def _run_document_analysis(
                 seed_store = None
                 seed_company = None
 
+        if seed_company is None:
+            seed_key = "__original__" if one_company and file_count > 1 else (
+                files[0].get("name") if files else upload_dir.name
+            )
+            seed_company = _company_seed_from_quality_preflight(job_id, seed_key)
+
         result = await evaluate_startup(
             upload_dir, k=8, use_web_search=use_web_search,
             on_progress=_make_progress_callback(job_id),
@@ -7681,6 +8123,9 @@ async def _run_document_analysis(
                         print(f"specter-augment: pre-ingest failed for {fname}: {exc}")
                         seed_store = None
                         seed_company = None
+
+                if seed_company is None:
+                    seed_company = _company_seed_from_quality_preflight(job_id, fname)
 
                 try:
                     result = await evaluate_startup(

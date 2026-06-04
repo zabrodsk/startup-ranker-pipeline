@@ -17,6 +17,7 @@ import pandas as pd
 from agent.dataclasses.company import Company
 from agent.dataclasses.person import Education, Experience, Person
 from agent.ingest.store import Chunk, EvidenceStore
+from web.analysis_quality import normalize_company_display_name
 
 SPECTER_PROFILE_BASE_URL = "https://app.tryspecter.com/signals/company/feed/"
 _SPECTER_COMPANY_ID_FIELDS = (
@@ -234,11 +235,14 @@ def list_specter_companies(companies_csv: str | Path) -> list[dict[str, Any]]:
         company_name = _safe(row.get("Company Name"))
         if not company_name:
             continue
+        normalized_name = normalize_company_display_name(company_name, source="specter_csv")
+        if not normalized_name.valid or not normalized_name.value:
+            continue
         descriptors.append(
             {
                 "index": int(idx),
-                "name": company_name,
-                "slug": _company_slug(company_name),
+                "name": normalized_name.value,
+                "slug": _company_slug(normalized_name.value),
                 "industry": _safe(row.get("Industry")),
                 **_company_metadata_from_row(row),
             }
@@ -594,6 +598,10 @@ def _build_company_and_store(
     company_name = _safe(row.get("Company Name"))
     if not company_name:
         return None
+    normalized_name = normalize_company_display_name(company_name, source="specter_csv")
+    if not normalized_name.valid or not normalized_name.value:
+        return None
+    company_name = normalized_name.value
 
     slug = _company_slug(company_name)
 
