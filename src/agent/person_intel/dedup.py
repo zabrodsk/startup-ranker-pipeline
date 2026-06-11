@@ -6,7 +6,7 @@ import hashlib
 import re
 from collections import OrderedDict
 
-from agent.person_intel.models import EvidenceRecord, ExtractedFact
+from agent.person_intel.models import ExtractedFact
 from agent.pipeline.state.schemas import PersonProvenanceRecord
 
 

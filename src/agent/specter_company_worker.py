@@ -17,8 +17,6 @@ from typing import Any
 from agent.batch import evaluate_from_specter
 from agent.ingest.specter_ingest import ingest_specter_company
 from agent.ingest.specter_mcp_client import (
-    SpecterDisambiguationError,
-    SpecterMCPError,
     fetch_specter_company,
 )
 from agent.llm_catalog import serialize_selection

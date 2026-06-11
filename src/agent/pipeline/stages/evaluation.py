@@ -10,7 +10,6 @@ Scores determine which arguments advance to refinement.
 The top K arguments (based on config) are selected for the next stage.
 """
 
-import asyncio
 
 import backoff
 from langchain_core.messages import HumanMessage, SystemMessage

@@ -125,6 +125,7 @@ celerybeat.pid
 .env
 keys.env
 .venv
+.venv*/
 env/
 venv/
 ENV/

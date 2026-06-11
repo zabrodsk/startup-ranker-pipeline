@@ -19,7 +19,7 @@ from agent.dataclasses.config import Config
 from agent.ingest.store import Chunk, EvidenceStore
 
 if TYPE_CHECKING:
-    import types
+    pass
 
 logger = logging.getLogger(__name__)
 
