@@ -268,6 +268,9 @@ def _reset_app_state(monkeypatch, web_app) -> None:
     web_app._jobs_overview_cache.update({"expires_at": 0.0, "payload": None})
     web_app._company_runs_cache.update({"expires_at": 0.0, "payload": None})
     monkeypatch.setattr(web_app, "db", SimpleNamespace(is_configured=lambda: False))
+    # _start_analysis_job resolves a default phase-model policy, which needs at
+    # least one provider key; CI has none and tests must not rely on a local .env.
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
 
 def _json_response_body(response) -> dict:
