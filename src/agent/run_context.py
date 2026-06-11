@@ -290,6 +290,7 @@ def build_run_costs_from_model_executions(
 
     perplexity_requests = 0
     perplexity_cost = 0.0
+    perplexity_by_reason: dict[str, int] = {}
 
     grouped: dict[tuple[str, str], dict[str, Any]] = {}
     for row in model_executions:
@@ -340,8 +341,12 @@ def build_run_costs_from_model_executions(
                 grouped[key]["has_known_cost"] = True
                 grouped[key]["usd"] += float(estimated_cost_usd)
         elif service == "perplexity_search":
-            perplexity_requests += int(row.get("request_count") or 1)
+            request_count = int(row.get("request_count") or 1)
+            perplexity_requests += request_count
             perplexity_cost += float(row.get("estimated_cost_usd") or 0.0)
+            metadata = row.get("metadata") or {}
+            reason = str(metadata.get("trigger_reason") or "unspecified")
+            perplexity_by_reason[reason] = perplexity_by_reason.get(reason, 0) + request_count
 
     if not llm_events_seen and perplexity_requests == 0:
         status = "unavailable"
@@ -380,6 +385,7 @@ def build_run_costs_from_model_executions(
         },
         "perplexity_search": {
             "requests": perplexity_requests,
+            "by_reason": perplexity_by_reason,
             "total_usd": round(perplexity_cost, 8),
         },
         "by_model": by_model,
