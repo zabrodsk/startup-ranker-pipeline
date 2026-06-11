@@ -27,6 +27,12 @@ class ArgumentsOutput(BaseModel):
 class CriterionScore(BaseModel):
     """Score for a single evaluation criterion."""
 
+    criterion: str = Field(
+        default="",
+        description=(
+            "Name of the criterion being scored, echoed exactly from the criteria list"
+        ),
+    )
     score: int
     reasoning: str
 
@@ -34,7 +40,17 @@ class CriterionScore(BaseModel):
 class SingleArgumentScore(BaseModel):
     """All 14 criterion scores for evaluating an argument."""
 
-    scores: list[CriterionScore]
+    scores: list[CriterionScore] = Field(
+        min_length=14,
+        max_length=14,
+        description=(
+            "Exactly 14 scores, one per criterion, in this order: "
+            "Local Acceptability, Local Relevance, Local Sufficiency, Cogency, "
+            "Credibility, Emotional Appeal, Clarity, Appropriateness, Arrangement, "
+            "Effectiveness, Global Acceptability, Global Relevance, "
+            "Global Sufficiency, Reasonableness"
+        ),
+    )
 
 
 class ArgumentCritique(BaseModel):

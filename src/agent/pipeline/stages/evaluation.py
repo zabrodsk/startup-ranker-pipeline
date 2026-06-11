@@ -11,9 +11,13 @@ The top K arguments (based on config) are selected for the next stage.
 """
 
 
+import logging
+
 import backoff
+from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import HumanMessage, SystemMessage
 from openai import RateLimitError
+from pydantic import ValidationError
 
 from agent.common.llm_config import get_llm
 from agent.dataclasses.argument import Argument
@@ -25,6 +29,8 @@ from agent.pipeline.utils.helpers import format_argument_feedback
 from agent.pipeline.utils.phase_llm import ainvoke_with_phase_fallback
 from agent.run_context import get_current_pipeline_policy, use_stage_context
 
+logger = logging.getLogger(__name__)
+
 
 @backoff.on_exception(
     backoff.expo, RateLimitError, max_tries=5, max_time=60, jitter=backoff.full_jitter
@@ -35,7 +41,8 @@ async def score_single_argument(
     """Score one argument against all 14 criteria.
 
     Uses temperature=0.0 for consistent, reproducible scoring.
-    Includes retry logic to ensure we get exactly 14 scores.
+    The SingleArgumentScore schema enforces exactly 14 scores, so a malformed
+    response surfaces as a validation/parsing error; retry once, then re-raise.
     """
     system_prompt = get_prompt("evaluation.system", prompt_overrides)
     user_prompt = get_prompt("evaluation.user", prompt_overrides)
@@ -45,35 +52,48 @@ async def score_single_argument(
     )
     policy = get_current_pipeline_policy()
 
-    # Retry logic for getting correct number of scores
-    max_retries = 5
+    # Initial attempt + 1 retry on malformed scores (was 5 attempts stacked on
+    # top of client/throttle retries — Sprint 1 W8). Transient API errors are
+    # handled by the surrounding retry layers, not here.
+    max_attempts = 2
     score = None
     async def _invoke() -> SingleArgumentScore:
         with use_stage_context("evaluation"):
             llm = get_llm(temperature=0.0)
             llm_with_structured_output = llm.with_structured_output(SingleArgumentScore)
-            for attempt in range(max_retries):
-                result = await llm_with_structured_output.ainvoke(
-                    [
-                        SystemMessage(content=system_prompt),
-                        HumanMessage(
-                            content=user_prompt.format(
-                                argument=argument.content, critique=critique
-                            )
-                        ),
-                    ]
-                )
+            last_error: Exception | None = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    result = await llm_with_structured_output.ainvoke(
+                        [
+                            SystemMessage(content=system_prompt),
+                            HumanMessage(
+                                content=user_prompt.format(
+                                    argument=argument.content, critique=critique
+                                )
+                            ),
+                        ]
+                    )
+                except (ValidationError, OutputParserException, ValueError) as exc:
+                    last_error = exc
+                    logger.warning(
+                        "Evaluation attempt %d/%d returned malformed scores: %s",
+                        attempt, max_attempts, exc,
+                    )
+                    continue
 
                 if len(result.scores) == len(criteria_mapping):
                     return result
-                if attempt < max_retries - 1:
-                    print(
-                        f"Attempt {attempt + 1}: Got {len(result.scores)} scores instead of {len(criteria_mapping)}, retrying..."
-                    )
-                    continue
-                raise ValueError(
-                    f"After {max_retries} attempts, still got {len(result.scores)} scores instead of {len(criteria_mapping)}"
+                last_error = ValueError(
+                    f"Got {len(result.scores)} scores instead of {len(criteria_mapping)}"
                 )
+                logger.warning(
+                    "Evaluation attempt %d/%d: %s", attempt, max_attempts, last_error
+                )
+
+            raise last_error if last_error is not None else ValueError(
+                "Evaluation produced no scores"
+            )
 
     score = await ainvoke_with_phase_fallback(
         policy.evaluation if policy else None,
