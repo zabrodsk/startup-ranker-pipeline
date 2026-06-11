@@ -297,7 +297,8 @@ Copy `.env.example` to `.env` and set:
 | `WEB_SEARCH_TRIGGER` | optional | `answer` (default) or `no_chunks` |
 | `WEB_SEARCH_HEAVY_OVERRIDE` | optional | Gate for forced market/competitor searches: `always` (default), `root_only`, or `never` |
 | `LLM_REQUEST_TIMEOUT_SECONDS` | optional | Per-request LLM timeout (default: `90`) |
-| `LLM_MAX_RETRIES` | optional | Max retries on transient LLM failures (default: `2`) |
+| `LLM_MAX_RETRIES` | optional | Outer (ThrottledRunnable) retries on transient LLM failures (default: `6`) |
+| `LLM_CLIENT_MAX_RETRIES` | optional | Inner LangChain-client retries (default: `0`; ThrottledRunnable owns retries) |
 | `SUPABASE_URL` | optional | Supabase project URL for persistent storage |
 | `SUPABASE_SERVICE_ROLE_KEY` | optional | Supabase service-role key |
 | `SUPABASE_SOURCE_FILES_BUCKET` | optional | Shared storage bucket for uploaded source files (default: `analysis-inputs`) |

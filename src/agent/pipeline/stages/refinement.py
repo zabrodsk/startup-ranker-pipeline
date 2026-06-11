@@ -10,9 +10,7 @@ or become the final arguments if this is the last iteration.
 """
 
 
-import backoff
 from langchain_core.messages import HumanMessage, SystemMessage
-from openai import RateLimitError
 
 from agent.common.llm_config import get_llm
 from agent.common.utils import format_qa_pairs_with_index
@@ -23,9 +21,10 @@ from agent.pipeline.state.schemas import IndividualRefinedArgumentOutput
 from agent.rate_limit import gather_with_concurrency
 from agent.run_context import get_current_pipeline_policy, use_phase_llm, use_stage_context
 
-@backoff.on_exception(
-    backoff.expo, RateLimitError, max_tries=5, max_time=60, jitter=backoff.full_jitter
-)
+# Rate-limit/transient retries are owned by ThrottledRunnable (rate_limit.py);
+# the per-stage @backoff decorators were removed to stop retry stacking (W10).
+
+
 async def _refine_individual_pro_argument(
     argument: Argument,
     qa_pairs_formatted: str,
@@ -62,9 +61,6 @@ async def _refine_individual_pro_argument(
     return refined_argument
 
 
-@backoff.on_exception(
-    backoff.expo, RateLimitError, max_tries=5, max_time=60, jitter=backoff.full_jitter
-)
 async def _refine_individual_contra_argument(
     argument: Argument,
     qa_pairs_formatted: str,

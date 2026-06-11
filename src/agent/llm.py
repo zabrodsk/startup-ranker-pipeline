@@ -42,7 +42,10 @@ load_dotenv()
 _DEFAULT_PROVIDER = "gemini"
 _DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 _DEFAULT_TIMEOUT_SECONDS = 90.0
-_DEFAULT_MAX_RETRIES = 2
+# Inner LangChain-client retries (LLM_CLIENT_MAX_RETRIES). Default 0:
+# ThrottledRunnable (rate_limit.py, LLM_MAX_RETRIES, default 6) is the single
+# retry owner — a non-zero inner value multiplies attempts (Sprint 1 W10).
+_DEFAULT_CLIENT_MAX_RETRIES = 0
 _CHAT_PROVIDER = "gemini"
 _CHAT_MODEL = "gemini-3.1-flash-lite-preview"
 _FALLBACK_ENCODING_NAME = "o200k_base"
@@ -530,9 +533,11 @@ def get_llm_runtime_settings() -> dict[str, float | int]:
             "LLM_REQUEST_TIMEOUT_SECONDS",
             _DEFAULT_TIMEOUT_SECONDS,
         ),
+        # Decoupled from LLM_MAX_RETRIES (outer ThrottledRunnable policy) so
+        # tuning the outer policy cannot silently re-enable inner retries.
         "max_retries": _read_nonnegative_int_env(
-            "LLM_MAX_RETRIES",
-            _DEFAULT_MAX_RETRIES,
+            "LLM_CLIENT_MAX_RETRIES",
+            _DEFAULT_CLIENT_MAX_RETRIES,
         ),
     }
 
