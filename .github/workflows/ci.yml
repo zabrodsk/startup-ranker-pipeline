@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, testing]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # The suite is hermetic: no secrets, no network. Tests that need
+      # provider keys or Supabase config set their own fakes.
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Ruff (correctness rules)
+        # Full strict config (D/I/T201/UP) has a known backlog; CI gates only
+        # on real errors. F841 backlog is tracked for later sprints.
+        run: uv run ruff check --select F,E9 --ignore F841 .
+
+      - name: Byte-compile web entrypoints
+        run: uv run python -m py_compile web/app.py web/db.py
+
+      - name: Pytest
+        run: uv run python -m pytest tests -q
