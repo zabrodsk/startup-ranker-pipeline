@@ -88,6 +88,19 @@ def check_start_point(
     return "decompose_questions"
 
 
+def check_executive_summary(
+    state: IterativeInvestmentStoryState,
+) -> Literal["generate_executive_summary", "__end__"]:
+    """Router: optionally skip the executive summary after composite ranking.
+
+    Callers that only consume ranking_result (e.g. the VC matching engine)
+    set skip_executive_summary=True to save one reasoning-heavy LLM call.
+    """
+    if state.skip_executive_summary:
+        return END
+    return "generate_executive_summary"
+
+
 def build_graph() -> StateGraph:
     """Build the investment story graph.
 
@@ -198,10 +211,11 @@ def build_graph() -> StateGraph:
     builder.add_edge("prepare_final_arguments", "decide_final_investment_decision")
     builder.add_edge("decide_final_investment_decision", "create_final_investment_story")
 
-    # 14. Ranking layer (after final story)
+    # 14. Ranking layer (after final story); the executive summary is
+    # skippable for callers that only need ranking_result (VC matching).
     builder.add_edge("create_final_investment_story", "score_company_dimensions")
     builder.add_edge("score_company_dimensions", "compute_composite_rank")
-    builder.add_edge("compute_composite_rank", "generate_executive_summary")
+    builder.add_conditional_edges("compute_composite_rank", check_executive_summary)
     builder.add_edge("generate_executive_summary", END)
 
     return builder

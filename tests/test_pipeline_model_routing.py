@@ -750,3 +750,93 @@ def test_pipeline_policy_can_route_five_user_selected_models(monkeypatch):
     assert policy.generation["model"] == "gpt-5"
     assert policy.evaluation["model"] == "gpt-5.4-mini"
     assert policy.ranking["model"] == "gpt-4.1-mini"
+
+
+# ---------------------------------------------------------------------------
+# skip_executive_summary (Sprint 1, W6)
+# ---------------------------------------------------------------------------
+
+def _matching_final_arguments() -> list[dict]:
+    return [
+        Argument(
+            content="Strong repeat-founder team", argument_type="pro", qa_indices=[0], score=85
+        ).model_dump(),
+        Argument(
+            content="Crowded market", argument_type="contra", qa_indices=[1], score=70
+        ).model_dump(),
+    ]
+
+
+def test_check_executive_summary_router_skips_when_flag_set():
+    from langgraph.graph import END
+    from agent.pipeline.graph import check_executive_summary
+
+    skipping = IterativeInvestmentStoryState(
+        company=Company(name="Acme", industry="Fintech"),
+        skip_executive_summary=True,
+    )
+    default = IterativeInvestmentStoryState(company=Company(name="Acme", industry="Fintech"))
+
+    assert check_executive_summary(skipping) == END
+    assert check_executive_summary(default) == "generate_executive_summary"
+
+
+def test_matching_invoke_skips_executive_summary(monkeypatch):
+    """run_matching_for_pair must never invoke the exec-summary LLM call."""
+    from agent.matching import engine as matching_engine
+
+    monkeypatch.setenv("OPENAI_API_KEY", "openai")
+    seen_stages: list[str] = []
+    monkeypatch.setattr(
+        ranking,
+        "get_llm",
+        lambda temperature=0.0, reasoning_effort=None: _RankingRunnable(seen_stages),
+    )
+
+    scores = asyncio.run(
+        matching_engine.run_matching_for_pair(
+            company_row={"id": "company-1", "name": "Acme", "industry": "Fintech"},
+            chunks=[],
+            all_qa_pairs=[],
+            vc_thesis="Seed-stage B2B SaaS in Europe",
+            final_arguments=_matching_final_arguments(),
+            final_decision="invest",
+        )
+    )
+
+    assert scores is not None
+    assert scores.get("composite_score") is not None
+    assert "ranking_executive_summary" not in seen_stages
+    # Dimension scoring still ran for all three dimensions.
+    assert len(seen_stages) >= 3
+
+
+def test_graph_default_still_generates_executive_summary(monkeypatch):
+    """Without the skip flag the ranking layer keeps producing the summary."""
+    from agent.pipeline.graph import graph
+
+    monkeypatch.setenv("OPENAI_API_KEY", "openai")
+    seen_stages: list[str] = []
+    monkeypatch.setattr(
+        ranking,
+        "get_llm",
+        lambda temperature=0.0, reasoning_effort=None: _RankingRunnable(seen_stages),
+    )
+
+    payload = {
+        "company": Company(name="Acme", industry="Fintech"),
+        "config": Config(
+            n_pro_arguments=1,
+            n_contra_arguments=1,
+            k_best_arguments_per_iteration=[1],
+            max_iterations=1,
+        ),
+        "final_arguments": _matching_final_arguments(),
+        "final_decision": "invest",
+        "slug": "acme",
+        "prompt_overrides": {},
+    }
+    result = asyncio.run(graph.ainvoke(payload, config={"recursion_limit": 100}))
+
+    assert result.get("ranking_result") is not None
+    assert "ranking_executive_summary" in seen_stages
