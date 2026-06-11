@@ -5,7 +5,19 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
+
+pytestmark = pytest.mark.skip(
+    reason=(
+        "Targets the pre-guardrails pitchdeck identity gate "
+        "(identity_confirmation_required / specter_resolution_status / "
+        "augment_with_specter_status), which no longer exists in web/app.py on any "
+        "branch; superseded by the analysis-quality preflight (d77ac78, covered by "
+        "test_analysis_quality_guardrails.py). Pending rewrite or removal — "
+        "see Sprint 0 report (2026-06-11)."
+    )
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:

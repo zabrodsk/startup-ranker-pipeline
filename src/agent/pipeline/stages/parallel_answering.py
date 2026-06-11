@@ -10,7 +10,6 @@ Each tree is answered recursively:
 Answered trees are cached to avoid redundant web searches.
 """
 
-import asyncio
 from typing import Dict, List
 
 from agent.common.utils import get_qa_pairs_from_question_tree

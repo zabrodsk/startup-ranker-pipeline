@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from agent.ingest.chunking import chunk_texts, smart_chunk_texts
+from agent.ingest.chunking import smart_chunk_texts
 from agent.ingest.docx_ingest import extract_docx
 from agent.ingest.pdf_ingest import extract_pdf
 from agent.ingest.pptx_ingest import extract_pptx

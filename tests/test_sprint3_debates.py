@@ -171,7 +171,7 @@ def test_create_debate_match_not_found():
     with patch.object(app_module, "db", mock_db):
         with TestClient(app) as client:
             resp = client.post(
-                f"/api/debates?match_id=nonexistent-id",
+                "/api/debates?match_id=nonexistent-id",
                 headers=_AUTH_HEADER,
             )
     assert resp.status_code == 404
@@ -203,7 +203,7 @@ def test_get_debate_not_found():
 
     with patch.object(app_module, "db", mock_db):
         with TestClient(app) as client:
-            resp = client.get(f"/api/debates/nonexistent", headers=_AUTH_HEADER)
+            resp = client.get("/api/debates/nonexistent", headers=_AUTH_HEADER)
 
     assert resp.status_code == 404
 

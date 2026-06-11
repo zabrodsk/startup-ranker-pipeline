@@ -16,8 +16,6 @@ from pathlib import Path
 from typing import Any
 
 from agent.batch import evaluate_from_specter
-from agent.dataclasses.company import Company
-from agent.ingest.store import EvidenceStore
 from agent.ingest.specter_ingest import ingest_specter
 from agent.llm_catalog import serialize_selection
 from agent.llm_policy import (

@@ -13,7 +13,10 @@ from typing import Any
 
 from dotenv import load_dotenv
 from supabase import Client, create_client
-from agent.run_context import build_run_costs_from_model_executions
+from agent.run_context import (
+    build_run_costs_from_model_executions,
+    build_stage_costs_from_model_executions,
+)
 from web.analysis_quality import (
     is_failed_analysis_status,
     normalize_company_display_name,
@@ -2186,7 +2189,7 @@ def persist_analysis(
         print(f"[persist_analysis] start job={job_id_legacy}")
         job_uuid = upsert_job(job_id_legacy, run_config=run_config, versions=versions)
         if not job_uuid:
-            print(f"[persist_analysis] upsert_job returned None, aborting")
+            print("[persist_analysis] upsert_job returned None, aborting")
             return False
         print(f"[persist_analysis] upsert_job done ({_time.monotonic()-_t0:.1f}s)")
 
@@ -2668,37 +2671,125 @@ def load_job_progress_snapshot(
         return None
 
 
+def _load_execution_rows(client: Client, job_id_legacy: str) -> list[dict[str, Any]]:
+    """Page through all model_executions rows for one job (hydrated)."""
+    batch_size = 1000
+    start = 0
+    rows: list[dict[str, Any]] = []
+    while True:
+        resp = (
+            client.table("model_executions")
+            .select(
+                "stage, provider, model, status, prompt_tokens, completion_tokens, "
+                "total_tokens, metadata"
+            )
+            .eq("job_id_legacy", job_id_legacy)
+            .range(start, start + batch_size - 1)
+            .execute()
+        )
+        batch = [_hydrate_execution_row(row) for row in list(resp.data or [])]
+        if not batch:
+            break
+        rows.extend(batch)
+        if len(batch) < batch_size:
+            break
+        start += batch_size
+    return rows
+
+
 def load_run_costs(job_id_legacy: str) -> dict[str, Any] | None:
     client = _get_client()
     if not client:
         return None
 
     try:
-        batch_size = 1000
-        start = 0
-        rows: list[dict[str, Any]] = []
-        while True:
-            resp = (
-                client.table("model_executions")
-                .select(
-                    "provider, model, status, prompt_tokens, completion_tokens, "
-                    "total_tokens, metadata"
-                )
-                .eq("job_id_legacy", job_id_legacy)
-                .range(start, start + batch_size - 1)
-                .execute()
-            )
-            batch = [_hydrate_execution_row(row) for row in list(resp.data or [])]
-            if not batch:
-                break
-            rows.extend(batch)
-            if len(batch) < batch_size:
-                break
-            start += batch_size
-
+        rows = _load_execution_rows(client, job_id_legacy)
         return build_run_costs_from_model_executions(rows)
     except Exception as exc:
         _log_supabase_error("load_run_costs", "model_executions", exc, job_id_legacy=job_id_legacy)
+        return None
+
+
+def get_job_cost_by_stage(job_id_legacy: str) -> dict[str, Any] | None:
+    """Return per-stage cost rollup plus run totals for one job."""
+    client = _get_client()
+    if not client:
+        return None
+
+    try:
+        rows = _load_execution_rows(client, job_id_legacy)
+        return {
+            "job_id": job_id_legacy,
+            "stages": build_stage_costs_from_model_executions(rows),
+            "totals": build_run_costs_from_model_executions(rows),
+        }
+    except Exception as exc:
+        _log_supabase_error(
+            "get_job_cost_by_stage", "model_executions", exc, job_id_legacy=job_id_legacy
+        )
+        return None
+
+
+def get_costs_by_day(days: int = 14) -> list[dict[str, Any]] | None:
+    """Aggregate persisted run costs per UTC day over the trailing window.
+
+    Reads one ``analyses`` row per run (the embedded ``run_costs`` block)
+    instead of raw ``model_executions`` to keep the query small.
+    """
+    client = _get_client()
+    if not client:
+        return None
+
+    window_days = max(1, min(int(days or 14), 90))
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
+    try:
+        resp = (
+            client.table("analyses")
+            .select("created_at, status, results_payload->run_costs")
+            .gte("created_at", cutoff)
+            .order("created_at", desc=True)
+            .limit(2000)
+            .execute()
+        )
+        by_day: dict[str, dict[str, Any]] = {}
+        for row in list(resp.data or []):
+            created_at = str(row.get("created_at") or "")
+            day = created_at[:10]
+            if not day:
+                continue
+            entry = by_day.setdefault(
+                day,
+                {
+                    "day": day,
+                    "runs": 0,
+                    "runs_with_costs": 0,
+                    "total_usd": 0.0,
+                    "llm_usd": 0.0,
+                    "perplexity_usd": 0.0,
+                    "search_requests": 0,
+                },
+            )
+            entry["runs"] += 1
+            run_costs = row.get("run_costs")
+            if not isinstance(run_costs, dict):
+                continue
+            total_usd = run_costs.get("total_usd")
+            if total_usd is None:
+                continue
+            entry["runs_with_costs"] += 1
+            entry["total_usd"] += float(total_usd)
+            entry["llm_usd"] += float(run_costs.get("llm_usd") or 0.0)
+            entry["perplexity_usd"] += float(run_costs.get("perplexity_usd") or 0.0)
+            search = run_costs.get("perplexity_search")
+            if isinstance(search, dict):
+                entry["search_requests"] += int(search.get("requests") or 0)
+        results = sorted(by_day.values(), key=lambda item: item["day"], reverse=True)
+        for entry in results:
+            for key in ("total_usd", "llm_usd", "perplexity_usd"):
+                entry[key] = round(entry[key], 6)
+        return results
+    except Exception as exc:
+        _log_supabase_error("get_costs_by_day", "analyses", exc)
         return None
 
 

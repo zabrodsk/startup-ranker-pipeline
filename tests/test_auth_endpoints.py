@@ -12,7 +12,6 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
-import pytest
 from fastapi.testclient import TestClient
 
 from web.app import app

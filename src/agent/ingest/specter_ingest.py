@@ -561,7 +561,7 @@ def _build_person_detail_chunk(
                 parts.append(extra)
 
     if person.experience:
-        parts.append(f"\nCareer History:")
+        parts.append("\nCareer History:")
         for exp in person.experience:
             exp_str = str(exp)
             if exp_str.strip():

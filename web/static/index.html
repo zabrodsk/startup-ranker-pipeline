@@ -5289,6 +5289,7 @@
 
     <div class="stats-row" id="stats-row"></div>
     <div id="results-cost-strip"></div>
+    <div id="results-stage-costs"></div>
     <div class="rankings-row">
       <div class="rankings-label">RANKINGS</div>
       <label class="rankings-sort" id="rankings-sort-wrap" style="display:none">
@@ -5405,6 +5406,7 @@ const $$ = (sel) => document.querySelectorAll(sel);
 
 let sessionId = localStorage.getItem('session_id');
 let currentJobId = null;
+let stageCostsJobId = null; // job whose per-stage cost rollup the results screen shows
 let currentResults = null;
 let uploadedFiles = [];
 let specterUrls = [];
@@ -5721,6 +5723,7 @@ function setCookie(name, value, maxAgeSeconds = 60 * 60 * 24 * 14) {
 
 function persistActiveJob(jobId) {
   currentJobId = jobId;
+  stageCostsJobId = null;
   if (jobId) {
     localStorage.setItem(ACTIVE_JOB_KEY, jobId);
   } else {
@@ -10227,6 +10230,7 @@ async function resumeActiveJob() {
 
 async function openSavedRun(jobId) {
   if (!jobId || jobId === 'null' || jobId === 'undefined') return;
+  stageCostsJobId = jobId;
   const run = savedJobsCache.find((r) => r.jobId === jobId)
     || getServerAuthoritativeRuns().find((r) => r.jobId === jobId);
 
@@ -11173,6 +11177,48 @@ function renderRunCostStrip(runCosts, fallbackLlmLabel = '') {
   initializeRunCostCardHover(container);
 }
 
+async function renderStageCostBreakdown(jobId) {
+  const container = $('#results-stage-costs');
+  if (!container) return;
+  container.innerHTML = '';
+  if (!jobId) return;
+  try {
+    const data = await api(`/api/costs/${encodeURIComponent(jobId)}`, { timeoutMs: 20000, retries: 0 });
+    const stages = Array.isArray(data?.stages) ? data.stages : [];
+    if (!stages.length) return;
+    const anyPartial = stages.some((s) => s?.partial);
+    const rowsHtml = stages.map((s) => `
+      <tr>
+        <td style="padding:6px 12px;text-align:left">${escapeHtml(s?.stage || 'unknown')}</td>
+        <td style="padding:6px 12px;text-align:right">${Number(s?.llm_calls || 0).toLocaleString()}</td>
+        <td style="padding:6px 12px;text-align:right">${formatTokens(s?.total_tokens)}</td>
+        <td style="padding:6px 12px;text-align:right">${Number(s?.search_requests || 0).toLocaleString()}</td>
+        <td style="padding:6px 12px;text-align:right">${formatUsd(s?.usd)}${s?.partial ? ' *' : ''}</td>
+      </tr>`).join('');
+    container.innerHTML = `
+      <details style="margin:10px 0 18px">
+        <summary style="cursor:pointer;color:var(--text-gray);font-size:13px">Cost by pipeline stage</summary>
+        <table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:8px">
+          <thead>
+            <tr style="color:var(--text-gray);border-bottom:1px solid var(--border, #333)">
+              <th style="padding:6px 12px;text-align:left">Stage</th>
+              <th style="padding:6px 12px;text-align:right">LLM calls</th>
+              <th style="padding:6px 12px;text-align:right">Tokens</th>
+              <th style="padding:6px 12px;text-align:right">Searches</th>
+              <th style="padding:6px 12px;text-align:right">USD</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+        ${anyPartial ? '<div style="color:var(--text-dim);font-size:12px;margin-top:6px">* some calls in this stage have no pricing metadata; USD is a lower bound.</div>' : ''}
+      </details>
+    `;
+  } catch (err) {
+    // 404/503 simply mean no persisted execution rows (e.g. Supabase off) — leave the panel empty.
+    console.warn('Per-stage cost rollup unavailable:', err?.message || err);
+  }
+}
+
 const SPECTER_PROFILE_BASE_URL = 'https://app.tryspecter.com/signals/company/feed/';
 
 function firstNonEmptyFromSources(sources, keys) {
@@ -11237,6 +11283,7 @@ function renderSingleResult(r) {
   const sortWrap = $('#rankings-sort-wrap');
   if (sortWrap) sortWrap.style.display = 'none';
   renderRunCostStrip(r.run_costs, getLlmLabel(r));
+  renderStageCostBreakdown(stageCostsJobId || currentJobId);
 
   const subtitleBits = [
     r.industry || '',
@@ -11314,6 +11361,7 @@ function renderBatchResults(r) {
   const sortSelect = $('#rankings-sort-select');
   if (sortWrap) sortWrap.style.display = 'inline-flex';
   renderRunCostStrip(r.run_costs, getLlmLabel(r));
+  renderStageCostBreakdown(stageCostsJobId || currentJobId);
   if (sortSelect) {
     const allowed = new Set(['top_scored', 'alphabetical', 'from_specter']);
     if (!allowed.has(rankingsSortMode)) rankingsSortMode = DEFAULT_RANKINGS_SORT;

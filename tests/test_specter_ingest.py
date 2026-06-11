@@ -1329,6 +1329,8 @@ def test_get_analysis_uses_saved_job_as_only_db_gate(monkeypatch) -> None:
 
 
 def test_start_analysis_queues_worker_backed_specter_job_without_starting_thread(tmp_path: Path, monkeypatch) -> None:
+    # Default phase-model policy resolution needs a provider key (absent in CI).
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     job_id = "job-worker-start"
     original_flag = web_app.ENABLE_SPECTER_WORKER_SERVICE
     web_app.ENABLE_SPECTER_WORKER_SERVICE = True
@@ -1399,6 +1401,8 @@ def test_start_analysis_queues_worker_backed_specter_job_without_starting_thread
 
 
 def test_start_analysis_worker_queue_failure_does_not_fallback_to_web(tmp_path: Path, monkeypatch) -> None:
+    # Default phase-model policy resolution needs a provider key (absent in CI).
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     job_id = "job-worker-fail-closed"
     original_flag = web_app.ENABLE_SPECTER_WORKER_SERVICE
     web_app.ENABLE_SPECTER_WORKER_SERVICE = True

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from copy import deepcopy
@@ -385,3 +384,67 @@ def build_run_costs_from_model_executions(
         },
         "by_model": by_model,
     }
+
+
+def build_stage_costs_from_model_executions(
+    model_executions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Aggregate execution rows per pipeline stage.
+
+    Returns one entry per stage with LLM call counts, token totals, search
+    requests, and USD spend. ``usd`` is None when any row in the stage lacks
+    pricing (mirrors the partial semantics of run-level costs).
+    """
+    stages: dict[str, dict[str, Any]] = {}
+    for row in model_executions:
+        service = row.get("service")
+        stage_name = str(row.get("stage") or "unknown").strip() or "unknown"
+        stage = stages.setdefault(
+            stage_name,
+            {
+                "stage": stage_name,
+                "llm_calls": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "search_requests": 0,
+                "usd": 0.0,
+                "pricing_available": True,
+                "partial": False,
+                "has_known_cost": False,
+            },
+        )
+        if service == "llm":
+            status = str(row.get("status") or "done").strip().lower()
+            if status != "done":
+                continue
+            stage["llm_calls"] += 1
+            for source_key, target_key in (
+                ("prompt_tokens", "prompt_tokens"),
+                ("completion_tokens", "completion_tokens"),
+                ("total_tokens", "total_tokens"),
+            ):
+                value = row.get(source_key)
+                if isinstance(value, int):
+                    stage[target_key] += value
+            estimated_cost_usd = row.get("estimated_cost_usd")
+            if estimated_cost_usd is None:
+                stage["pricing_available"] = False
+                stage["partial"] = True
+            else:
+                stage["usd"] += float(estimated_cost_usd)
+                stage["has_known_cost"] = True
+        elif service == "perplexity_search":
+            stage["search_requests"] += int(row.get("request_count") or 1)
+            stage["usd"] += float(row.get("estimated_cost_usd") or 0.0)
+            stage["has_known_cost"] = True
+
+    results: list[dict[str, Any]] = []
+    for stage in stages.values():
+        if stage.pop("has_known_cost", False):
+            stage["usd"] = round(stage["usd"], 8)
+        else:
+            stage["usd"] = None
+        results.append(stage)
+    results.sort(key=lambda item: (-(item["usd"] or 0.0), item["stage"]))
+    return results

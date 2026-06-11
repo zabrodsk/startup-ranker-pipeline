@@ -4235,7 +4235,6 @@ async def startup_upload(
 
     import tempfile  # noqa: PLC0415
 
-    from agent.ingest import EvidenceStore  # noqa: PLC0415
     from agent.ingest import _EXTENSION_MAP, _TEXT_EXTENSIONS  # noqa: PLC0415
     from agent.ingest.chunking import smart_chunk_texts  # noqa: PLC0415
 
@@ -8765,6 +8764,40 @@ async def save_vc_strategy(
         "vc_investment_strategy": strategy,
         "vc_strategy_source": "supabase",
     }
+
+
+@app.get("/api/costs/daily")
+async def get_costs_daily(
+    days: int = 14,
+    session_id: str | None = Cookie(default=None),
+):
+    """Per-day cost aggregate across persisted runs (baseline cost dashboard)."""
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not db or not db.is_configured():
+        raise HTTPException(status_code=503, detail="Cost history requires Supabase persistence.")
+    rows = await asyncio.to_thread(db.get_costs_by_day, days)
+    if rows is None:
+        raise HTTPException(status_code=503, detail="Could not load cost history.")
+    return {"days": rows}
+
+
+@app.get("/api/costs/{job_id}")
+async def get_job_costs_by_stage(
+    job_id: str,
+    session_id: str | None = Cookie(default=None),
+):
+    """Per-stage cost rollup for one job from persisted model_executions rows."""
+    if not _check_session(session_id):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not db or not db.is_configured():
+        raise HTTPException(status_code=503, detail="Cost rollup requires Supabase persistence.")
+    payload = await asyncio.to_thread(db.get_job_cost_by_stage, job_id)
+    if payload is None:
+        raise HTTPException(status_code=503, detail="Could not load cost rollup.")
+    if not payload.get("stages"):
+        raise HTTPException(status_code=404, detail="No cost data recorded for this job.")
+    return payload
 
 
 @app.get("/api/status/{job_id}")

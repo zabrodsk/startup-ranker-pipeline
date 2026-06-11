@@ -20,7 +20,7 @@ preserving the existing pitch-deck behaviour.
 from __future__ import annotations
 
 import re
-from typing import Any, Callable, Iterable
+from typing import Callable, Iterable
 
 from agent.dataclasses.company import Company
 from agent.ingest.specter_mcp_client import (
