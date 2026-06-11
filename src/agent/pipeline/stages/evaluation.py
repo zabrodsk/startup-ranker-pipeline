@@ -13,10 +13,8 @@ The top K arguments (based on config) are selected for the next stage.
 
 import logging
 
-import backoff
 from langchain_core.exceptions import OutputParserException
 from langchain_core.messages import HumanMessage, SystemMessage
-from openai import RateLimitError
 from pydantic import ValidationError
 
 from agent.common.llm_config import get_llm
@@ -31,10 +29,10 @@ from agent.run_context import get_current_pipeline_policy, use_stage_context
 
 logger = logging.getLogger(__name__)
 
+# Rate-limit/transient retries are owned by ThrottledRunnable (rate_limit.py);
+# the per-stage @backoff decorators were removed to stop retry stacking (W10).
 
-@backoff.on_exception(
-    backoff.expo, RateLimitError, max_tries=5, max_time=60, jitter=backoff.full_jitter
-)
+
 async def score_single_argument(
     argument: Argument, prompt_overrides: dict | None = None
 ) -> Argument:
