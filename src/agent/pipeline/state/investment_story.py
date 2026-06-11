@@ -52,6 +52,11 @@ class InputState(BaseModel):
     final_arguments: list[Any] = Field(default_factory=list)
     final_decision: Optional[str] = None
 
+    # Skip the executive-summary node after composite ranking. Set by callers
+    # that only consume ranking_result (e.g. VC matching) — saves one
+    # reasoning-heavy LLM call per invocation.
+    skip_executive_summary: bool = False
+
 
 class IterativeInvestmentStoryState(BaseModel):
     """Main state tracking arguments through refinement iterations.
@@ -99,6 +104,8 @@ class IterativeInvestmentStoryState(BaseModel):
     # Pipeline control
     is_final: bool = False
     company_name: str = ""
+    # Skip the executive-summary node after composite ranking (see InputState).
+    skip_executive_summary: bool = False
 
     # Argument tracking
     current_arguments: list[Argument] = Field(default_factory=list)

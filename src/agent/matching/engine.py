@@ -96,6 +96,8 @@ async def run_matching_for_pair(
             "vc_context": (vc_thesis or "").strip(),
             "slug": company_id,
             "prompt_overrides": {},
+            # Matching only consumes ranking_result — skip the exec summary.
+            "skip_executive_summary": True,
         }
         logger.debug(
             "Matching company=%s via Stage-8-only path (final_arguments=%d)",
@@ -110,6 +112,8 @@ async def run_matching_for_pair(
             "vc_context": (vc_thesis or "").strip(),
             "slug": company_id,
             "prompt_overrides": {},
+            # Matching only consumes ranking_result — skip the exec summary.
+            "skip_executive_summary": True,
         }
         logger.debug("Matching company=%s via Stage-3 path (qa_pairs=%d)", company_id, len(all_qa_pairs))
     else:
