@@ -28,7 +28,7 @@ from agent.ingest.specter_mcp_client import (
     _verify_match,
     fetch_specter_company,
 )
-from agent.ingest.store import Chunk, EvidenceStore
+from agent.ingest.store import EvidenceStore
 
 
 # ---------------------------------------------------------------------------

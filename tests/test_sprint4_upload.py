@@ -289,7 +289,7 @@ class TestAnalyze:
 class TestNewDbHelpers:
     def test_get_analysis_final_state_returns_dict(self):
         """get_analysis_final_state returns final_arguments + final_decision."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
         import web.db as db_module
 
         # Directly mock get_analysis_final_state to return expected data,
@@ -418,7 +418,6 @@ class TestDocxIngest:
 
     def test_extract_docx_handles_missing_file_gracefully(self):
         from agent.ingest.docx_ingest import extract_docx
-        import pytest
         with pytest.raises(Exception):
             # Should raise PackageNotFoundError or similar when file doesn't exist
             extract_docx("/nonexistent/path/fake.docx")

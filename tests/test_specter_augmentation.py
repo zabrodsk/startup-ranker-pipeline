@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 
 from agent.dataclasses.company import Company
 from agent.ingest.specter_augmentation import (

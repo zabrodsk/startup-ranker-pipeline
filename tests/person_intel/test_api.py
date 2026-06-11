@@ -171,6 +171,9 @@ def test_person_profile_job_resumes_from_persisted_state(monkeypatch) -> None:
         def upsert_person_profile_job(self, job_id, **kwargs):
             self.upserts.append({"job_id": job_id, **kwargs})
 
+        def prune_person_profile_jobs(self, company_slug, person_key, keep_person_job_id=None):
+            self.pruned = (company_slug, person_key, keep_person_job_id)
+
     fake_db = FakeDb()
     monkeypatch.setattr(
         web_app_module,
@@ -195,6 +198,7 @@ def test_person_profile_job_resumes_from_persisted_state(monkeypatch) -> None:
                 assert payload['result']['profile_json']['claims']
                 assert any(item["progress"] == "Resuming after restart..." for item in fake_db.upserts)
                 return
+            assert payload['status'] != 'error', f"Resumed job failed: {payload.get('error')}"
             time.sleep(0.05)
 
         raise AssertionError('Persisted person job did not resume in time')

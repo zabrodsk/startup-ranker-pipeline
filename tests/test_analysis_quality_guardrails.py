@@ -527,7 +527,9 @@ def test_preflight_allows_valid_original_mode_with_run_name(
     upload_dir = tmp_path / job_id
     upload_dir.mkdir()
     document = upload_dir / "uploaded-notes.txt"
-    document.write_text("Company website: https://variene.ai\nIndustrial AI evidence.", encoding="utf-8")
+    # No URL in the document: with a detectable URL the preflight derives the
+    # company name from the domain instead of the run_name under test.
+    document.write_text("Industrial AI evidence without a website mention.", encoding="utf-8")
     web_app._jobs[job_id] = web_app.AnalysisStatus(job_id=job_id, status="pending")
     web_app._results_cache[job_id] = {
         "upload_dir": str(upload_dir),

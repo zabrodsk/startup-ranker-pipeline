@@ -3,8 +3,10 @@ import io
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -39,6 +41,32 @@ from agent.run_context import (
 from agent import llm as llm_module
 from agent import rate_limit as rate_limit_module
 from web.app import AnalysisStatus, app
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_supabase_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep these tests hermetic: a local .env with Supabase credentials must not
+    make `_supabase_public_auth_config()["required"]` true or open live clients.
+
+    Tests that exercise the Supabase-auth path re-set these variables themselves.
+    """
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_ANON_KEY", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _skip_quality_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests cover LLM selection and cost telemetry; the document-quality
+    preflight has its own suite (test_analysis_quality_guardrails.py) and would
+    reject the placeholder deck uploads used here with a 409.
+    """
+    from web import app as web_app_module
+
+    async def _no_preflight(job_id: str, req: Any) -> None:
+        return None
+
+    monkeypatch.setattr(web_app_module, "_run_analysis_quality_preflight", _no_preflight)
 
 
 def _login(client: TestClient) -> None:
@@ -1564,6 +1592,144 @@ def test_start_analysis_normalizes_google_provider_alias(monkeypatch) -> None:
         cache = web_app_module._results_cache[job_id]
         assert cache["llm_selection"]["provider"] == "gemini"
         assert cache["run_config"]["llm_provider"] == "gemini"
+
+
+def test_build_stage_costs_groups_llm_and_search_rows_per_stage() -> None:
+    from agent.run_context import build_stage_costs_from_model_executions
+
+    rows = [
+        {
+            "service": "llm",
+            "stage": "answering",
+            "status": "done",
+            "prompt_tokens": 1_000,
+            "completion_tokens": 200,
+            "total_tokens": 1_200,
+            "estimated_cost_usd": 0.01,
+        },
+        {
+            "service": "llm",
+            "stage": "answering",
+            "status": "done",
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "total_tokens": 600,
+            "estimated_cost_usd": 0.005,
+        },
+        {
+            "service": "llm",
+            "stage": "answering",
+            "status": "retrying",
+            "estimated_cost_usd": None,
+        },
+        {
+            "service": "llm",
+            "stage": "evaluation",
+            "status": "done",
+            "prompt_tokens": 50,
+            "completion_tokens": 10,
+            "total_tokens": 60,
+            "estimated_cost_usd": None,
+        },
+        {
+            "service": "perplexity_search",
+            "stage": "perplexity_search",
+            "request_count": 3,
+            "estimated_cost_usd": 0.015,
+        },
+    ]
+
+    stages = build_stage_costs_from_model_executions(rows)
+
+    by_name = {item["stage"]: item for item in stages}
+    assert set(by_name) == {"answering", "evaluation", "perplexity_search"}
+    answering = by_name["answering"]
+    assert answering["llm_calls"] == 2  # retrying row not counted
+    assert answering["prompt_tokens"] == 1_500
+    assert answering["usd"] == 0.015
+    assert answering["partial"] is False
+    evaluation = by_name["evaluation"]
+    assert evaluation["usd"] is None
+    assert evaluation["partial"] is True
+    search = by_name["perplexity_search"]
+    assert search["search_requests"] == 3
+    assert search["usd"] == 0.015
+    # Sorted by spend descending (None last).
+    assert stages[0]["stage"] in {"answering", "perplexity_search"}
+    assert stages[-1]["stage"] == "evaluation"
+
+
+def test_costs_by_stage_endpoint_returns_rollup(monkeypatch) -> None:
+    from web import app as web_app_module
+
+    rollup = {
+        "job_id": "job-1",
+        "stages": [{"stage": "answering", "llm_calls": 2, "usd": 0.015}],
+        "totals": {"status": "complete", "total_usd": 0.015},
+    }
+    monkeypatch.setattr(
+        web_app_module,
+        "db",
+        SimpleNamespace(
+            is_configured=lambda: True,
+            get_job_cost_by_stage=lambda job_id: rollup if job_id == "job-1" else None,
+        ),
+    )
+
+    with TestClient(app) as client:
+        _login(client)
+        ok = client.get("/api/costs/job-1")
+        assert ok.status_code == 200
+        assert ok.json() == rollup
+
+
+def test_costs_by_stage_endpoint_404_when_no_rows(monkeypatch) -> None:
+    from web import app as web_app_module
+
+    monkeypatch.setattr(
+        web_app_module,
+        "db",
+        SimpleNamespace(
+            is_configured=lambda: True,
+            get_job_cost_by_stage=lambda job_id: {"job_id": job_id, "stages": [], "totals": {}},
+        ),
+    )
+
+    with TestClient(app) as client:
+        _login(client)
+        missing = client.get("/api/costs/unknown-job")
+
+    assert missing.status_code == 404
+
+
+def test_costs_daily_endpoint_returns_aggregate_and_503_when_unconfigured(monkeypatch) -> None:
+    from web import app as web_app_module
+
+    days_payload = [{"day": "2026-06-10", "runs": 2, "total_usd": 1.5}]
+    monkeypatch.setattr(
+        web_app_module,
+        "db",
+        SimpleNamespace(
+            is_configured=lambda: True,
+            get_costs_by_day=lambda days: days_payload,
+        ),
+    )
+    with TestClient(app) as client:
+        _login(client)
+        ok = client.get("/api/costs/daily?days=7")
+        assert ok.status_code == 200
+        assert ok.json() == {"days": days_payload}
+
+    monkeypatch.setattr(
+        web_app_module,
+        "db",
+        SimpleNamespace(is_configured=lambda: False),
+    )
+    with TestClient(app) as client:
+        _login(client)
+        unavailable = client.get("/api/costs/daily")
+
+    assert unavailable.status_code == 503
 
 
 def test_status_returns_saved_run_llm_from_results(monkeypatch) -> None:
