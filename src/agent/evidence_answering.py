@@ -6,6 +6,7 @@ is a FALLBACK only when the grounded answer indicates lack of evidence.
 """
 
 import asyncio
+import logging
 import os
 import re
 from typing import Any, Awaitable, Callable, Dict, List
@@ -23,6 +24,34 @@ MAX_PPLX_CALLS_PER_COMPANY = int(os.getenv("MAX_PPLX_CALLS_PER_COMPANY", "100"))
 #   "answer" = only when LLM answer indicates no evidence (e.g. "Unknown from provided documents")
 #   "no_chunks" = legacy: only when documents have zero chunks
 WEB_SEARCH_TRIGGER = os.getenv("WEB_SEARCH_TRIGGER", "answer").lower()  # "answer" | "no_chunks"
+
+# Gating for the "web-heavy question" override (_question_prefers_web_search),
+# which forces a search for market/competitor-style questions even when the
+# grounded answer is complete:
+#   "always"    = override fires for any question node (current behavior, default)
+#   "root_only" = override fires only for tree-root questions
+#   "never"     = override disabled; search happens only when the grounded answer
+#                 indicates missing evidence (or via the legacy no-chunks trigger)
+# Read at call time (not import time) so tests and A/B runs can flip it via env.
+WEB_SEARCH_HEAVY_OVERRIDE_ENV = "WEB_SEARCH_HEAVY_OVERRIDE"
+_WEB_SEARCH_HEAVY_OVERRIDE_MODES = ("always", "root_only", "never")
+_DEFAULT_WEB_SEARCH_HEAVY_OVERRIDE = "always"
+_WARNED_INVALID_HEAVY_OVERRIDE: set[str] = set()
+
+
+def _web_search_heavy_override() -> str:
+    """Return the active gating mode for the web-heavy question override."""
+    raw = os.getenv(WEB_SEARCH_HEAVY_OVERRIDE_ENV, _DEFAULT_WEB_SEARCH_HEAVY_OVERRIDE)
+    mode = raw.strip().lower()
+    if mode not in _WEB_SEARCH_HEAVY_OVERRIDE_MODES:
+        if mode not in _WARNED_INVALID_HEAVY_OVERRIDE:
+            _WARNED_INVALID_HEAVY_OVERRIDE.add(mode)
+            logging.getLogger(__name__).warning(
+                "Invalid %s=%r; falling back to %r",
+                WEB_SEARCH_HEAVY_OVERRIDE_ENV, raw, _DEFAULT_WEB_SEARCH_HEAVY_OVERRIDE,
+            )
+        return _DEFAULT_WEB_SEARCH_HEAVY_OVERRIDE
+    return mode
 
 # Patterns indicating the LLM could not answer from documents
 _ANSWER_NO_EVIDENCE_PATTERNS = [
@@ -355,8 +384,14 @@ def _build_web_search_query(company: Company, question: str) -> str:
 def _run_web_search(
     search_query: str,
     domain_filter: list[str] | None = None,
+    trigger_reason: str | None = None,
+    gating_mode: str | None = None,
 ) -> str:
-    """Run a web search using the configured provider."""
+    """Run a web search using the configured provider.
+
+    trigger_reason/gating_mode are recorded in telemetry metadata so run costs
+    can aggregate WHY searches fired (see build_run_costs_from_model_executions).
+    """
     from datetime import datetime
 
     provider_name = _resolve_web_search_provider_name()
@@ -371,12 +406,15 @@ def _run_web_search(
         result = provider.search(search_query, domain_filter=domain_filter)
         collector = get_current_collector()
         if collector and provider_name == "sonar" and result and not str(result).lower().startswith("web search failed"):
-            collector.record_perplexity_search(
-                metadata={
-                    "query": search_query,
-                    "domain_filter": domain_filter or [],
-                }
-            )
+            metadata: dict[str, Any] = {
+                "query": search_query,
+                "domain_filter": domain_filter or [],
+            }
+            if trigger_reason:
+                metadata["trigger_reason"] = trigger_reason
+            if gating_mode:
+                metadata["gating_mode"] = gating_mode
+            collector.record_perplexity_search(metadata=metadata)
         return result
     except Exception as exc:
         return f"Web search failed: {exc}"
@@ -416,6 +454,7 @@ async def answer_question_from_evidence(
     vc_context: str = "",
     aspect: str = "",
     prompt_overrides: dict[str, Any] | None = None,
+    is_root: bool = False,
 ) -> tuple[str, dict]:
     """Answer a single question using retrieved document chunks and optional web search.
 
@@ -439,6 +478,8 @@ async def answer_question_from_evidence(
         use_web_search: If True, may run a web search when docs have no evidence.
         semaphore: Optional semaphore to limit concurrent LLM calls.
         web_search_state: Optional dict with count, lock, max for per-company search cap.
+        is_root: True when this question is a tree root. Gates the web-heavy
+            question override when WEB_SEARCH_HEAVY_OVERRIDE=root_only.
 
     Returns:
         Tuple of (answer string, provenance dict with chunk_ids, chunks_preview,
@@ -497,11 +538,15 @@ async def answer_question_from_evidence(
         # Step 2: Decide whether to run Perplexity based on the answer
         # "answer" trigger: search only when LLM says it lacks evidence
         # "no_chunks" trigger: search only when we had no chunks (legacy)
+        # The web-heavy question override is additionally gated by
+        # WEB_SEARCH_HEAVY_OVERRIDE (always | root_only | never).
+        heavy_mode = _web_search_heavy_override()
+        heavy_override_allowed = heavy_mode == "always" or (heavy_mode == "root_only" and is_root)
         search_reason: str | None = None
         if use_web_search:
             if WEB_SEARCH_TRIGGER == "answer" and _answer_indicates_no_evidence(grounded_answer):
                 search_reason = "documents incomplete"
-            elif _question_prefers_web_search(question):
+            elif heavy_override_allowed and _question_prefers_web_search(question):
                 search_reason = "question benefits from external web context"
             elif WEB_SEARCH_TRIGGER != "answer" and not chunks:
                 search_reason = "no chunks"
@@ -525,7 +570,9 @@ async def answer_question_from_evidence(
             web_search_query = _build_web_search_query(company, question)
             domain_filter = _web_search_domain_filter(company, question)
             web_results = await asyncio.wait_for(
-                asyncio.to_thread(_run_web_search, web_search_query, domain_filter),
+                asyncio.to_thread(
+                    _run_web_search, web_search_query, domain_filter, search_reason, heavy_mode
+                ),
                 timeout=WEB_SEARCH_TIMEOUT_SEC,
             )
             web_search_results = web_results[:WEB_RESULTS_TRUNCATE]
@@ -632,11 +679,16 @@ async def _answer_node_from_evidence(
     vc_context: str = "",
     aspect: str = "",
     prompt_overrides: dict[str, Any] | None = None,
+    is_root: bool = False,
 ) -> None:
     """Recursively answer a question node and its children from evidence.
 
     Leaf nodes retrieve chunks directly. Parent nodes also retrieve chunks
     (rather than synthesizing from children) to maximize grounding.
+
+    is_root marks the tree root; children are always answered with
+    is_root=False so WEB_SEARCH_HEAVY_OVERRIDE=root_only can gate the
+    web-heavy question override to root questions only.
     """
     if on_cooperate:
         await on_cooperate()
@@ -654,6 +706,7 @@ async def _answer_node_from_evidence(
                 vc_context=vc_context,
                 aspect=aspect,
                 prompt_overrides=prompt_overrides,
+                is_root=False,
             )
             for child in node.sub_nodes
         ]
@@ -669,6 +722,7 @@ async def _answer_node_from_evidence(
         vc_context=vc_context,
         aspect=aspect,
         prompt_overrides=prompt_overrides,
+        is_root=is_root,
     )
     node.answer = answer
     node.provenance = provenance
@@ -732,6 +786,7 @@ async def answer_all_trees_from_evidence(
             vc_context=vc_context,
             aspect=aspect,
             prompt_overrides=prompt_overrides,
+            is_root=True,
         )
         for aspect, tree in question_trees.items()
     ]
