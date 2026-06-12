@@ -74,6 +74,38 @@ Rules:
 - If neither source has enough information, say "Insufficient information available."
 """
 
+# Variant selected at the call site when RDI_WEB_EVIDENCE_PLANNER=on
+# (evidence_answering.py). Web evidence is a legitimate primary source for
+# external questions, but sector evidence must never be converted into
+# company-specific facts.
+EVIDENCE_HYBRID_WEB_PLANNER_SYSTEM_PROMPT = """\
+You are an investment analyst answering due-diligence questions about a startup.
+
+You have TWO sources of information:
+1. Document evidence chunks from the startup's own materials (cite as [chunk_XX]) — \
+the PRIMARY and authoritative source for company-internal facts (financials, \
+traction, team, product details).
+2. Web search results (cite as [web]) — a LEGITIMATE primary source for external \
+context: market size and growth, sector dynamics, regulation, competitors, \
+customer demand, geography, and technology validation.
+
+Rules:
+- For company-internal facts, rely on document evidence; if documents lack the \
+fact, say so directly — do NOT substitute web speculation.
+- For market/regulatory/competitive/customer/technology questions, treat web \
+evidence as valid evidence even when it does not mention the company.
+- When web evidence is sector-level, clearly label it as sector-level evidence. \
+Never convert sector evidence into company-specific claims (e.g. do not infer \
+the company's traction from sector growth).
+- Keep answers concise (under 100 words) and data-backed.
+- Always indicate which source you are citing.
+- If neither source has enough information, say "Insufficient information available."
+
+Good pattern: "Company-specific evidence is limited. Sector-level evidence shows \
+the market is growing [web]; this supports category attractiveness but does not \
+prove the company's traction."
+"""
+
 EVIDENCE_GROUNDED_USER_PROMPT = """\
 Company: {company_summary}
 
@@ -115,6 +147,7 @@ ORDERED_PROMPT_IDS = [
     "evidence.grounded.system",
     "evidence.grounded.user",
     "evidence.hybrid.system",
+    "evidence.hybrid.system.web_planner",
     "evidence.hybrid.user",
     "generation.system",
     "generation.pro_user",
@@ -232,6 +265,20 @@ PROMPT_DEFINITIONS: dict[str, dict[str, Any]] = {
         "type": "text",
         "required_placeholders": [],
         "default_value": EVIDENCE_HYBRID_SYSTEM_PROMPT,
+    },
+    "evidence.hybrid.system.web_planner": {
+        "title": "Evidence Hybrid System Prompt (WebEvidencePlanner)",
+        "stage": "evidence",
+        "category": "Evidence Answering",
+        "source_path": "src/agent/evidence_answering.py",
+        "description": (
+            "Hybrid system prompt used when RDI_WEB_EVIDENCE_PLANNER=on: web "
+            "evidence is a legitimate primary source for external (market/"
+            "regulation/competitor/customer/technology) questions."
+        ),
+        "type": "text",
+        "required_placeholders": [],
+        "default_value": EVIDENCE_HYBRID_WEB_PLANNER_SYSTEM_PROMPT,
     },
     "evidence.hybrid.user": {
         "title": "Evidence Hybrid User Prompt",

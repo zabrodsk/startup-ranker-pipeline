@@ -13,6 +13,9 @@ class QuestionNode(BaseModel):
 
     aspect: Optional[str] = None
     provenance: Optional[dict] = None
+    # Web-evidence route tag set at decomposition time (normalized; see
+    # agent.web_search.planner). None on old cached trees -> fallback router.
+    route: Optional[str] = None
 
 
 class QuestionTree(BaseModel):

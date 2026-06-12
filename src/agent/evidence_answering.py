@@ -572,7 +572,15 @@ async def answer_question_from_evidence(
 
     grounded_system_prompt = get_prompt("evidence.grounded.system", prompt_overrides)
     grounded_user_prompt = get_prompt("evidence.grounded.user", prompt_overrides)
-    hybrid_system_prompt = get_prompt("evidence.hybrid.system", prompt_overrides)
+    # Prompt variant selection happens at the call site (the prompt library
+    # has no variant mechanism): planner "on" gets the web-as-primary-source
+    # variant; off/shadow keep the legacy prompt byte-identical.
+    hybrid_system_prompt = get_prompt(
+        "evidence.hybrid.system.web_planner"
+        if _web_evidence_planner_mode() == "on"
+        else "evidence.hybrid.system",
+        prompt_overrides,
+    )
     hybrid_user_prompt = get_prompt("evidence.hybrid.user", prompt_overrides)
 
     vc_block = ""
