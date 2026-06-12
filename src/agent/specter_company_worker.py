@@ -15,10 +15,12 @@ from pathlib import Path
 from typing import Any
 
 from agent.batch import evaluate_from_specter
-from agent.ingest.specter_ingest import ingest_specter_company
+from agent.dataclasses.company import Company
+from agent.ingest.specter_ingest import _company_slug, ingest_specter_company
 from agent.ingest.specter_mcp_client import (
     fetch_specter_company,
 )
+from agent.ingest.store import EvidenceStore
 from agent.llm_catalog import serialize_selection
 from agent.llm_policy import (
     build_phase_model_policy,
@@ -102,6 +104,83 @@ def _persist_company_telemetry(
         )
 
 
+def _handle_fetch_failure(
+    args: argparse.Namespace,
+    job_id: str,
+    run_config: dict[str, Any],
+    versions: dict[str, Any],
+    exc: Exception,
+) -> int:
+    """Persist + emit a structured per-company failure for fetch/ingest crashes.
+
+    Company identity is synthesized from the task args since no Company or
+    EvidenceStore exists yet. Emits the same company_complete{status:"error"}
+    event the evaluation except-path uses, so the parent counts the failure
+    and the UI shows the specific message instead of a generic exit code.
+    """
+    error_message = f"{type(exc).__name__}: {exc}"[:1000]
+    name = (
+        args.expected_name
+        or args.specter_url
+        or (f"company #{args.company_index}" if args.company_index is not None else "Unknown")
+    ).strip()
+    slug = _company_slug(name) or f"company-{args.absolute_index}"
+    company = Company(name=name)
+    store = EvidenceStore(startup_slug=slug, chunks=[])
+    status = "error"
+    try:
+        db.insert_analysis_error(
+            job_id,
+            message=error_message,
+            stage="specter_company_worker.fetch",
+            error_type=type(exc).__name__,
+            company_slug=slug,
+        )
+        failure_payload = web_app._failure_result_payload(
+            job_id,
+            company=company,
+            store=store,
+            slug=slug,
+            status=status,
+            error_message=error_message,
+        )
+        db.persist_company_failure_result(
+            job_id_legacy=job_id,
+            result_row={
+                "slug": slug,
+                "company": company,
+                "company_name": company.name,
+                "evidence_store": store,
+                "final_state": {
+                    "final_arguments": [],
+                    "final_decision": status,
+                    "ranking_result": None,
+                    "all_qa_pairs": [],
+                },
+                "analysis_status": status,
+                "error": error_message,
+                "skipped": False,
+            },
+            company_payload=failure_payload,
+            run_config=run_config,
+            versions=versions,
+        )
+    except Exception:
+        # Persistence is best-effort; the structured event below still reaches
+        # the parent so the failure is counted and surfaced.
+        traceback.print_exc()
+    _emit_event(
+        {
+            "type": "company_complete",
+            "company_name": name,
+            "absolute_index": args.absolute_index,
+            "status": status,
+            "error": error_message[:500],
+        }
+    )
+    return 0
+
+
 async def _process_company(args: argparse.Namespace) -> int:
     payload = _read_json(args.config_path)
     run_config = payload.get("run_config") or {}
@@ -114,23 +193,31 @@ async def _process_company(args: argparse.Namespace) -> int:
 
     _init_worker_cache(job_id, run_config, versions)
 
-    if args.specter_url:
-        company, store = fetch_specter_company(
-            args.specter_url,
-            expected_name=args.expected_name or None,
-            fetch_full_team=bool(args.fetch_full_team),
-        )
-    else:
-        if not args.specter_companies or args.company_index is None:
-            raise ValueError(
-                "specter_company_worker requires either --specter-url or "
-                "--specter-companies + --company-index"
+    # fetch/ingest run before any Company/EvidenceStore exists. Without this
+    # guard a failure here (e.g. Specter auth outage) kills the child with a
+    # bare non-zero exit: no structured event, no analysis_errors row, and the
+    # UI only shows a generic "exited with code 1" (the 2026-06-11 outage UX).
+    try:
+        if args.specter_url:
+            company, store = fetch_specter_company(
+                args.specter_url,
+                expected_name=args.expected_name or None,
+                fetch_full_team=bool(args.fetch_full_team),
             )
-        company, store = ingest_specter_company(
-            args.specter_companies,
-            args.specter_people,
-            company_index=args.company_index,
-        )
+        else:
+            if not args.specter_companies or args.company_index is None:
+                raise ValueError(
+                    "specter_company_worker requires either --specter-url or "
+                    "--specter-companies + --company-index"
+                )
+            company, store = ingest_specter_company(
+                args.specter_companies,
+                args.specter_people,
+                company_index=args.company_index,
+            )
+    except Exception as exc:
+        traceback.print_exc()
+        return _handle_fetch_failure(args, job_id, run_config, versions, exc)
     collector = RunTelemetryCollector(selected_llm=llm_selection)
     web_app._results_cache[job_id]["telemetry_collector"] = collector
 

@@ -13,6 +13,7 @@ import contextlib
 import gc
 import json
 import os
+from collections import deque
 from pathlib import Path
 import shutil
 import socket
@@ -428,6 +429,9 @@ async def _run_company_subprocess(
 
     saw_completion_event = False
     company_failed = False
+    # Tail of the child's raw stdout (tracebacks land here) so a crash without
+    # a structured completion event still surfaces a specific message.
+    last_stdout_lines: deque[str] = deque(maxlen=5)
     try:
         assert process.stdout is not None
         while True:
@@ -492,6 +496,7 @@ async def _run_company_subprocess(
                         worker_id=worker_id,
                     )
                 continue
+            last_stdout_lines.append(text)
             db.insert_analysis_event(job_id, message=text, event_type="worker_stdout", stage="company")
 
         return_code = await process.wait()
@@ -500,6 +505,9 @@ async def _run_company_subprocess(
                 f"Specter company worker exited with code {return_code} "
                 f"for company {absolute_index}/{total_companies}."
             )
+            if last_stdout_lines:
+                tail = " | ".join(last_stdout_lines)
+                error_message = f"{error_message} Last output: {tail}"[:1000]
             _log(f"{job_id}: company {absolute_index}/{total_companies} worker exited with code {return_code}")
             _persist_subprocess_failure(
                 job_id,
