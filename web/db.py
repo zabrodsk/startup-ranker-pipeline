@@ -919,6 +919,9 @@ def _persist_company_analysis_row(
                 "mode": run_config.get("input_mode", "pitchdeck"),
                 "run_created_at": datetime.now(timezone.utc).isoformat(),
                 "result_payload": _serialize(company_payload),
+                # Duplicate-run gate (Sprint 3): hash of the evidence inputs,
+                # threaded by the caller at gate/dispatch time; None is fine.
+                "evidence_fingerprint": result_row.get("evidence_fingerprint") or None,
                 **_extract_started_by_fields(run_config),
             },
             on_conflict="job_id_legacy,company_key",
@@ -4005,6 +4008,152 @@ def compare_and_swap_mcp_secret(key: str, new_value: str, expected_current: str 
     except Exception as exc:
         _log_supabase_error("compare_and_swap_mcp_secret", "mcp_secrets", exc)
         return False
+
+
+# ---------------------------------------------------------------------------
+# Duplicate-run gate (Sprint 3)
+# ---------------------------------------------------------------------------
+# The gate (web/app.py) skips re-analyzing a company whose evidence inputs
+# (see src/agent/dup_fingerprint.py) match a recent non-failed run, copying
+# the prior result_payload into a new company_runs row instead. The compose
+# path (_compose_results_payload_from_company_runs) then surfaces it with
+# zero results-pipeline changes.
+
+# Reuse markers injected into copied payloads. The UI badge keys off "reused".
+_REUSED_MARKER_KEYS = ("reused", "reused_from_job_id_legacy", "reused_run_created_at")
+
+# Columns copied verbatim from the prior row into the reused row.
+_REUSED_COPY_COLUMNS = (
+    "company_id",
+    "company_key",
+    "company_lookup_key",
+    "company_name",
+    "startup_slug",
+    "input_order",
+    "decision",
+    "total_score",
+    "composite_score",
+    "strategy_fit_score",
+    "team_score",
+    "upside_score",
+    "bucket",
+    "mode",
+    "evidence_fingerprint",
+)
+
+
+def company_lookup_key_for_name(company_name: str | None) -> str | None:
+    """Public lookup-key derivation for gate-time matching (name-based)."""
+    name = (company_name or "").strip()
+    if not name:
+        return None
+    return _company_lookup_key_from_values(name, None, None)
+
+
+def find_recent_company_run(
+    *,
+    evidence_fingerprint: str,
+    window_days: int,
+    company_lookup_key: str | None = None,
+) -> dict[str, Any] | None:
+    """Most recent non-failed company run matching the fingerprint, or None.
+
+    Failed rows (error/timeout decisions) and rows without a result payload
+    never match — reusing them would replay a failure.
+    """
+    fingerprint = (evidence_fingerprint or "").strip()
+    if not fingerprint or window_days <= 0:
+        return None
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=window_days)
+        ).isoformat()
+        query = (
+            client.table("company_runs")
+            .select("*")
+            .eq("evidence_fingerprint", fingerprint)
+            .gte("run_created_at", cutoff)
+            .order("run_created_at", desc=True)
+            .limit(10)
+        )
+        if company_lookup_key:
+            query = query.eq("company_lookup_key", company_lookup_key)
+        rows = query.execute()
+        for row in rows.data or []:
+            if is_failed_analysis_status(row.get("decision")):
+                continue
+            if not row.get("result_payload"):
+                continue
+            return row
+        return None
+    except Exception as exc:
+        _log_supabase_error("find_recent_company_run", "company_runs", exc)
+        return None
+
+
+def persist_reused_company_run(
+    job_id_legacy: str,
+    prior_row: dict[str, Any],
+    *,
+    run_config: dict[str, Any],
+    versions: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Copy a prior run's result into a new company_runs row for this job.
+
+    Returns the marker-injected result payload on success, None on failure.
+    The payload (and its summary_rows[0], when present) gains the reused
+    markers so both single-mode and batch compose paths surface the badge.
+    """
+    client = _get_client()
+    if not client or not prior_row:
+        return None
+    try:
+        job_uuid = upsert_job(job_id_legacy, run_config=run_config, versions=versions)
+        if not job_uuid:
+            return None
+
+        payload = _serialize(prior_row.get("result_payload") or {})
+        if not payload:
+            return None
+        markers = {
+            "reused": True,
+            "reused_from_job_id_legacy": prior_row.get("job_id_legacy"),
+            "reused_run_created_at": prior_row.get("run_created_at"),
+        }
+        payload.update(markers)
+        summary_rows = payload.get("summary_rows")
+        if isinstance(summary_rows, list) and summary_rows and isinstance(summary_rows[0], dict):
+            summary_rows[0].update(markers)
+            summary_rows[0]["reused_from_job"] = prior_row.get("job_id_legacy")
+
+        row: dict[str, Any] = {
+            column: prior_row.get(column) for column in _REUSED_COPY_COLUMNS
+        }
+        row.update(
+            {
+                "job_id": job_uuid,
+                "job_id_legacy": job_id_legacy,
+                "mode": row.get("mode") or run_config.get("input_mode", "pitchdeck"),
+                "run_created_at": datetime.now(timezone.utc).isoformat(),
+                "result_payload": payload,
+                **_extract_started_by_fields(run_config),
+            }
+        )
+        client.table("company_runs").upsert(
+            row, on_conflict="job_id_legacy,company_key"
+        ).execute()
+        return payload
+    except Exception as exc:
+        _log_supabase_error(
+            "persist_reused_company_run",
+            "company_runs",
+            exc,
+            job_id_legacy=job_id_legacy,
+        )
+        return None
 
 
 def _extract_company_runs_from_payload(

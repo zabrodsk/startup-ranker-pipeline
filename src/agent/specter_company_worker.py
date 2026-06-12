@@ -247,6 +247,11 @@ async def _process_company(args: argparse.Namespace) -> int:
                 vc_investment_strategy=vc_investment_strategy,
             )
 
+        # Duplicate-run gate (Sprint 3): persist the evidence fingerprint the
+        # parent computed at dispatch time so future runs can match this row.
+        if getattr(args, "evidence_fingerprint", None):
+            result["evidence_fingerprint"] = args.evidence_fingerprint
+
         company_payload = web_app._single_result_payload(job_id, result)
         persisted = db.persist_company_result(
             job_id_legacy=job_id,
@@ -338,6 +343,13 @@ def main() -> int:
             "Specter company id resolved by the web preflight (Sprint 3 W7). "
             "Skips find_company + match verification; stale ids fall back to "
             "full resolution inside fetch_specter_company."
+        ),
+    )
+    parser.add_argument(
+        "--evidence-fingerprint",
+        help=(
+            "Evidence fingerprint computed by the parent at dispatch time "
+            "(Sprint 3 dup-run gate); persisted on the company_runs row."
         ),
     )
     parser.add_argument("--absolute-index", type=int, required=True)
