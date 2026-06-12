@@ -16,7 +16,9 @@ from agent.dataclasses.question_tree import QuestionTree
 from agent.pipeline.stages.constants import QuestionAspect
 
 # Cache file names
-CACHE_NAME = "question_trees.json"
+# v2: decomposition nodes carry route tags; the old cache would serve
+# routeless trees and silently disable route-aware web search planning.
+CACHE_NAME = "question_trees_v2.json"
 ANSWERED_CACHE_NAME = "answered_question_trees.json"
 
 

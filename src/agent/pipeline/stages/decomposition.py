@@ -30,6 +30,13 @@ from agent.pipeline.state.decomposition import (
 )
 from agent.pipeline.utils.phase_llm import ainvoke_with_phase_fallback
 from agent.run_context import get_current_pipeline_policy, use_stage_context
+from agent.web_search.planner import ROUTE_TAGGING_INSTRUCTION, normalize_route_tag
+
+
+def _normalized_route_value(tag: str | None) -> str | None:
+    """Normalize an LLM-emitted route tag to a QuestionRoute value or None."""
+    normalized = normalize_route_tag(tag)
+    return normalized.value if normalized else None
 
 
 def _build_question_tree_from_decomposition_tree(
@@ -45,8 +52,15 @@ def _build_question_tree_from_decomposition_tree(
     The first node in decomposition_tree.nodes is assumed to be the root.
     """
     # 1. Create mapping from question text to QuestionNode
+    # Route tags are normalized here (unknown/missing -> None) so downstream
+    # consumers only ever see valid QuestionRoute values or None.
     node_map: dict[str, QuestionNode] = {
-        node.question: QuestionNode(question=node.question, sub_nodes=[], aspect=aspect)
+        node.question: QuestionNode(
+            question=node.question,
+            sub_nodes=[],
+            aspect=aspect,
+            route=_normalized_route_value(node.route),
+        )
         for node in decomposition_tree.nodes
     }
 
@@ -76,8 +90,11 @@ async def decompose_question_async(state: DecompositionInput) -> DecompositionOu
     """
     decompose_system_prompt = get_prompt("decomposition.system", state.prompt_overrides)
     decompose_user_prompt = get_prompt("decomposition.user", state.prompt_overrides)
+    # Route tagging rides the same decomposition call (zero extra LLM calls).
+    # Appended in code, not in the editable catalog, so stale persisted
+    # library.json overlays cannot silently drop the instruction.
     messages = [
-        SystemMessage(content=decompose_system_prompt),
+        SystemMessage(content=decompose_system_prompt + "\n\n" + ROUTE_TAGGING_INSTRUCTION),
         HumanMessage(
             content=decompose_user_prompt.format(
                 question=state.question, industry=state.industry

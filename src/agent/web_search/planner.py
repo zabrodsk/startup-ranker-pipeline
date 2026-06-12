@@ -28,6 +28,29 @@ from typing import Optional
 # Mirrors _WEB_SEARCH_QUERY_MAX_LEN in agent.evidence_answering.
 WEB_SEARCH_QUERY_MAX_LEN = 180
 
+# Appended (in code, not in the editable prompt catalog) to the decomposition
+# system prompt so the decomposition LLM tags each node with a route at zero
+# extra cost. Also reused by the replay harness to tag persisted benchmark
+# questions with the exact same instruction.
+ROUTE_TAGGING_INSTRUCTION = """\
+Additionally, tag EVERY question node with a "route" field describing where its
+answer evidence should come from. Choose exactly one of:
+- "company_specific": company-level public facts (funding announcements, founders, \
+product, pricing, partnerships, traction announcements, public profiles)
+- "sector_market": market size, growth, adoption, demand, TAM/SAM/SOM, sector attractiveness
+- "regulation": regulation, compliance, standards, policy, public procurement rules
+- "competitors": competitive landscape, alternatives, incumbents, comparable startups
+- "geography": regional market readiness, local adoption, local regulation, country attractiveness
+- "customer_need": buyer pain, budgets, demand, procurement appetite, willingness to pay
+- "technology_validation": technical feasibility, accuracy, benchmarks, scientific \
+validation, deployment proof
+- "internal_fit": fit with the investing VC's own thesis, stage focus, check size, \
+or portfolio strategy (public web adds nothing)
+- "skip_public_web": exact private internal metrics (ARR/MRR, burn rate, runway, \
+cap table, unit economics) that are unlikely to be publicly available
+If unsure, use "company_specific".
+"""
+
 MAX_QUERIES_PER_QUESTION = 3
 
 

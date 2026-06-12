@@ -16,6 +16,9 @@ class DecompositionNode(BaseModel):
 
     question: str
     sub_questions: list[str]
+    # Web-evidence route tag (see agent.web_search.planner.QuestionRoute).
+    # Optional so old cached trees and tag-less LLM outputs still parse.
+    route: str | None = None
 
 
 class DecompositionTree(BaseModel):
