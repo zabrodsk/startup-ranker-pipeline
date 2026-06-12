@@ -9,6 +9,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from typing import Any, Awaitable, Callable, Dict, List
 
 # Timeout per LLM call to avoid indefinite hangs (e.g. API stalls, rate limits)
@@ -52,6 +53,35 @@ def _web_search_heavy_override() -> str:
             )
         return _DEFAULT_WEB_SEARCH_HEAVY_OVERRIDE
     return mode
+
+
+# Feature flag for the route-aware WebEvidencePlanner (Sprint 2):
+#   "off"    = legacy company-anchored behavior (byte-identical, default)
+#   "shadow" = legacy behavior executes unchanged; the planner only builds a
+#              plan and records it in provenance (zero extra provider calls)
+#   "on"     = the planner controls query construction, domain filters,
+#              relevance gating, and skip routes
+# Read at call time (not import time) so tests and rollout can flip it via env.
+RDI_WEB_EVIDENCE_PLANNER_ENV = "RDI_WEB_EVIDENCE_PLANNER"
+_WEB_EVIDENCE_PLANNER_MODES = ("off", "shadow", "on")
+_DEFAULT_WEB_EVIDENCE_PLANNER_MODE = "off"
+_WARNED_INVALID_PLANNER_MODE: set[str] = set()
+
+
+def _web_evidence_planner_mode() -> str:
+    """Return the active WebEvidencePlanner mode."""
+    raw = os.getenv(RDI_WEB_EVIDENCE_PLANNER_ENV, _DEFAULT_WEB_EVIDENCE_PLANNER_MODE)
+    mode = raw.strip().lower()
+    if mode not in _WEB_EVIDENCE_PLANNER_MODES:
+        if mode not in _WARNED_INVALID_PLANNER_MODE:
+            _WARNED_INVALID_PLANNER_MODE.add(mode)
+            logging.getLogger(__name__).warning(
+                "Invalid %s=%r; falling back to %r",
+                RDI_WEB_EVIDENCE_PLANNER_ENV, raw, _DEFAULT_WEB_EVIDENCE_PLANNER_MODE,
+            )
+        return _DEFAULT_WEB_EVIDENCE_PLANNER_MODE
+    return mode
+
 
 # Patterns indicating the LLM could not answer from documents
 _ANSWER_NO_EVIDENCE_PATTERNS = [
@@ -132,6 +162,11 @@ from agent.llm import create_llm
 from agent.prompt_library.manager import get_prompt
 from agent.rate_limit import gather_with_concurrency
 from agent.retrieval import retrieve_chunks, retrieve_chunks_with_similarity
+from agent.web_search.planner import (
+    WebSearchPlan,
+    build_web_search_plan,
+    evaluate_web_result_relevance,
+)
 from agent.run_context import (
     get_current_collector,
     get_current_pipeline_policy,
@@ -386,6 +421,9 @@ def _run_web_search(
     domain_filter: list[str] | None = None,
     trigger_reason: str | None = None,
     gating_mode: str | None = None,
+    route: str | None = None,
+    planner_mode: str | None = None,
+    query_purpose: str | None = None,
 ) -> str:
     """Run a web search using the configured provider.
 
@@ -414,6 +452,14 @@ def _run_web_search(
                 metadata["trigger_reason"] = trigger_reason
             if gating_mode:
                 metadata["gating_mode"] = gating_mode
+            # Planner telemetry: only present in shadow/on modes so legacy
+            # (off) metadata stays byte-identical.
+            if route:
+                metadata["route"] = route
+            if planner_mode:
+                metadata["planner_mode"] = planner_mode
+            if query_purpose:
+                metadata["query_purpose"] = query_purpose
             collector.record_perplexity_search(metadata=metadata)
         return result
     except Exception as exc:
@@ -455,6 +501,7 @@ async def answer_question_from_evidence(
     aspect: str = "",
     prompt_overrides: dict[str, Any] | None = None,
     is_root: bool = False,
+    route: str | None = None,
 ) -> tuple[str, dict]:
     """Answer a single question using retrieved document chunks and optional web search.
 
@@ -480,6 +527,8 @@ async def answer_question_from_evidence(
         web_search_state: Optional dict with count, lock, max for per-company search cap.
         is_root: True when this question is a tree root. Gates the web-heavy
             question override when WEB_SEARCH_HEAVY_OVERRIDE=root_only.
+        route: Optional decomposition-time route tag for the WebEvidencePlanner
+            (RDI_WEB_EVIDENCE_PLANNER=shadow|on). Ignored when the flag is off.
 
     Returns:
         Tuple of (answer string, provenance dict with chunk_ids, chunks_preview,
@@ -502,6 +551,25 @@ async def answer_question_from_evidence(
     web_search_results: str | None = None
     web_search_used = False
     web_search_decision = "not requested"
+    web_search_route: str | None = None
+    web_search_plan_dict: dict[str, Any] | None = None
+
+    def _provenance() -> dict:
+        prov: dict[str, Any] = {
+            "chunk_ids": chunk_ids,
+            "chunks_preview": chunks_preview,
+            "web_search_query": web_search_query,
+            "web_search_results": web_search_results,
+            "web_search_used": web_search_used,
+            "web_search_decision": web_search_decision,
+        }
+        # Planner keys exist only in shadow/on modes so off stays byte-identical.
+        if web_search_plan_dict is not None:
+            prov["web_search_route"] = web_search_route
+            prov["web_search_plan"] = web_search_plan_dict
+        return prov
+
+
     grounded_system_prompt = get_prompt("evidence.grounded.system", prompt_overrides)
     grounded_user_prompt = get_prompt("evidence.grounded.user", prompt_overrides)
     hybrid_system_prompt = get_prompt("evidence.hybrid.system", prompt_overrides)
@@ -515,7 +583,103 @@ async def answer_question_from_evidence(
 
     async def _do_llm_call() -> tuple[str, dict]:
         nonlocal web_search_query, web_search_results, web_search_used, web_search_decision
+        nonlocal web_search_route, web_search_plan_dict
         policy = get_current_pipeline_policy()
+
+        async def _hybrid_answer(web_results_text: str) -> str:
+            with use_phase_llm(policy.answering if policy else None):
+                with use_stage_context("answering"):
+                    llm = create_llm(temperature=0.2)
+                    user_content = hybrid_user_prompt.format(
+                        company_summary=company.get_company_summary(),
+                        question=question,
+                        chunks_text=chunks_text,
+                        web_results=web_results_text,
+                    )
+                    response = await llm.ainvoke([
+                        SystemMessage(content=hybrid_system_prompt),
+                        HumanMessage(content=vc_block + user_content),
+                    ])
+            return _coerce_text(response.content) or "Unknown from provided documents."
+
+        async def _run_planned_searches(
+            active_plan: WebSearchPlan,
+            grounded: str,
+            search_reason: str,
+            heavy_mode: str,
+            planner_mode: str,
+        ) -> str:
+            """Execute the planner's queries (flag=on): sequential provider calls,
+            one cap slot each, sharing a single WEB_SEARCH_TIMEOUT_SEC wall-clock
+            budget so multi-query plans cannot blow the LLM_ANSWER_TIMEOUT_SEC
+            envelope around the whole answer."""
+            nonlocal web_search_query, web_search_results, web_search_used, web_search_decision
+            executed: list[str] = []
+            accepted_blocks: list[str] = []
+            accepted = 0
+            cap_reached = False
+            deadline = time.monotonic() + WEB_SEARCH_TIMEOUT_SEC
+            total = len(active_plan.queries)
+            for position, spec in enumerate(active_plan.queries, start=1):
+                if web_search_state is not None:
+                    async with web_search_state["lock"]:
+                        if web_search_state["count"][0] >= web_search_state["max"]:
+                            cap_reached = True
+                            break
+                        web_search_state["count"][0] += 1
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    raw = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            _run_web_search,
+                            spec.query,
+                            list(spec.domain_filter) if spec.domain_filter is not None else None,
+                            search_reason,
+                            heavy_mode,
+                            active_plan.route.value,
+                            planner_mode,
+                            spec.purpose,
+                        ),
+                        timeout=remaining,
+                    )
+                except asyncio.TimeoutError:
+                    break
+                executed.append(spec.query)
+                useful, _reason = evaluate_web_result_relevance(
+                    policy=active_plan.relevance_policy,
+                    route=active_plan.route,
+                    question=question,
+                    company_name=company.name,
+                    web_results=raw,
+                    industry_hint=company.industry,
+                )
+                if useful:
+                    accepted += 1
+                    accepted_blocks.append(
+                        f'=== Web results {position}/{total} '
+                        f'(purpose: {spec.purpose}; query: "{spec.query}") ===\n{raw}'
+                    )
+
+            web_search_query = " | ".join(executed) if executed else None
+            gate = active_plan.relevance_policy.value
+            if not executed:
+                web_search_decision = (
+                    "skipped: cap reached" if cap_reached else "skipped: no queries executed"
+                )
+                return grounded
+            if not accepted:
+                web_search_decision = f"skipped: {accepted}/{len(executed)} results passed {gate} gate"
+                return grounded
+
+            combined = "\n\n".join(accepted_blocks)
+            web_search_results = combined[:WEB_RESULTS_TRUNCATE]
+            if len(combined) > WEB_RESULTS_TRUNCATE:
+                web_search_results += "\n...[truncated]"
+            web_search_used = True
+            web_search_decision = f"used: {accepted}/{len(executed)} results passed {gate} gate"
+            return await _hybrid_answer(web_search_results)
 
         # Step 1: Always run the grounded LLM call first (documents only)
         if not chunks:
@@ -553,9 +717,39 @@ async def answer_question_from_evidence(
         needs_search = search_reason is not None
         web_search_decision = f"needed: {search_reason}" if search_reason else "not needed"
 
+        # WebEvidencePlanner (Sprint 2): build a route-aware plan in shadow/on
+        # modes. Shadow only records the plan; legacy behavior runs unchanged.
+        planner_mode = _web_evidence_planner_mode()
+        plan: WebSearchPlan | None = None
+        if needs_search and planner_mode in ("shadow", "on"):
+            from datetime import datetime
+
+            plan = build_web_search_plan(
+                question=question,
+                company_name=company.name,
+                company_domain=company.domain,
+                industry_hint=company.industry,
+                geo_hint=getattr(company, "geo", None),
+                current_year=datetime.now().year,
+                route_tag=route,
+                aspect=aspect,
+                is_root=is_root,
+            )
+            web_search_route = plan.route.value
+            web_search_plan_dict = {"mode": planner_mode, **plan.to_telemetry_dict()}
+        planner_controls = planner_mode == "on" and plan is not None
+
+        # Planner skip routes run zero searches and consume no cap slot.
+        if needs_search and planner_controls and plan.is_skip:
+            web_search_decision = f"skipped: planner {plan.route.value} — {plan.skip_reason}"
+            return (grounded_answer, _provenance())
+
         # Per-company cap: check and increment under lock
         do_search = False
-        if needs_search and web_search_state is not None:
+        if needs_search and planner_controls:
+            # Cap slots are acquired per provider call inside _run_planned_searches.
+            do_search = True
+        elif needs_search and web_search_state is not None:
             async with web_search_state["lock"]:
                 if web_search_state["count"][0] < web_search_state["max"]:
                     web_search_state["count"][0] += 1
@@ -564,6 +758,12 @@ async def answer_question_from_evidence(
                     web_search_decision = "skipped: cap reached"
         elif needs_search:
             do_search = True
+
+        if do_search and planner_controls:
+            answer = await _run_planned_searches(
+                plan, grounded_answer, search_reason or "", heavy_mode, planner_mode
+            )
+            return (answer, _provenance())
 
         if do_search:
             web_search_decision = "attempted"
@@ -582,52 +782,15 @@ async def answer_question_from_evidence(
             useful, reason = _web_results_add_value(question, company.name, web_results)
             if not useful:
                 web_search_decision = f"skipped: {reason}"
-                provenance = {
-                    "chunk_ids": chunk_ids,
-                    "chunks_preview": chunks_preview,
-                    "web_search_query": web_search_query,
-                    "web_search_results": web_search_results,
-                    "web_search_used": web_search_used,
-                    "web_search_decision": web_search_decision,
-                }
-                return (grounded_answer, provenance)
+                return (grounded_answer, _provenance())
             web_search_used = True
             web_search_decision = f"used: {reason}"
 
-            with use_phase_llm(policy.answering if policy else None):
-                with use_stage_context("answering"):
-                    llm = create_llm(temperature=0.2)
-                    user_content = hybrid_user_prompt.format(
-                        company_summary=company.get_company_summary(),
-                        question=question,
-                        chunks_text=chunks_text,
-                        web_results=web_results,
-                    )
-                    response = await llm.ainvoke([
-                        SystemMessage(content=hybrid_system_prompt),
-                        HumanMessage(content=vc_block + user_content),
-                    ])
-            answer = _coerce_text(response.content) or "Unknown from provided documents."
-            provenance = {
-                "chunk_ids": chunk_ids,
-                "chunks_preview": chunks_preview,
-                "web_search_query": web_search_query,
-                "web_search_results": web_search_results,
-                "web_search_used": web_search_used,
-                "web_search_decision": web_search_decision,
-            }
-            return (answer, provenance)
+            answer = await _hybrid_answer(web_results)
+            return (answer, _provenance())
 
         # Return grounded answer (no web search)
-        provenance = {
-            "chunk_ids": chunk_ids,
-            "chunks_preview": chunks_preview,
-            "web_search_query": web_search_query,
-            "web_search_results": web_search_results,
-            "web_search_used": web_search_used,
-            "web_search_decision": web_search_decision,
-        }
-        return (grounded_answer, provenance)
+        return (grounded_answer, _provenance())
 
     try:
         if semaphore:
@@ -643,15 +806,7 @@ async def answer_question_from_evidence(
             )
         return (answer, provenance)
     except asyncio.TimeoutError:
-        provenance = {
-            "chunk_ids": chunk_ids,
-            "chunks_preview": chunks_preview,
-            "web_search_query": web_search_query,
-            "web_search_results": web_search_results,
-            "web_search_used": web_search_used,
-            "web_search_decision": web_search_decision,
-        }
-        return ("Answer timed out (API slow or rate limited).", provenance)
+        return ("Answer timed out (API slow or rate limited).", _provenance())
 
 
 def _count_nodes(node: QuestionNode) -> int:
@@ -723,6 +878,9 @@ async def _answer_node_from_evidence(
         aspect=aspect,
         prompt_overrides=prompt_overrides,
         is_root=is_root,
+        # Decomposition-time route tag (PR4 adds QuestionNode.route; getattr
+        # keeps this working against routeless trees and old cached payloads).
+        route=getattr(node, "route", None),
     )
     node.answer = answer
     node.provenance = provenance

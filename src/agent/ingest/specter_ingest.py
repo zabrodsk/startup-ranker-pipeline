@@ -643,6 +643,7 @@ def _build_company_and_store(
         industry=_safe(row.get("Industry")),
         tagline=_safe(row.get("Tagline")),
         about=_safe(row.get("Description")),
+        geo=_safe(row.get("HQ Location")),
         team=team_persons or None,
         **company_metadata,
     )
