@@ -12,6 +12,9 @@ class Company(BaseModel):
     about: Optional[str] = None
     team: Optional[List["Person"]] = None
     domain: Optional[str] = None
+    # Public HQ location from Specter ("HQ Location" column). Safe to feed
+    # web-search planning, unlike about/tagline which can be document-derived.
+    geo: Optional[str] = None
     company_url: Optional[str] = None
     specter_company_id: Optional[str] = None
     specter_profile_url: Optional[str] = None
