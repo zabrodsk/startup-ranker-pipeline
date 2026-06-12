@@ -57,6 +57,9 @@ def _child_args(tmp_path, **overrides) -> Namespace:
 
 def _capture_failure_persistence(monkeypatch):
     calls: dict = {"errors": [], "failures": []}
+    # Policy building inspects configured models; CI has no API keys, so keep
+    # the tests hermetic by skipping it (it runs before the fetch guard).
+    monkeypatch.setattr(scw, "_pipeline_policy_from_run_config", lambda rc: None)
     monkeypatch.setattr(
         scw.db, "insert_analysis_error",
         lambda job_id, **kw: calls["errors"].append({"job_id": job_id, **kw}),
@@ -142,6 +145,7 @@ def test_csv_ingest_failure_synthesizes_identity_from_index(tmp_path, monkeypatc
 
 def test_fetch_failure_event_still_emitted_when_persistence_fails(tmp_path, monkeypatch, capsys):
     """DB unavailability must not suppress the structured event."""
+    monkeypatch.setattr(scw, "_pipeline_policy_from_run_config", lambda rc: None)
     monkeypatch.setattr(
         scw.db, "insert_analysis_error",
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("db down")),
