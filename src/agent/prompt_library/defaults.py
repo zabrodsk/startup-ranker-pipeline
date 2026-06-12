@@ -137,6 +137,23 @@ Excerpts:
 {text}
 """
 
+EVIDENCE_DIGEST_SYSTEM_PROMPT = """\
+You are an investment analyst. You compress a question/answer evidence corpus \
+about a startup into a compact digest for reviewers who challenge and refine \
+investment arguments. Preserve concrete facts, figures, names, and dates. \
+Explicitly keep evidence gaps (e.g. "unknown from provided documents"). \
+Never add information that is not in the corpus."""
+
+EVIDENCE_DIGEST_USER_PROMPT = """\
+Summarize the evidence corpus about {company_name} below into a digest of at \
+most roughly 800 tokens. Group related findings under short headers (such as \
+Team, Market, Product, Traction, Funding, Risks) and keep each finding to one \
+dense sentence.
+
+Evidence corpus:
+{qa_corpus}
+"""
+
 ORDERED_PROMPT_IDS = [
     "questions.general_company",
     "questions.market",
@@ -163,6 +180,8 @@ ORDERED_PROMPT_IDS = [
     "refinement.pro_user",
     "refinement.contra_system",
     "refinement.contra_user",
+    "evidence_digest.system",
+    "evidence_digest.user",
     "preprocess.extract_company.system",
     "preprocess.extract_company.user",
     "ranking.strategy_fit.system",
@@ -434,6 +453,26 @@ PROMPT_DEFINITIONS: dict[str, dict[str, Any]] = {
         "type": "text",
         "required_placeholders": ["{questions_and_answers}", "{argument}", "{argument_feedback}"],
         "default_value": REFINE_CONTRA_ARGUMENTS_USER_PROMPT,
+    },
+    "evidence_digest.system": {
+        "title": "Evidence Digest System Prompt",
+        "stage": "evidence_digest",
+        "category": "Evidence Digest",
+        "source_path": "src/agent/pipeline/stages/evidence_digest.py",
+        "description": "System instructions for compressing the Q&A corpus into a digest (W3, flag-gated).",
+        "type": "text",
+        "required_placeholders": [],
+        "default_value": EVIDENCE_DIGEST_SYSTEM_PROMPT,
+    },
+    "evidence_digest.user": {
+        "title": "Evidence Digest User Prompt",
+        "stage": "evidence_digest",
+        "category": "Evidence Digest",
+        "source_path": "src/agent/pipeline/stages/evidence_digest.py",
+        "description": "Template for the one-per-job corpus digest call (W3, flag-gated).",
+        "type": "text",
+        "required_placeholders": ["{company_name}", "{qa_corpus}"],
+        "default_value": EVIDENCE_DIGEST_USER_PROMPT,
     },
     "preprocess.extract_company.system": {
         "title": "Company Extraction System Prompt",

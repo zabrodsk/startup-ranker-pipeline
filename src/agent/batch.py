@@ -482,6 +482,13 @@ async def evaluate_startup(
             f"max_retries={max_retries}"
         )
         from agent.pipeline.graph import graph
+        from agent.pipeline.stages.evidence_digest import maybe_build_evidence_digest
+
+        # W3 (flag-gated, default off): one corpus-digest call reused by every
+        # critique/refinement call in the graph. None when off or on failure.
+        evidence_digest = await maybe_build_evidence_digest(
+            all_qa_pairs, company, prompt_overrides or {}
+        )
 
         def _on_scoring_heartbeat(elapsed: int, timeout_s: int) -> None:
             retry_count = _scoring_retry_count(stage_name)
@@ -531,6 +538,7 @@ async def evaluate_startup(
                             "prompt_overrides": prompt_overrides or {},
                             "vc_context": _ensure_str(vc_investment_strategy).strip() or "",
                             "slug": slug,
+                            "evidence_digest": evidence_digest,
                         },
                         config={"recursion_limit": 100},
                     ),
@@ -824,6 +832,13 @@ async def evaluate_from_specter(
             f"max_retries={max_retries}"
         )
         from agent.pipeline.graph import graph
+        from agent.pipeline.stages.evidence_digest import maybe_build_evidence_digest
+
+        # W3 (flag-gated, default off): one corpus-digest call reused by every
+        # critique/refinement call in the graph. None when off or on failure.
+        evidence_digest = await maybe_build_evidence_digest(
+            all_qa_pairs, company, prompt_overrides or {}
+        )
 
         def _on_scoring_heartbeat(elapsed: int, timeout_s: int) -> None:
             retry_count = _scoring_retry_count(stage_name)
@@ -873,6 +888,7 @@ async def evaluate_from_specter(
                             "prompt_overrides": prompt_overrides or {},
                             "vc_context": _ensure_str(vc_investment_strategy).strip() or "",
                             "slug": slug,
+                            "evidence_digest": evidence_digest,
                         },
                         config={"recursion_limit": 100},
                     ),
