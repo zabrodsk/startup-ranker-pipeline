@@ -33,12 +33,9 @@ from typing import Any, Iterable, Optional
 
 from agent.evidence_answering import (
     _answer_indicates_no_evidence,
-    _build_web_search_query,
     _run_web_search,
     _web_results_add_value,
-    _web_search_domain_filter,
 )
-from agent.dataclasses.company import Company
 from agent.web_search.planner import (
     ROUTE_TAGGING_INSTRUCTION,
     QuestionRoute,
