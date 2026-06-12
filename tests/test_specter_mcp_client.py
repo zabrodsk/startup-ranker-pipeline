@@ -602,15 +602,18 @@ def test_token_manager_falls_back_to_env_when_supabase_empty(monkeypatch):
 
 
 def test_refresh_persists_rotated_token(monkeypatch):
-    """Successful refresh that returns a new refresh_token should call _persist_refresh_token."""
+    """Successful refresh with a rotated refresh_token persists it via CAS."""
     from agent.ingest import specter_mcp_client as mcp_mod
 
     monkeypatch.setattr(mcp_mod, "_load_persisted_refresh_token", lambda: None)
 
-    persisted: list[str] = []
-    monkeypatch.setattr(
-        mcp_mod, "_persist_refresh_token", lambda v: persisted.append(v)
-    )
+    persisted: list[tuple[str, str | None]] = []
+
+    def _fake_cas(new_value, prev_value):
+        persisted.append((new_value, prev_value))
+        return True
+
+    monkeypatch.setattr(mcp_mod, "_persist_rotated_refresh_token", _fake_cas)
 
     # Stub urllib.request.urlopen to return a token-endpoint payload with a rotated token.
     class _FakeResp:
@@ -644,7 +647,7 @@ def test_refresh_persists_rotated_token(monkeypatch):
     token = tm.get_access_token()
     assert token == "new-access"
     assert tm._creds.refresh_token == "NEW-ROTATED-TOKEN"
-    assert persisted == ["NEW-ROTATED-TOKEN"]
+    assert persisted == [("NEW-ROTATED-TOKEN", "OLD-TOKEN")]
 
 
 def test_refresh_does_not_persist_when_token_unchanged(monkeypatch):
@@ -704,3 +707,132 @@ def test_live_fetch_anthropic():
     assert company.name and "Anthropic" in company.name
     assert company.domain == "anthropic.com"
     assert any("Funding" in c.page_or_slide for c in store.chunks)
+
+
+# ---------------------------------------------------------------------------
+# Refresh-token rotation: compare-and-swap single-owner semantics (Sprint 2 S2)
+# ---------------------------------------------------------------------------
+
+from agent.ingest.specter_mcp_client import (  # noqa: E402
+    _REFRESH_TOKEN_SECRET_KEY,
+    _SpecterCredentials,
+    _TokenManager,
+)
+
+
+class FakeSecretStore:
+    """In-memory stand-in for the mcp_secrets table with CAS semantics."""
+
+    def __init__(self):
+        self.values: dict[str, str] = {}
+
+    def get(self, key):
+        return self.values.get(key)
+
+    def set(self, key, value):
+        self.values[key] = value
+        return True
+
+    def cas(self, key, new_value, expected_current):
+        current = self.values.get(key)
+        if current is None:
+            self.values[key] = new_value
+            return True
+        if expected_current is not None and current == expected_current:
+            self.values[key] = new_value
+            return True
+        return False
+
+
+@pytest.fixture()
+def secret_store(monkeypatch):
+    from web import db as web_db
+
+    store = FakeSecretStore()
+    monkeypatch.setattr(web_db, "get_mcp_secret", store.get)
+    monkeypatch.setattr(web_db, "set_mcp_secret", store.set)
+    monkeypatch.setattr(web_db, "compare_and_swap_mcp_secret", store.cas)
+    return store
+
+
+def _creds(refresh_token="env0"):
+    return _SpecterCredentials(
+        mcp_url="https://mcp.example/mcp",
+        token_endpoint="https://mcp.example/token",
+        client_id="client",
+        client_secret=None,
+        refresh_token=refresh_token,
+    )
+
+
+def _token_payload(access, refresh):
+    return {"access_token": access, "refresh_token": refresh, "expires_in": 600}
+
+
+def test_boot_race_keeps_exactly_one_persisted_chain(secret_store):
+    """Two processes booting from the same env token: the loser must adopt the
+    winner's chain instead of clobbering it (the 2026-06-11 outage class)."""
+    mgr_a = _TokenManager(_creds())
+    mgr_b = _TokenManager(_creds())
+    mgr_a._request_token = lambda rt: _token_payload("at-a", "A1")
+    mgr_b._request_token = lambda rt: _token_payload("at-b", "B1")
+
+    assert mgr_a.get_access_token() == "at-a"
+    assert secret_store.values[_REFRESH_TOKEN_SECRET_KEY] == "A1"
+
+    assert mgr_b.get_access_token() == "at-b"
+    # B lost the CAS: the persisted chain is still A's, and B adopted it.
+    assert secret_store.values[_REFRESH_TOKEN_SECRET_KEY] == "A1"
+    assert mgr_b._creds.refresh_token == "A1"
+    assert mgr_a._creds.refresh_token == "A1"
+
+
+def test_invalid_grant_reloads_persisted_token_and_retries(secret_store):
+    """A stale in-memory token must re-read the persisted chain once before
+    failing — another process may have rotated while we were idle."""
+    mgr = _TokenManager(_creds("env0"))  # boots before any rotation
+    secret_store.values[_REFRESH_TOKEN_SECRET_KEY] = "GOOD"  # rotated elsewhere
+
+    def fake_request(rt):
+        if rt == "env0":
+            raise SpecterMCPError("Specter token refresh failed (400): invalid_grant")
+        assert rt == "GOOD"
+        return _token_payload("at-new", "GOOD2")
+
+    mgr._request_token = fake_request
+    assert mgr.get_access_token() == "at-new"
+    # The retried rotation won the CAS from GOOD -> GOOD2.
+    assert secret_store.values[_REFRESH_TOKEN_SECRET_KEY] == "GOOD2"
+    assert mgr._creds.refresh_token == "GOOD2"
+
+
+def test_invalid_grant_without_alternative_token_raises(secret_store):
+    mgr = _TokenManager(_creds("env0"))
+
+    def fake_request(rt):
+        raise SpecterMCPError("Specter token refresh failed (400): invalid_grant")
+
+    mgr._request_token = fake_request
+    with pytest.raises(SpecterMCPError):
+        mgr.get_access_token()
+
+
+def test_env_bootstrap_without_persisted_row_seeds_chain(secret_store):
+    """First-ever rotation (no row in mcp_secrets) must seed the chain."""
+    mgr = _TokenManager(_creds("env0"))
+    mgr._request_token = lambda rt: _token_payload("at", "FIRST")
+    mgr.get_access_token()
+    assert secret_store.values[_REFRESH_TOKEN_SECRET_KEY] == "FIRST"
+
+
+def test_boot_prefers_persisted_token_over_env(secret_store):
+    secret_store.values[_REFRESH_TOKEN_SECRET_KEY] = "LIVE"
+    mgr = _TokenManager(_creds("env0"))
+    assert mgr._creds.refresh_token == "LIVE"
+
+
+def test_compare_and_swap_returns_false_without_db_client(monkeypatch):
+    from web import db as web_db
+
+    monkeypatch.setattr(web_db, "_get_client", lambda: None)
+    assert web_db.compare_and_swap_mcp_secret("k", "v", "prev") is False

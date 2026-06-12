@@ -123,6 +123,26 @@ def _persist_refresh_token(value: str) -> None:
         pass
 
 
+def _persist_rotated_refresh_token(new_value: str, prev_value: str | None) -> bool:
+    """Compare-and-swap the rotated refresh token chain into Supabase.
+
+    Returns True when this process won the rotation. False means another
+    process (web vs worker boot race) rotated first — the caller must adopt
+    the persisted winner instead of clobbering it. Failures are swallowed
+    (best-effort persistence, same contract as _persist_refresh_token).
+    """
+    try:
+        from web import db as _db
+    except Exception:
+        return True  # no DB layer (local dev/tests): nothing to race against
+    try:
+        return bool(
+            _db.compare_and_swap_mcp_secret(_REFRESH_TOKEN_SECRET_KEY, new_value, prev_value)
+        )
+    except Exception:
+        return True
+
+
 class _TokenManager:
     """Caches a Specter access token in memory, refreshing on demand.
 
@@ -154,11 +174,12 @@ class _TokenManager:
             self._refresh_locked()
             return self._access_token  # type: ignore[return-value]
 
-    def _refresh_locked(self) -> None:
+    def _request_token(self, refresh_token: str) -> dict:
+        """Exchange a refresh token at the token endpoint. Raises SpecterMCPError."""
         body = urllib.parse.urlencode(
             {
                 "grant_type": "refresh_token",
-                "refresh_token": self._creds.refresh_token,
+                "refresh_token": refresh_token,
                 "client_id": self._creds.client_id,
             }
         ).encode("utf-8")
@@ -176,12 +197,25 @@ class _TokenManager:
         )
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
+                return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise SpecterMCPError(
                 f"Specter token refresh failed ({exc.code}): {detail}"
             ) from exc
+
+    def _refresh_locked(self) -> None:
+        try:
+            payload = self._request_token(self._creds.refresh_token)
+        except SpecterMCPError:
+            # Our token may be stale because another process (web vs worker)
+            # rotated the chain. Re-read the persisted token once and retry
+            # with it before surfacing the failure (invalid_grant recovery).
+            persisted = _load_persisted_refresh_token()
+            if not persisted or persisted == self._creds.refresh_token:
+                raise
+            self._creds.refresh_token = persisted
+            payload = self._request_token(persisted)
 
         access_token = payload.get("access_token")
         if not access_token:
@@ -193,11 +227,18 @@ class _TokenManager:
         self._expires_at = time.time() + expires_in
         new_refresh = payload.get("refresh_token")
         if new_refresh and new_refresh != self._creds.refresh_token:
-            # Specter rotates refresh tokens. Keep the latest in-memory AND
-            # persist to Supabase so a container restart can resume the chain
-            # instead of falling back to a stale env-supplied bootstrap token.
-            self._creds.refresh_token = new_refresh
-            _persist_refresh_token(new_refresh)
+            # Specter rotates refresh tokens: persist via compare-and-swap so
+            # a concurrent rotation (web + worker boot race) cannot be
+            # clobbered by a last-write-wins upsert — that race orphaned the
+            # whole chain in the 2026-06-11 outage.
+            prev_refresh = self._creds.refresh_token
+            if _persist_rotated_refresh_token(new_refresh, prev_refresh):
+                self._creds.refresh_token = new_refresh
+            else:
+                # Lost the race: adopt the winner's persisted chain for the
+                # next refresh. Our access token stays valid until expiry.
+                winner = _load_persisted_refresh_token()
+                self._creds.refresh_token = winner or new_refresh
 
 
 # ---------------------------------------------------------------------------

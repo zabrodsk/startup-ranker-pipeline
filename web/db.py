@@ -3960,6 +3960,53 @@ def set_mcp_secret(key: str, value: str) -> bool:
         return False
 
 
+def compare_and_swap_mcp_secret(key: str, new_value: str, expected_current: str | None) -> bool:
+    """Atomically rotate an MCP credential.
+
+    Writes ``new_value`` only when the stored value still equals
+    ``expected_current`` (conditional UPDATE), or seeds the row when none
+    exists yet. Returns True when this writer won the swap; False when
+    another process rotated first (the caller must NOT clobber the winner's
+    chain — Specter refresh tokens are single-use and last-write-wins here is
+    what orphaned the chain in the 2026-06-11 outage).
+    """
+    client = _get_client()
+    if not client:
+        return False
+    normalized_key = (key or "").strip()
+    if not normalized_key or not new_value:
+        return False
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        if expected_current:
+            resp = (
+                client.table("mcp_secrets")
+                .update({"value_text": str(new_value), "updated_at": now})
+                .eq("secret_key", normalized_key)
+                .eq("value_text", str(expected_current))
+                .execute()
+            )
+            if resp.data:
+                return True
+            # Nothing matched: either the value moved (lost the race) or the
+            # row does not exist yet (first persist after env bootstrap).
+            if get_mcp_secret(normalized_key) is not None:
+                return False
+        # Seed the row when absent. A concurrent seeder makes this raise on
+        # the unique key -> caught below -> False (the other writer won).
+        client.table("mcp_secrets").insert(
+            {
+                "secret_key": normalized_key,
+                "value_text": str(new_value),
+                "updated_at": now,
+            }
+        ).execute()
+        return True
+    except Exception as exc:
+        _log_supabase_error("compare_and_swap_mcp_secret", "mcp_secrets", exc)
+        return False
+
+
 def _extract_company_runs_from_payload(
     job_id_legacy: str,
     payload: dict[str, Any],
