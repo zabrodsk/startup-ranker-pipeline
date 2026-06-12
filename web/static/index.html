@@ -4032,6 +4032,11 @@
       border: 1px solid var(--color-warn-border);
     }
     .bucket-badge.bucket-low-priority { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
+    .coverage-badge {
+      padding: 4px 10px; border-radius: var(--radius-md);
+      font-size: 11px; font-weight: 600;
+      background: var(--bg-dark); color: var(--muted); border: 1px solid var(--border-subtle);
+    }
     .ranking-evidence-section { padding: 12px; background: var(--bg-dark); border-radius: var(--radius-md); font-size: 13px; }
     .evidence-dim { margin-bottom: 8px; }
     .executive-summary-container { margin: 12px 0 16px; font-size: 13px; }
@@ -11334,6 +11339,7 @@ function renderSingleResult(r) {
         <span class="rank-badge first">#${rank || 1}</span>
         ${buildRankCompanyTitleHtml(r.company_name, r, (r.summary_rows || [])[0] || {})}
         ${bucketLabel ? `<span class="bucket-badge bucket-${bucket.replace(/_/g,'-')}">${bucketLabel}</span>` : ''}
+        ${buildEvidenceCoverageBadge((r.summary_rows || [])[0])}
         <div class="rank-top-actions">${auditButtonHtml}</div>
       </div>
       ${dimBars ? `<div class="dim-bars-container">${dimBars}</div>` : ''}
@@ -11353,6 +11359,20 @@ function renderSingleResult(r) {
       ${personIntelHtml}
     </div>
   `;
+}
+
+function buildEvidenceCoverageBadge(summaryRow) {
+  // Display-only metric added by build_summary_rows (Sprint 2 S1).
+  // Older runs lack the field -> render nothing.
+  const coverage = summaryRow?.evidence_coverage;
+  if (typeof coverage !== 'number' || !isFinite(coverage)) return '';
+  const pct = Math.round(coverage * 100);
+  const answered = summaryRow?.answered_questions;
+  const total = summaryRow?.total_questions;
+  const title = (typeof answered === 'number' && typeof total === 'number')
+    ? `${answered}/${total} evidence questions answered (rest are "insufficient information")`
+    : 'Share of evidence questions answered';
+  return `<span class="coverage-badge" title="${title}">Evidence coverage: ${pct}%</span>`;
 }
 
 function renderBatchResults(r) {
@@ -11439,6 +11459,7 @@ function renderBatchResults(r) {
           <span class="rank-badge ${badge}">#${rankNum}</span>
           ${buildRankCompanyTitleHtml(row.company_name || row.startup_slug, row)}
           ${bucketLabel ? `<span class="bucket-badge bucket-${bucket.replace(/_/g,'-')}">${bucketLabel}</span>` : ''}
+          ${buildEvidenceCoverageBadge(row)}
           <div class="rank-top-actions">${auditButtonHtml}</div>
         </div>
         ${dimBars ? `<div class="dim-bars-container">${dimBars}</div>` : ''}
