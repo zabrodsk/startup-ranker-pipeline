@@ -24,7 +24,7 @@ from agent.dataclasses.argument import Argument
 from agent.dataclasses.company import Company
 from agent.dataclasses.config import Config
 from agent.dataclasses.ranking import CompanyRankingResult
-from agent.evidence_answering import answer_all_trees_from_evidence
+from agent.evidence_answering import _answer_indicates_no_evidence, answer_all_trees_from_evidence
 from agent.ingest import EvidenceStore, ingest_startup_folder
 from agent.llm import create_llm, get_llm_runtime_settings
 from agent.prompt_library.manager import get_prompt
@@ -1096,6 +1096,19 @@ def build_summary_rows(results: List[Dict[str, Any]]) -> List[Dict]:
         avg_contra = (sum(a.score for a in contra_args) / len(contra_args)) if contra_args else 0
         total_score = avg_pro - avg_contra
 
+        # Display-only evidence-coverage metric: share of QA answers that are
+        # NOT thin ("Insufficient information available" style), using the
+        # same heuristic the pipeline uses to trigger web searches. Pure
+        # metadata — MUST NOT feed any score computation.
+        qa_pairs = [qa for qa in (fs.get("all_qa_pairs") or []) if isinstance(qa, dict)]
+        answered_questions = sum(
+            1 for qa in qa_pairs if not _answer_indicates_no_evidence(qa.get("answer"))
+        )
+        total_questions = len(qa_pairs)
+        evidence_coverage = (
+            round(answered_questions / total_questions, 4) if total_questions else None
+        )
+
         row: Dict[str, Any] = {
             "startup_slug": slug,
             "company_name": company.name,
@@ -1103,6 +1116,9 @@ def build_summary_rows(results: List[Dict[str, Any]]) -> List[Dict]:
             "total_score": round(total_score, 2),
             "avg_pro": round(avg_pro, 2),
             "avg_contra": round(avg_contra, 2),
+            "evidence_coverage": evidence_coverage,
+            "answered_questions": answered_questions,
+            "total_questions": total_questions,
             **_company_link_metadata(company),
         }
 
