@@ -203,6 +203,7 @@ async def _process_company(args: argparse.Namespace) -> int:
                 args.specter_url,
                 expected_name=args.expected_name or None,
                 fetch_full_team=bool(args.fetch_full_team),
+                known_company_id=args.specter_company_id or None,
             )
         else:
             if not args.specter_companies or args.company_index is None:
@@ -330,6 +331,14 @@ def main() -> int:
     parser.add_argument(
         "--expected-name",
         help="Expected company name; used to verify Specter MCP disambiguation",
+    )
+    parser.add_argument(
+        "--specter-company-id",
+        help=(
+            "Specter company id resolved by the web preflight (Sprint 3 W7). "
+            "Skips find_company + match verification; stale ids fall back to "
+            "full resolution inside fetch_specter_company."
+        ),
     )
     parser.add_argument("--absolute-index", type=int, required=True)
     parser.add_argument("--config-path", required=True)

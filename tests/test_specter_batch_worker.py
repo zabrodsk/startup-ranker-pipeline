@@ -42,6 +42,7 @@ def _child_args(tmp_path, **overrides) -> Namespace:
         job_id="job-1",
         specter_url="acme.com",
         expected_name="Acme",
+        specter_company_id=None,
         specter_companies=None,
         specter_people=None,
         company_index=None,

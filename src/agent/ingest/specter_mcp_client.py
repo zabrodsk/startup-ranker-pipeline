@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re
 import threading
@@ -37,6 +38,8 @@ from agent.dataclasses.company import Company
 from agent.dataclasses.person import Education, Experience, Person
 from agent.ingest.specter_ingest import _company_slug
 from agent.ingest.store import Chunk, EvidenceStore
+
+logger = logging.getLogger(__name__)
 
 SPECTER_PROFILE_BASE_URL = "https://app.tryspecter.com/signals/company/feed/"
 
@@ -922,30 +925,12 @@ def get_default_client() -> SpecterMCPClient:
         return _default_client
 
 
-def fetch_specter_company(
+def _resolve_base(
+    cli: SpecterMCPClient,
     identifier: str,
-    *,
-    expected_name: str | None = None,
-    fetch_full_team: bool = True,
-    client: SpecterMCPClient | None = None,
-) -> tuple[Company, EvidenceStore]:
-    """Fetch a company by URL/domain/name and return (Company, EvidenceStore).
-
-    Args:
-        identifier: domain (e.g. ``"anthropic.com"``), website URL, LinkedIn URL,
-            external company ID, or company name.
-        expected_name: optional company name supplied by the user; used to
-            sanity-check Specter's disambiguation. Skipped if not provided.
-        fetch_full_team: when True, fan out to ``get_person_profile`` for each
-            founder. Costs N+3 MCP calls per company.
-        client: inject a pre-built client (used in tests).
-
-    Raises:
-        SpecterDisambiguationError: Specter's resolver returned a different
-            company than requested.
-        SpecterMCPError: any other MCP transport / auth / tool failure.
-    """
-    cli = client or get_default_client()
+    expected_name: str | None,
+) -> tuple[dict[str, Any], str]:
+    """Resolve identifier to Specter's (base record, company_id) via find_company."""
     try:
         base = cli.find_company(identifier)
         _verify_match(identifier, expected_name, base)
@@ -982,10 +967,63 @@ def fetch_specter_company(
     company_id = base.get("external_company_id")
     if not company_id:
         raise SpecterMCPError(f"Specter find_company returned no ID: {base!r}")
+    return base, str(company_id)
 
-    profile = cli.get_company_profile(company_id)
-    intelligence = cli.get_company_intelligence(company_id)
-    financials = cli.get_company_financials(company_id)
+
+def fetch_specter_company(
+    identifier: str,
+    *,
+    expected_name: str | None = None,
+    fetch_full_team: bool = True,
+    client: SpecterMCPClient | None = None,
+    known_company_id: str | None = None,
+) -> tuple[Company, EvidenceStore]:
+    """Fetch a company by URL/domain/name and return (Company, EvidenceStore).
+
+    Args:
+        identifier: domain (e.g. ``"anthropic.com"``), website URL, LinkedIn URL,
+            external company ID, or company name.
+        expected_name: optional company name supplied by the user; used to
+            sanity-check Specter's disambiguation. Skipped if not provided.
+        fetch_full_team: when True, fan out to ``get_person_profile`` for each
+            founder. Costs N+3 MCP calls per company.
+        client: inject a pre-built client (used in tests).
+        known_company_id: Specter company id resolved by an earlier preflight
+            for this same identifier (Sprint 3 W7). Skips find_company and
+            _verify_match — the preflight verified the match minutes earlier.
+            A stale id (any SpecterMCPError on the profile fetches) falls back
+            to the full resolution path.
+
+    Raises:
+        SpecterDisambiguationError: Specter's resolver returned a different
+            company than requested.
+        SpecterMCPError: any other MCP transport / auth / tool failure.
+    """
+    cli = client or get_default_client()
+    base: dict[str, Any] = {}
+    if known_company_id:
+        company_id = str(known_company_id)
+    else:
+        base, company_id = _resolve_base(cli, identifier, expected_name)
+
+    try:
+        profile = cli.get_company_profile(company_id)
+        intelligence = cli.get_company_intelligence(company_id)
+        financials = cli.get_company_financials(company_id)
+    except SpecterMCPError:
+        if not known_company_id:
+            raise
+        # Stale preflight id — re-resolve from scratch (W7 fallback).
+        logger.warning(
+            "Specter profile fetch with preflight id %r failed for %r; "
+            "falling back to full resolution",
+            known_company_id,
+            identifier,
+        )
+        base, company_id = _resolve_base(cli, identifier, expected_name)
+        profile = cli.get_company_profile(company_id)
+        intelligence = cli.get_company_intelligence(company_id)
+        financials = cli.get_company_financials(company_id)
 
     company_name = profile.get("name") or base.get("name") or identifier
     domain = profile.get("domain") or base.get("domain")
