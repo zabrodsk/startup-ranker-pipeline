@@ -638,7 +638,15 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
                 worker_id=worker_id,
             )
 
+        stopped = False
         for absolute_index, task in enumerate(tasks, start=1):
+            # Poll the persisted stop signal once per company (companies are the
+            # atomic unit; an in-flight company finishes and persists before the
+            # next poll, so the N/N math stays exact). Fail-open in get_job_control.
+            if db.get_job_control(job_id).get("stop_requested"):
+                stopped = True
+                _log(f"{job_id}: stop requested — finalizing {completed_companies}/{total_companies} ranked")
+                break
             company_key = _normalize_company_key(task.get("name"), task.get("slug"))
             if company_key in completed_keys:
                 _log(f"{job_id}: skipping already persisted company {absolute_index}/{total_companies}")
@@ -676,13 +684,22 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
         )
         loaded = db.load_job_results(job_id, preferred_mode="specter")
         if not loaded or not isinstance(loaded.get("results"), dict):
-            raise RuntimeError("Could not reconstruct final Specter results from persisted state.")
-        results = loaded["results"]
-        final_status, final_message = _final_job_outcome(
-            completed_companies=completed_companies,
-            failed_companies=failed_companies,
-            total_companies=total_companies,
-        )
+            if stopped:
+                # Stopped before any company persisted — still mark the job stopped.
+                results = {}
+            else:
+                raise RuntimeError("Could not reconstruct final Specter results from persisted state.")
+        else:
+            results = loaded["results"]
+        if stopped:
+            final_status = "stopped"
+            final_message = f"Stopped by user — {completed_companies}/{total_companies} companies ranked"
+        else:
+            final_status, final_message = _final_job_outcome(
+                completed_companies=completed_companies,
+                failed_companies=failed_companies,
+                total_companies=total_companies,
+            )
         results["job_status"] = final_status
         results["job_message"] = final_message
         if "run_costs" not in results:
@@ -716,8 +733,12 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
         )
         db.insert_analysis_event(
             job_id,
-            message="Finalizing complete.",
-            event_type="worker_done" if final_status == "done" else "worker_error",
+            message="Stopped — partial results finalized." if stopped else "Finalizing complete.",
+            event_type=(
+                "worker_done" if final_status == "done"
+                else "worker_stopped" if final_status == "stopped"
+                else "worker_error"
+            ),
             stage="finalize",
         )
         _log(f"{job_id}: finalization complete")
