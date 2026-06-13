@@ -161,7 +161,10 @@ app.add_middleware(
 )
 
 APP_PASSWORD = os.getenv("APP_PASSWORD", "9876")
-SESSION_SECRET = os.getenv("SESSION_SECRET", "change-me-session-secret")
+# Fail closed: no hardcoded default. An unset/empty SESSION_SECRET disables
+# stateless signed sessions entirely (a known default would let anyone forge a
+# token). Set it in the deployment env to enable password-based sessions.
+SESSION_SECRET = os.getenv("SESSION_SECRET", "")
 SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", str(60 * 60 * 24 * 14)))
 SESSION_STORE_PATH = Path(
     os.getenv(
@@ -2005,7 +2008,9 @@ def _check_session(session_id: str | None) -> bool:
     if not session_id:
         return False
     # Preferred path: stateless signed token (works across restarts/instances).
-    if "." in session_id:
+    # Requires a configured secret — an empty secret fails closed (no token is
+    # trusted) rather than validating against a forgeable default.
+    if SESSION_SECRET and "." in session_id:
         raw_id, provided_sig = session_id.rsplit(".", 1)
         expected_sig = base64.urlsafe_b64encode(
             hmac.new(
@@ -2445,6 +2450,10 @@ async def portal_login(req: PortalLoginRequest) -> dict[str, Any]:
 async def login(req: LoginRequest):
     if req.password != APP_PASSWORD:
         raise HTTPException(status_code=401, detail="Wrong password")
+    if not SESSION_SECRET:
+        # Fail closed: refuse to mint a session signed with an empty/forgeable
+        # secret. Operator must set SESSION_SECRET in the deployment env.
+        raise HTTPException(status_code=503, detail="Session signing is not configured")
     raw_id = secrets.token_urlsafe(32)
     sig = base64.urlsafe_b64encode(
         hmac.new(

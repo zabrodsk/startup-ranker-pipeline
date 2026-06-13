@@ -1,8 +1,17 @@
 import time
 
+import pytest
 from fastapi.testclient import TestClient
 
+import web.app as _web_app
 from web.app import app
+
+
+@pytest.fixture(autouse=True)
+def _session_secret_configured(monkeypatch):
+    """Pin a session secret so /api/login mints a valid session (the app fails
+    closed when SESSION_SECRET is unset)."""
+    monkeypatch.setattr(_web_app, "SESSION_SECRET", "test-session-secret")
 
 
 def test_person_profile_job_status_model_instantiates() -> None:
