@@ -47,6 +47,9 @@ class InputState(BaseModel):
     vc_context: str = ""
     slug: str = ""
 
+    # Optional corpus digest for critique/refinement (Sprint 3 W3).
+    evidence_digest: Optional[str] = None
+
     # VC matching optimisation: pre-computed from a prior full analysis.
     # When both are provided, the graph skips Stages 1-7 and enters at Stage 8 only.
     final_arguments: list[Any] = Field(default_factory=list)
@@ -97,6 +100,10 @@ class IterativeInvestmentStoryState(BaseModel):
     prompt_overrides: Dict[str, Any] = Field(default_factory=dict)
     vc_context: str = ""
     slug: str = ""
+
+    # Optional corpus digest for critique/refinement (Sprint 3 W3).
+    # None unless PIPELINE_EVIDENCE_DIGEST=on produced one in batch ingestion.
+    evidence_digest: Optional[str] = None
 
     # Legacy field for backward compatibility - will be deprecated
     question_tree: QuestionTree | None = None
