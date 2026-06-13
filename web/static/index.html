@@ -4037,6 +4037,7 @@
       font-size: 11px; font-weight: 600;
       background: var(--bg-dark); color: var(--muted); border: 1px solid var(--border-subtle);
     }
+    .reused-badge { color: var(--amber, #d97706); border-color: var(--amber, #d97706); }
     .ranking-evidence-section { padding: 12px; background: var(--bg-dark); border-radius: var(--radius-md); font-size: 13px; }
     .evidence-dim { margin-bottom: 8px; }
     .executive-summary-container { margin: 12px 0 16px; font-size: 13px; }
@@ -11375,6 +11376,16 @@ function buildEvidenceCoverageBadge(summaryRow) {
   return `<span class="coverage-badge" title="${title}">Evidence coverage: ${pct}%</span>`;
 }
 
+function buildReusedRunBadge(summaryRow) {
+  // Duplicate-run gate (Sprint 3): rows copied from a recent identical run
+  // carry reused markers. Older/fresh rows lack the field -> render nothing.
+  if (!summaryRow?.reused) return '';
+  const reusedAt = summaryRow.reused_run_created_at || '';
+  const dateLabel = reusedAt ? String(reusedAt).slice(0, 10) : 'a recent run';
+  const title = 'Identical inputs were analyzed recently, so that result was reused. Use force re-analyze to override.';
+  return `<span class="coverage-badge reused-badge" title="${escapeHtml(title)}">Reused from run ${escapeHtml(dateLabel)}</span>`;
+}
+
 function renderBatchResults(r) {
   renderedTeamMembersBySlug = {};
   const sortWrap = $('#rankings-sort-wrap');
@@ -11460,6 +11471,7 @@ function renderBatchResults(r) {
           ${buildRankCompanyTitleHtml(row.company_name || row.startup_slug, row)}
           ${bucketLabel ? `<span class="bucket-badge bucket-${bucket.replace(/_/g,'-')}">${bucketLabel}</span>` : ''}
           ${buildEvidenceCoverageBadge(row)}
+          ${buildReusedRunBadge(row)}
           <div class="rank-top-actions">${auditButtonHtml}</div>
         </div>
         ${dimBars ? `<div class="dim-bars-container">${dimBars}</div>` : ''}

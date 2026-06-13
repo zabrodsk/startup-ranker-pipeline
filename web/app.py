@@ -915,6 +915,8 @@ class AnalyzeRequest(BaseModel):
     use_web_search: bool = False
     use_specter_mcp: bool = True
     fetch_full_team: bool = False
+    # Duplicate-run gate (Sprint 3): bypass reuse of recent identical runs.
+    force_reanalyze: bool = False
     instructions: str | None = None
     input_mode: Literal["pitchdeck", "specter", "original"] = "pitchdeck"
     run_name: str | None = None
@@ -6381,6 +6383,164 @@ def _quality_name_from_url_or_filename(
     return None, normalized.reason or "Company identity is not usable.", source
 
 
+# Duplicate-run gate (Sprint 3):
+#   "off" = every analysis runs the full pipeline, legacy behavior (default)
+#   "on"  = companies whose evidence fingerprint matches a recent non-failed
+#           run reuse the prior result (force_reanalyze=true bypasses)
+# Read at call time (not import time) so tests and rollout can flip it via env.
+RDI_DUP_RUN_GATE_ENV = "RDI_DUP_RUN_GATE"
+RDI_DUP_RUN_GATE_WINDOW_DAYS_ENV = "RDI_DUP_RUN_GATE_WINDOW_DAYS"
+_DUP_RUN_GATE_MODES = ("off", "on")
+_DEFAULT_DUP_RUN_GATE_WINDOW_DAYS = 30
+_WARNED_INVALID_DUP_GATE: set[str] = set()
+
+
+def _dup_gate_warn_once(env_name: str, raw: str, fallback: object) -> None:
+    marker = f"{env_name}={raw}"
+    if marker not in _WARNED_INVALID_DUP_GATE:
+        _WARNED_INVALID_DUP_GATE.add(marker)
+        logging.getLogger(__name__).warning(
+            "Invalid %s=%r; falling back to %r", env_name, raw, fallback
+        )
+
+
+def _dup_run_gate_enabled() -> bool:
+    raw = os.getenv(RDI_DUP_RUN_GATE_ENV, "off")
+    mode = raw.strip().lower()
+    if mode not in _DUP_RUN_GATE_MODES:
+        _dup_gate_warn_once(RDI_DUP_RUN_GATE_ENV, raw, "off")
+        return False
+    return mode == "on"
+
+
+def _dup_gate_window_days() -> int:
+    raw = os.getenv(
+        RDI_DUP_RUN_GATE_WINDOW_DAYS_ENV, str(_DEFAULT_DUP_RUN_GATE_WINDOW_DAYS)
+    )
+    try:
+        days = int(raw.strip())
+    except (ValueError, AttributeError):
+        _dup_gate_warn_once(
+            RDI_DUP_RUN_GATE_WINDOW_DAYS_ENV, raw, _DEFAULT_DUP_RUN_GATE_WINDOW_DAYS
+        )
+        return _DEFAULT_DUP_RUN_GATE_WINDOW_DAYS
+    if days <= 0:
+        _dup_gate_warn_once(
+            RDI_DUP_RUN_GATE_WINDOW_DAYS_ENV, raw, _DEFAULT_DUP_RUN_GATE_WINDOW_DAYS
+        )
+        return _DEFAULT_DUP_RUN_GATE_WINDOW_DAYS
+    return days
+
+
+def _dup_gate_active_for_job(job_id: str) -> bool:
+    """Gate runs only when on, not force-bypassed, and the DB is configured."""
+    if not _dup_run_gate_enabled():
+        return False
+    if _results_cache.get(job_id, {}).get("force_reanalyze"):
+        return False
+    return bool(db and db.is_configured())
+
+
+def _maybe_reuse_company_run(
+    job_id: str,
+    *,
+    evidence_fingerprint: str | None,
+    run_config: dict[str, Any],
+    company_lookup_key: str | None = None,
+    label: str = "company",
+) -> dict[str, Any] | None:
+    """Reuse a recent identical run: persist the copied row, return its payload.
+
+    Returns None when the gate is inactive, no prior run matches, or the
+    reuse persist fails (caller then runs the normal analysis — fail-open).
+    """
+    if not evidence_fingerprint or not _dup_gate_active_for_job(job_id):
+        return None
+    prior = db.find_recent_company_run(
+        evidence_fingerprint=evidence_fingerprint,
+        company_lookup_key=company_lookup_key,
+        window_days=_dup_gate_window_days(),
+    )
+    if not prior:
+        return None
+    payload = db.persist_reused_company_run(job_id, prior, run_config=run_config)
+    if payload is None:
+        return None
+    _append_progress(
+        job_id,
+        f"{label}: identical inputs analyzed on {prior.get('run_created_at')} — "
+        "reusing that result (use force re-analyze to override).",
+    )
+    return payload
+
+
+def _identity_fingerprint_for_url_item(
+    item: Any, input_mode: str = "specter"
+) -> tuple[str | None, str | None]:
+    """(fingerprint, company_lookup_key) for a URL intake item.
+
+    Requires the W7 preflight enrichment (resolved_name) — without it the
+    lookup key cannot be derived reliably and the gate safely misses
+    (returns (None, None)).
+    """
+    from agent.dup_fingerprint import identity_fingerprint
+
+    resolved_name = item.get("resolved_name") if isinstance(item, dict) else None
+    if not resolved_name or not db:
+        return None, None
+    lookup_key = db.company_lookup_key_for_name(str(resolved_name))
+    if not lookup_key:
+        return None, None
+    return identity_fingerprint(lookup_key, input_mode), lookup_key
+
+
+def _merge_reused_payloads_into_results(
+    job_id: str, reused_payloads: list[dict[str, Any]]
+) -> None:
+    """Splice reused company payloads into the in-memory batch results.
+
+    The reused rows are already in company_runs (the DB compose path surfaces
+    them with ranks on reload); this keeps the live in-memory payload
+    consistent for the current session. Reused rows are appended unranked —
+    the badge marks them as copies of a prior run.
+    """
+    if not reused_payloads:
+        return
+    cache = _results_cache.setdefault(job_id, {})
+    results = cache.get("results")
+    if not isinstance(results, dict):
+        results = {
+            "mode": "batch",
+            "num_companies": 0,
+            "num_skipped": 0,
+            "summary_rows": [],
+            "argument_rows": [],
+            "qa_provenance_rows": [],
+            "failed_rows": [],
+        }
+        cache["results"] = results
+    summary_rows = results.setdefault("summary_rows", [])
+    for payload in reused_payloads:
+        row = dict(((payload.get("summary_rows") or [{}]) or [{}])[0] or {})
+        if not row:
+            row = {
+                "company_name": payload.get("company_name"),
+                "startup_slug": payload.get("startup_slug"),
+                "decision": payload.get("decision"),
+                "total_score": payload.get("total_score"),
+            }
+        row.setdefault("reused", True)
+        row.setdefault("reused_run_created_at", payload.get("reused_run_created_at"))
+        summary_rows.append(row)
+        results.setdefault("argument_rows", []).extend(payload.get("argument_rows") or [])
+        results.setdefault("qa_provenance_rows", []).extend(
+            payload.get("qa_provenance_rows") or []
+        )
+    results["num_companies"] = len(summary_rows)
+    if job_id in _jobs:
+        _jobs[job_id].results = results
+
+
 # Specter identity reuse (Sprint 3 W7):
 #   "off" = preflight resolves and discards, legacy behavior (default)
 #   "on"  = preflight writes the resolved Specter id/name/domain back onto the
@@ -6731,6 +6891,10 @@ async def _start_analysis_job(
     _cancel_scheduled_restart()
     if started_by is None:
         started_by = await _require_supabase_identity(authorization) if require_identity else {}
+
+    # Duplicate-run gate (Sprint 3): remember the bypass request so gate
+    # checks deep in the analysis paths can honor it.
+    _results_cache.setdefault(job_id, {})["force_reanalyze"] = bool(req.force_reanalyze)
 
     if not skip_quality_preflight:
         preflight_response = await _run_analysis_quality_preflight(job_id, req)
@@ -7391,7 +7555,40 @@ def _queue_worker_backed_specter_job(job_id: str) -> tuple[bool, str | None]:
         remaining = max(0, max_startups - len(csv_descriptors))
         deduped_urls = deduped_urls[:remaining]
         csv_descriptors = csv_descriptors[:max_startups]
-    total_companies = len(csv_descriptors) + len(deduped_urls)
+
+    # Duplicate-run gate (Sprint 3): reuse recent identical runs before
+    # queueing. URL hits leave the task list (their reused rows already count
+    # as completed via the worker's resume logic, so N/N math holds); CSV hits
+    # stay in the file and the worker's resume skip drops them at boot.
+    reused_url_count = 0
+    if _dup_gate_active_for_job(job_id):
+        gate_run_config = dict(_run_config_from_cache(job_id))
+        kept_urls: list[Any] = []
+        for item in deduped_urls:
+            fingerprint, lookup_key = _identity_fingerprint_for_url_item(item)
+            payload = _maybe_reuse_company_run(
+                job_id,
+                evidence_fingerprint=fingerprint,
+                company_lookup_key=lookup_key,
+                run_config=gate_run_config,
+                label=_url_value_for_intake_item(item) or "Specter URL",
+            )
+            if payload is not None:
+                reused_url_count += 1
+            else:
+                kept_urls.append(item)
+        deduped_urls = kept_urls
+        for descriptor in csv_descriptors:
+            from agent.dup_fingerprint import specter_csv_fingerprint
+
+            _maybe_reuse_company_run(
+                job_id,
+                evidence_fingerprint=specter_csv_fingerprint(descriptor),
+                run_config=gate_run_config,
+                label=str(descriptor.get("name") or "Specter row"),
+            )
+
+    total_companies = len(csv_descriptors) + len(deduped_urls) + reused_url_count
     if total_companies <= 0:
         return _failure("No companies found in Specter data.")
 
@@ -7516,6 +7713,7 @@ async def _run_specter_company_subprocess(
     total: int,
     use_web_search: bool,
     vc_investment_strategy: str | None,
+    evidence_fingerprint: str | None = None,
 ) -> None:
     config_path = _write_chunk_worker_config(upload_dir, job_id, absolute_index)
     cmd = [
@@ -7535,6 +7733,8 @@ async def _run_specter_company_subprocess(
     ]
     if specter.get("people"):
         cmd.extend(["--specter-people", str(specter["people"])])
+    if evidence_fingerprint:
+        cmd.extend(["--evidence-fingerprint", evidence_fingerprint])
     if use_web_search:
         cmd.append("--use-web-search")
     if vc_investment_strategy:
@@ -8002,6 +8202,32 @@ async def _run_document_analysis(
         return
 
     if one_company or file_count == 1:
+        # Duplicate-run gate (Sprint 3): identical uploaded documents within
+        # the window reuse the prior result before any ingestion/MCP cost.
+        from agent.dup_fingerprint import doc_fingerprint
+
+        single_doc_fingerprint = doc_fingerprint(
+            [str(f.get("sha256") or "") for f in files]
+        )
+        reused_payload = _maybe_reuse_company_run(
+            job_id,
+            evidence_fingerprint=single_doc_fingerprint,
+            run_config=dict(_run_config_from_cache(job_id)),
+            label=str(files[0].get("name") if files else upload_dir.name),
+        )
+        if reused_payload is not None:
+            _results_cache[job_id]["results"] = reused_payload
+            _jobs[job_id].results = reused_payload
+            _set_job_status(
+                job_id,
+                "done",
+                "Analysis complete — reused recent identical run",
+                source="run_document_analysis",
+            )
+            _persist_jobs()
+            _mark_terminal_persistence_complete(job_id)
+            return
+
         seed_company = None
         seed_store = None
         specter = _results_cache[job_id].get("specter")
@@ -8072,6 +8298,7 @@ async def _run_document_analysis(
                 source="run_document_analysis",
             )
             return
+        result["evidence_fingerprint"] = single_doc_fingerprint
         _persist_company_result_to_db(job_id, result)
         _append_progress(job_id, "Finalizing results...")
         _build_results_payload([result], job_id, upload_dir)
@@ -8100,6 +8327,7 @@ async def _run_document_analysis(
         return
 
     results_list: list[dict] = []
+    reused_payloads: list[dict] = []
     total = file_count
     chunking = _batch_chunking_config(job_id, total_items=total, mode="documents")
     _results_cache[job_id]["batch_chunking"] = chunking
@@ -8127,6 +8355,21 @@ async def _run_document_analysis(
                 fname = finfo["name"]
                 prefix = f"Chunk {chunk_idx}/{chunking['total_chunks']} — Analyzing {fname} ({processed}/{total})" if chunking["enabled"] else f"Analyzing {fname} ({processed}/{total})"
                 _append_progress(job_id, f"{prefix} — Starting...")
+
+                # Duplicate-run gate (Sprint 3): identical deck → reuse the
+                # prior result and skip this file entirely.
+                from agent.dup_fingerprint import doc_fingerprint
+
+                file_fingerprint = doc_fingerprint([str(finfo.get("sha256") or "")])
+                reused_payload = _maybe_reuse_company_run(
+                    job_id,
+                    evidence_fingerprint=file_fingerprint,
+                    run_config=dict(_run_config_from_cache(job_id)),
+                    label=fname,
+                )
+                if reused_payload is not None:
+                    reused_payloads.append(reused_payload)
+                    continue
 
                 doc_dir = upload_dir / _sanitize_slug(fname)
                 doc_dir.mkdir(exist_ok=True)
@@ -8179,6 +8422,7 @@ async def _run_document_analysis(
                         initial_company=seed_company,
                     )
                     await _cooperate_with_job_control(job_id)
+                    result["evidence_fingerprint"] = file_fingerprint
                     results_list.append(result)
                     _append_progress(job_id, f"{prefix} — Persisting partial result...")
                     persisted_to_db = _persist_company_result_to_db(job_id, result)
@@ -8239,7 +8483,7 @@ async def _run_document_analysis(
         raise
 
     evaluated = [r for r in results_list if not r.get("skipped")]
-    if not evaluated:
+    if not evaluated and not reused_payloads:
         if _is_stop_requested(job_id):
             raise _JobStoppedError("Job stopped by user")
         _set_job_status(
@@ -8251,7 +8495,9 @@ async def _run_document_analysis(
         return
 
     _append_progress(job_id, "Finalizing batch results...")
-    _build_results_payload(results_list, job_id, upload_dir)
+    if results_list:
+        _build_results_payload(results_list, job_id, upload_dir)
+    _merge_reused_payloads_into_results(job_id, reused_payloads)
     _append_progress(job_id, "Finalizing complete.")
     if _is_stop_requested(job_id):
         if _finalize_stopped_results(
@@ -8263,10 +8509,12 @@ async def _run_document_analysis(
         ):
             return
         raise _JobStoppedError("Job stopped by user")
+    reused_note = f" ({len(reused_payloads)} reused)" if reused_payloads else ""
     _set_job_status(
         job_id,
         "done",
-        f"Analysis complete — {len(evaluated)}/{total} companies ranked",
+        f"Analysis complete — {len(evaluated) + len(reused_payloads)}/{total} "
+        f"companies ranked{reused_note}",
         source="run_document_analysis",
     )
     _jobs[job_id].results = _results_cache[job_id]["results"]
@@ -8344,6 +8592,21 @@ async def _run_specter_analysis(
         )
 
     last_error: str | None = None
+    # Duplicate-run gate (Sprint 3): persist reused rows BEFORE loading the
+    # persisted-key set — the existing resume logic then skips those
+    # companies and _refresh_persisted_batch_results merges their results.
+    # Only meaningful in chunked_db_mode (the resume mechanism is db-backed).
+    if chunked_db_mode and _dup_gate_active_for_job(job_id):
+        from agent.dup_fingerprint import specter_csv_fingerprint
+
+        gate_run_config = dict(_run_config_from_cache(job_id))
+        for descriptor in company_descriptors:
+            _maybe_reuse_company_run(
+                job_id,
+                evidence_fingerprint=specter_csv_fingerprint(descriptor),
+                run_config=gate_run_config,
+                label=str(descriptor.get("name") or "Specter row"),
+            )
     persisted_company_keys = _load_persisted_company_keys(job_id) if chunked_db_mode else set()
     if persisted_company_keys:
         _refresh_persisted_batch_results(
@@ -8371,6 +8634,10 @@ async def _run_specter_analysis(
                     )
                     if company_key in persisted_company_keys:
                         continue
+                    from agent.dup_fingerprint import (
+                        specter_csv_fingerprint as _csv_fingerprint,
+                    )
+
                     await _run_specter_company_subprocess(
                         job_id,
                         upload_dir=upload_dir,
@@ -8382,6 +8649,7 @@ async def _run_specter_analysis(
                         total=total,
                         use_web_search=use_web_search,
                         vc_investment_strategy=vc_investment_strategy,
+                        evidence_fingerprint=_csv_fingerprint(descriptor),
                     )
                     persisted_company_keys.add(company_key)
                 if (

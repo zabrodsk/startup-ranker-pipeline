@@ -23,6 +23,7 @@ import traceback
 from typing import Any
 
 from agent.dataclasses.company import Company
+from agent.dup_fingerprint import identity_fingerprint, specter_csv_fingerprint
 from agent.ingest.specter_ingest import (
     _company_slug,
     ingest_specter_company,
@@ -71,23 +72,33 @@ def _normalize_specter_urls(run_config: dict[str, Any]) -> list[dict[str, str]]:
     raw = run_config.get("specter_urls") or []
     out: list[dict[str, str]] = []
     seen: set[str] = set()
+    input_mode = str(run_config.get("input_mode") or "specter")
     for item in raw:
         if isinstance(item, dict):
             url = (item.get("url") or "").strip()
             expected_name = (item.get("name") or "").strip() or None
-            # Preflight-resolved Specter id (Sprint 3 W7); empty when the
+            # Preflight-resolved identity (Sprint 3 W7); empty when the
             # identity-reuse flag is off or preflight didn't resolve.
             specter_company_id = str(item.get("specter_company_id") or "").strip()
+            resolved_name = str(item.get("resolved_name") or "").strip()
         else:
             url = str(item or "").strip()
             expected_name = None
             specter_company_id = ""
+            resolved_name = ""
         if not url:
             continue
         domain_key = _domain_root(url) or url.lower()
         if domain_key in seen:
             continue
         seen.add(domain_key)
+        # Dup-run gate (Sprint 3): the identity fingerprint needs the
+        # preflight resolved name; without it this row simply never matches.
+        evidence_fingerprint = ""
+        if resolved_name:
+            lookup_key = db.company_lookup_key_for_name(resolved_name)
+            if lookup_key:
+                evidence_fingerprint = identity_fingerprint(lookup_key, input_mode) or ""
         out.append(
             {
                 "url": url,
@@ -96,6 +107,8 @@ def _normalize_specter_urls(run_config: dict[str, Any]) -> list[dict[str, str]]:
                 "slug": _slug_from_url(url),
                 "name": expected_name or domain_key,
                 "specter_company_id": specter_company_id,
+                "resolved_name": resolved_name,
+                "evidence_fingerprint": evidence_fingerprint,
             }
         )
     return out
@@ -125,7 +138,16 @@ def _build_company_tasks(
             domain = _domain_root(d.get("domain"))
             if domain:
                 seen_domains.add(domain)
-            tasks.append({"mode": "csv", **d, "domain": domain or None})
+            # Dup-run gate (Sprint 3): fingerprint over the RAW descriptor,
+            # before the task dict mutates its domain field.
+            tasks.append(
+                {
+                    "mode": "csv",
+                    **d,
+                    "domain": domain or None,
+                    "evidence_fingerprint": specter_csv_fingerprint(d) or "",
+                }
+            )
 
     for url_task in _normalize_specter_urls(run_config):
         if url_task["domain"] in seen_domains:
@@ -406,6 +428,12 @@ async def _run_company_subprocess(
             cmd.append("--fetch-full-team")
     else:
         raise RuntimeError(f"Unknown company task mode: {mode!r}")
+    # Dup-run gate (Sprint 3): the child persists this on its company_runs row.
+    evidence_fingerprint = str(
+        company_descriptor.get("evidence_fingerprint") or ""
+    ).strip()
+    if evidence_fingerprint:
+        cmd.extend(["--evidence-fingerprint", evidence_fingerprint])
     if use_web_search:
         cmd.append("--use-web-search")
     if vc_investment_strategy:
