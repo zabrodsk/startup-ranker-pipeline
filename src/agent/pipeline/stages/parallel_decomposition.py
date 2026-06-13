@@ -17,6 +17,7 @@ from typing import Dict
 from agent.dataclasses.company import Company
 from agent.dataclasses.question_tree import QuestionTree
 from agent.prompt_library.manager import get_prompt, get_questions
+from agent.pipeline.stages import decomposition_cache_store
 from agent.pipeline.stages.cache import cache_question_tree, get_cached_question_tree
 from agent.pipeline.stages.constants import QuestionAspect
 from agent.pipeline.stages.decomposition import graph as decomposition_graph
@@ -70,6 +71,36 @@ async def _get_or_decompose_question(
     Returns:
         Dict with aspect key and QuestionTree (cached or newly decomposed)
     """
+    # W11 (flag-gated): shared Supabase store with a company-free key — the
+    # decomposition prompt sees only question + industry, so same-industry
+    # companies reuse trees across workers. Falls through to the legacy local
+    # cache when the flag is "local" (default) or the DB is unconfigured.
+    if decomposition_cache_store.use_supabase_store():
+        cached = decomposition_cache_store.lookup(
+            question=question,
+            industry=industry,
+            aspect=str(aspect),
+            company_name=company_name,
+            prompt_overrides=prompt_overrides,
+        )
+        if cached is not None:
+            return {"aspect": aspect, "tree": cached}
+        result = await _decompose_single_question(
+            question,
+            industry,
+            aspect,
+            prompt_overrides=prompt_overrides,
+        )
+        decomposition_cache_store.store(
+            question=question,
+            industry=industry,
+            aspect=str(aspect),
+            company_name=company_name,
+            tree=result["tree"],
+            prompt_overrides=prompt_overrides,
+        )
+        return result
+
     # Keep decomposition caches company-scoped to preserve company-specific
     # question shaping even if prompts or upstream context evolve.
     cache_company = Company(name=company_name, industry=industry)
