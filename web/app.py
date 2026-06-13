@@ -153,11 +153,51 @@ from agent.person_intel.service import PersonIntelService
 
 app = FastAPI(title="Deal Intelligence", docs_url=None, redoc_url=None)
 
+# CORS: env-driven allowlist. The default (ALLOWED_ORIGINS unset) is byte-identical
+# to the legacy wildcard middleware, so nothing changes until an operator opts in
+# by setting ALLOWED_ORIGINS (e.g. on the Railway prod env). Defined here rather
+# than reusing the later _feedback_environment() helper, which is not yet defined
+# at this point in module execution.
+ALLOWED_ORIGINS_ENV = "ALLOWED_ORIGINS"
+_WARNED_CORS_WILDCARD_PROD: set[str] = set()
+
+
+def _resolve_cors_settings() -> tuple[list[str], bool, list[str], list[str]]:
+    """Resolve (allow_origins, allow_credentials, allow_methods, allow_headers).
+
+    Precedence:
+      1. ALLOWED_ORIGINS set -> explicit allowlist (all envs); credentials on;
+         methods/headers tightened to what the app actually uses.
+      2. unset + local/staging -> wildcard, no credentials (legacy, byte-identical).
+      3. unset + production -> wildcard + warn-once (set ALLOWED_ORIGINS to lock down).
+
+    A wildcard origin combined with credentials is spec-invalid (browsers reject
+    it), so credentials are only enabled once a concrete allowlist is configured.
+    """
+    raw = os.getenv(ALLOWED_ORIGINS_ENV) or ""
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    if origins:
+        return (origins, True, ["GET", "POST", "OPTIONS"], ["Content-Type", "Authorization"])
+
+    env = (os.getenv("APP_ENV") or "development").strip().lower()
+    if env == "production" and "warned" not in _WARNED_CORS_WILDCARD_PROD:
+        _WARNED_CORS_WILDCARD_PROD.add("warned")
+        logging.getLogger(__name__).warning(
+            "CORS: production with no %s set; falling back to wildcard origins. "
+            "Set %s to lock down cross-origin access.",
+            ALLOWED_ORIGINS_ENV,
+            ALLOWED_ORIGINS_ENV,
+        )
+    return (["*"], False, ["*"], ["*"])
+
+
+_cors_origins, _cors_credentials, _cors_methods, _cors_headers = _resolve_cors_settings()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_credentials,
+    allow_methods=_cors_methods,
+    allow_headers=_cors_headers,
 )
 
 APP_PASSWORD = os.getenv("APP_PASSWORD", "9876")
