@@ -74,7 +74,7 @@ def harness(monkeypatch):
 
     def fake_run_web_search(query, domain_filter=None, trigger_reason=None,
                             gating_mode=None, route=None, planner_mode=None,
-                            query_purpose=None):
+                            query_purpose=None, cache_info=None):
         rec.searches.append({
             "query": query,
             "domain_filter": domain_filter,

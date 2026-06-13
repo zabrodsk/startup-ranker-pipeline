@@ -424,11 +424,17 @@ def _run_web_search(
     route: str | None = None,
     planner_mode: str | None = None,
     query_purpose: str | None = None,
+    cache_info: dict | None = None,
 ) -> str:
     """Run a web search using the configured provider.
 
     trigger_reason/gating_mode are recorded in telemetry metadata so run costs
     can aggregate WHY searches fired (see build_run_costs_from_model_executions).
+
+    cache_info (W13): when the caller passes a dict, its "hit" key is set so
+    the caller can refund the cap slot it acquired before this call. With
+    RDI_WEB_SEARCH_CACHE off (default) the cache is never consulted and the
+    behavior is byte-identical to the pre-cache version.
     """
     from datetime import datetime
 
@@ -437,13 +443,23 @@ def _run_web_search(
         return "No web search API key configured."
 
     try:
-        from agent.web_search import get_provider
+        from agent.web_search import get_provider, result_cache
 
-        search_date = datetime.now().strftime("%Y-%m-%d")
-        provider = get_provider(search_end_date=search_date, provider_name=provider_name)
-        result = provider.search(search_query, domain_filter=domain_filter)
+        cached_result = result_cache.lookup(provider_name, search_query, domain_filter)
+        cache_hit = cached_result is not None
+        if cache_info is not None:
+            cache_info["hit"] = cache_hit
+        if cache_hit:
+            result = cached_result
+        else:
+            search_date = datetime.now().strftime("%Y-%m-%d")
+            provider = get_provider(search_end_date=search_date, provider_name=provider_name)
+            result = provider.search(search_query, domain_filter=domain_filter)
+        result_is_valid = bool(
+            result and not str(result).lower().startswith("web search failed")
+        )
         collector = get_current_collector()
-        if collector and provider_name == "sonar" and result and not str(result).lower().startswith("web search failed"):
+        if collector and provider_name == "sonar" and result_is_valid:
             metadata: dict[str, Any] = {
                 "query": search_query,
                 "domain_filter": domain_filter or [],
@@ -460,7 +476,13 @@ def _run_web_search(
                 metadata["planner_mode"] = planner_mode
             if query_purpose:
                 metadata["query_purpose"] = query_purpose
+            # Cache telemetry: only present on hits so cache-off metadata
+            # stays byte-identical (and dashboards can net out provider spend).
+            if cache_hit:
+                metadata["cache_hit"] = True
             collector.record_perplexity_search(metadata=metadata)
+        if not cache_hit and result_is_valid:
+            result_cache.store(provider_name, search_query, domain_filter, result)
         return result
     except Exception as exc:
         return f"Web search failed: {exc}"
@@ -625,6 +647,7 @@ async def answer_question_from_evidence(
             executed: list[str] = []
             accepted_blocks: list[str] = []
             accepted = 0
+            cache_hits = 0
             cap_reached = False
             deadline = time.monotonic() + WEB_SEARCH_TIMEOUT_SEC
             total = len(active_plan.queries)
@@ -638,6 +661,7 @@ async def answer_question_from_evidence(
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
+                cache_info: dict[str, Any] = {}
                 try:
                     raw = await asyncio.wait_for(
                         asyncio.to_thread(
@@ -649,11 +673,19 @@ async def answer_question_from_evidence(
                             active_plan.route.value,
                             planner_mode,
                             spec.purpose,
+                            cache_info,
                         ),
                         timeout=remaining,
                     )
                 except asyncio.TimeoutError:
                     break
+                # W13: a cache hit consumed no provider call — refund the cap
+                # slot acquired above so cached answers don't shrink the budget.
+                if cache_info.get("hit"):
+                    cache_hits += 1
+                    if web_search_state is not None:
+                        async with web_search_state["lock"]:
+                            web_search_state["count"][0] -= 1
                 executed.append(spec.query)
                 useful, _reason = evaluate_web_result_relevance(
                     policy=active_plan.relevance_policy,
@@ -672,13 +704,20 @@ async def answer_question_from_evidence(
 
             web_search_query = " | ".join(executed) if executed else None
             gate = active_plan.relevance_policy.value
+            # W13: empty suffix when the cache is off/missed keeps the legacy
+            # decision strings byte-identical.
+            cache_suffix = (
+                f" ({cache_hits} cache hits, slots refunded)" if cache_hits else ""
+            )
             if not executed:
                 web_search_decision = (
                     "skipped: cap reached" if cap_reached else "skipped: no queries executed"
                 )
                 return grounded
             if not accepted:
-                web_search_decision = f"skipped: {accepted}/{len(executed)} results passed {gate} gate"
+                web_search_decision = (
+                    f"skipped: {accepted}/{len(executed)} results passed {gate} gate{cache_suffix}"
+                )
                 return grounded
 
             combined = "\n\n".join(accepted_blocks)
@@ -686,7 +725,9 @@ async def answer_question_from_evidence(
             if len(combined) > WEB_RESULTS_TRUNCATE:
                 web_search_results += "\n...[truncated]"
             web_search_used = True
-            web_search_decision = f"used: {accepted}/{len(executed)} results passed {gate} gate"
+            web_search_decision = (
+                f"used: {accepted}/{len(executed)} results passed {gate} gate{cache_suffix}"
+            )
             return await _hybrid_answer(web_search_results)
 
         # Step 1: Always run the grounded LLM call first (documents only)
@@ -777,12 +818,24 @@ async def answer_question_from_evidence(
             web_search_decision = "attempted"
             web_search_query = _build_web_search_query(company, question)
             domain_filter = _web_search_domain_filter(company, question)
+            cache_info: dict[str, Any] = {}
             web_results = await asyncio.wait_for(
                 asyncio.to_thread(
-                    _run_web_search, web_search_query, domain_filter, search_reason, heavy_mode
+                    _run_web_search,
+                    web_search_query,
+                    domain_filter,
+                    search_reason,
+                    heavy_mode,
+                    cache_info=cache_info,
                 ),
                 timeout=WEB_SEARCH_TIMEOUT_SEC,
             )
+            # W13: a cache hit consumed no provider call — refund the cap slot
+            # acquired above so cached answers don't shrink the budget.
+            legacy_cache_hit = bool(cache_info.get("hit"))
+            if legacy_cache_hit and web_search_state is not None:
+                async with web_search_state["lock"]:
+                    web_search_state["count"][0] -= 1
             web_search_results = web_results[:WEB_RESULTS_TRUNCATE]
             if len(web_results) > WEB_RESULTS_TRUNCATE:
                 web_search_results += "\n...[truncated]"
@@ -792,7 +845,11 @@ async def answer_question_from_evidence(
                 web_search_decision = f"skipped: {reason}"
                 return (grounded_answer, _provenance())
             web_search_used = True
-            web_search_decision = f"used: {reason}"
+            web_search_decision = (
+                "used: cache hit (no cap slot consumed)"
+                if legacy_cache_hit
+                else f"used: {reason}"
+            )
 
             answer = await _hybrid_answer(web_results)
             return (answer, _provenance())

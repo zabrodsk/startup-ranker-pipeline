@@ -15,6 +15,10 @@ from agent.common.llm_config import get_llm
 from agent.common.utils import format_qa_pairs_without_index
 from agent.dataclasses.argument import Argument
 from agent.prompt_library.manager import get_prompt
+from agent.pipeline.stages.evidence_digest import (
+    compose_critique_evidence,
+    is_evidence_digest_enabled,
+)
 from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
 from agent.pipeline.state.schemas import ArgumentCritique
 from agent.rate_limit import gather_with_concurrency
@@ -90,6 +94,22 @@ async def _apply_devils_advocate_to_contra_argument(
     return argument
 
 
+def _critique_evidence_for_argument(
+    state: IterativeInvestmentStoryState,
+    argument: Argument,
+    formatted_qa_pairs: str,
+) -> str:
+    """Evidence text injected into one critique call.
+
+    Legacy: the full formatted corpus. When the W3 digest flag is on and the
+    state carries a digest, the call instead gets the digest plus only the
+    evidence cited by this argument (fail-open back to the full corpus).
+    """
+    if is_evidence_digest_enabled() and state.evidence_digest:
+        return compose_critique_evidence(state.evidence_digest, argument)
+    return formatted_qa_pairs
+
+
 def apply_devils_advocate(
     state: IterativeInvestmentStoryState,
 ) -> IterativeInvestmentStoryState:
@@ -120,7 +140,7 @@ async def apply_devils_advocate_to_pro_arguments(
     critique_tasks = [
         _apply_devils_advocate_to_pro_argument(
             arg,
-            formatted_qa_pairs,
+            _critique_evidence_for_argument(state, arg, formatted_qa_pairs),
             arg.former_critique,
             state.prompt_overrides,
         )
@@ -155,7 +175,7 @@ async def apply_devils_advocate_to_contra_arguments(
     critique_tasks = [
         _apply_devils_advocate_to_contra_argument(
             arg,
-            formatted_qa_pairs,
+            _critique_evidence_for_argument(state, arg, formatted_qa_pairs),
             arg.former_critique,
             state.prompt_overrides,
         )

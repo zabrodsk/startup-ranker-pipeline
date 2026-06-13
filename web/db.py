@@ -4156,6 +4156,184 @@ def persist_reused_company_run(
         return None
 
 
+# ---------------------------------------------------------------------------
+# Web-search result cache (Sprint 3 W13)
+# ---------------------------------------------------------------------------
+# Service-role-only cache of web-search provider results. TTL is enforced at
+# read time so v1 needs no background cleanup. Callers treat every failure as
+# a cache miss / no-op (the cache must never break the answering path).
+
+def get_web_search_cache_entry(query_hash: str, *, ttl_days: int) -> str | None:
+    """Return cached result text for a query hash, or None on miss/expired/error."""
+    client = _get_client()
+    if not client:
+        return None
+    normalized_hash = (query_hash or "").strip()
+    if not normalized_hash:
+        return None
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=ttl_days)).isoformat()
+        rows = (
+            client.table("web_search_cache")
+            .select("query_hash, results, created_at")
+            .eq("query_hash", normalized_hash)
+            .gte("created_at", cutoff)
+            .limit(1)
+            .execute()
+        )
+        if not rows.data:
+            return None
+        row = rows.data[0] or {}
+        results = str(row.get("results") or "")
+        return results or None
+    except Exception as exc:
+        _log_supabase_error("get_web_search_cache_entry", "web_search_cache", exc)
+        return None
+
+
+def upsert_web_search_cache_entry(
+    *,
+    query_hash: str,
+    provider: str,
+    query: str,
+    domain_filter: list[str],
+    results: str,
+) -> bool:
+    """Persist one web-search result. Best-effort — failures don't propagate."""
+    client = _get_client()
+    if not client:
+        return False
+    normalized_hash = (query_hash or "").strip()
+    if not normalized_hash or not results:
+        return False
+    try:
+        client.table("web_search_cache").upsert(
+            {
+                "query_hash": normalized_hash,
+                "provider": provider,
+                "query": query,
+                "domain_filter": domain_filter,
+                "results": results,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+            on_conflict="query_hash",
+        ).execute()
+        return True
+    except Exception as exc:
+        _log_supabase_error("upsert_web_search_cache_entry", "web_search_cache", exc)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Decomposition-tree cache (Sprint 3 W11)
+# ---------------------------------------------------------------------------
+# Service-role-only cache of decomposed question trees shared across workers.
+# Keys are company-free (the decomposition prompt sees only question +
+# industry); company_name/hit_count are observability-only columns. Callers
+# treat every failure as a miss / no-op.
+
+def get_decomposition_tree_cache_entry(query_hash: str) -> dict[str, Any] | None:
+    """Return {"tree", "company_name", "hit_count"} for a key, or None."""
+    client = _get_client()
+    if not client:
+        return None
+    normalized_hash = (query_hash or "").strip()
+    if not normalized_hash:
+        return None
+    try:
+        rows = (
+            client.table("decomposition_tree_cache")
+            .select("query_hash, tree, company_name, hit_count")
+            .eq("query_hash", normalized_hash)
+            .limit(1)
+            .execute()
+        )
+        if not rows.data:
+            return None
+        row = rows.data[0] or {}
+        tree = row.get("tree")
+        if not isinstance(tree, dict):
+            return None
+        return {
+            "tree": tree,
+            "company_name": row.get("company_name"),
+            "hit_count": row.get("hit_count"),
+        }
+    except Exception as exc:
+        _log_supabase_error(
+            "get_decomposition_tree_cache_entry", "decomposition_tree_cache", exc
+        )
+        return None
+
+
+def increment_decomposition_tree_cache_hit(
+    query_hash: str, current_hit_count: Any
+) -> bool:
+    """Best-effort hit-count bump (observability only; lost races are fine)."""
+    client = _get_client()
+    if not client:
+        return False
+    normalized_hash = (query_hash or "").strip()
+    if not normalized_hash:
+        return False
+    try:
+        next_count = int(current_hit_count or 0) + 1
+    except (TypeError, ValueError):
+        next_count = 1
+    try:
+        client.table("decomposition_tree_cache").update(
+            {
+                "hit_count": next_count,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ).eq("query_hash", normalized_hash).execute()
+        return True
+    except Exception as exc:
+        _log_supabase_error(
+            "increment_decomposition_tree_cache_hit", "decomposition_tree_cache", exc
+        )
+        return False
+
+
+def upsert_decomposition_tree_cache_entry(
+    *,
+    query_hash: str,
+    question: str,
+    industry: str,
+    aspect: str,
+    prompt_signature: str,
+    tree: dict[str, Any],
+    company_name: str | None,
+) -> bool:
+    """Persist one decomposed tree. Best-effort — failures don't propagate."""
+    client = _get_client()
+    if not client:
+        return False
+    normalized_hash = (query_hash or "").strip()
+    if not normalized_hash or not isinstance(tree, dict):
+        return False
+    try:
+        client.table("decomposition_tree_cache").upsert(
+            {
+                "query_hash": normalized_hash,
+                "question": question,
+                "industry": industry,
+                "aspect": aspect,
+                "prompt_signature": prompt_signature,
+                "tree": tree,
+                "company_name": company_name or None,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            on_conflict="query_hash",
+        ).execute()
+        return True
+    except Exception as exc:
+        _log_supabase_error(
+            "upsert_decomposition_tree_cache_entry", "decomposition_tree_cache", exc
+        )
+        return False
+
+
 def _extract_company_runs_from_payload(
     job_id_legacy: str,
     payload: dict[str, Any],

@@ -9,11 +9,44 @@ This stage also handles iteration management - tracking history,
 resetting state for the next iteration, and deciding when to finalize.
 """
 
+import logging
+import os
 from typing import Literal
 
 from agent.dataclasses.argument import Argument
 from agent.pipeline.stages.evaluation import score_arguments_in_parallel
 from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
+
+logger = logging.getLogger(__name__)
+
+# Final-scoring mode for prepare_final_arguments (Sprint 3 W9):
+#   "rescore"         = legacy behavior: one full re-score of the final
+#                       arguments before the decision (default)
+#   "reuse"           = trust the selection-time scores already carried on the
+#                       arguments; only score arguments that were never scored
+#   "rescore_changed" = re-score only arguments whose text changed in the last
+#                       refinement (their carried score was computed on the
+#                       pre-refinement text)
+# Read at call time (not import time) so tests and rollout can flip it via env.
+PIPELINE_FINAL_SCORE_MODE_ENV = "PIPELINE_FINAL_SCORE_MODE"
+_FINAL_SCORE_MODES = ("rescore", "reuse", "rescore_changed")
+_DEFAULT_FINAL_SCORE_MODE = "rescore"
+_WARNED_INVALID_FINAL_SCORE_MODE: set[str] = set()
+
+
+def _final_score_mode() -> str:
+    """Return the active final-scoring mode."""
+    raw = os.getenv(PIPELINE_FINAL_SCORE_MODE_ENV, _DEFAULT_FINAL_SCORE_MODE)
+    mode = raw.strip().lower()
+    if mode not in _FINAL_SCORE_MODES:
+        if mode not in _WARNED_INVALID_FINAL_SCORE_MODE:
+            _WARNED_INVALID_FINAL_SCORE_MODE.add(mode)
+            logger.warning(
+                "Invalid %s=%r; falling back to %r",
+                PIPELINE_FINAL_SCORE_MODE_ENV, raw, _DEFAULT_FINAL_SCORE_MODE,
+            )
+        return _DEFAULT_FINAL_SCORE_MODE
+    return mode
 
 
 def add_arguments_to_history(
@@ -96,18 +129,75 @@ def check_continue(
     return "apply_devils_advocate"
 
 
+def _last_refined_arguments_by_tracking_id(
+    state: IterativeInvestmentStoryState,
+) -> dict[str, Argument]:
+    """Index the previous iteration's refined arguments by tracking_id.
+
+    Arguments without a tracking_id are skipped: they cannot be matched
+    reliably, so callers treat them as changed (conservative re-score).
+    """
+    if not state.arguments_history:
+        return {}
+    refined = state.arguments_history[-1].get("refined_arguments") or []
+    return {arg.tracking_id: arg for arg in refined if arg.tracking_id}
+
+
+def _arguments_needing_final_score(
+    state: IterativeInvestmentStoryState, mode: str
+) -> list[Argument]:
+    """Select which final arguments still need a scoring call.
+
+    An argument with argument_feedback is None was never scored (feedback is
+    set together with the score in score_single_argument), so it is always
+    scored regardless of mode. "rescore_changed" additionally re-scores
+    arguments whose text changed in the last refinement — their carried score
+    was computed on the pre-refinement text — and arguments it cannot match
+    against the previous iteration.
+    """
+    never_scored = [
+        arg for arg in state.final_arguments if arg.argument_feedback is None
+    ]
+    if mode == "reuse":
+        return never_scored
+
+    previous = _last_refined_arguments_by_tracking_id(state)
+    changed = []
+    for arg in state.final_arguments:
+        if arg.argument_feedback is None:
+            continue  # already collected above
+        prior = previous.get(arg.tracking_id) if arg.tracking_id else None
+        if prior is None:
+            changed.append(arg)
+        elif prior.refined_content is not None and prior.refined_content != prior.content:
+            changed.append(arg)
+    return never_scored + changed
+
+
 async def prepare_final_arguments(
     state: IterativeInvestmentStoryState,
 ) -> IterativeInvestmentStoryState:
     """Score the final set of arguments.
 
-    Performs one final scoring of all remaining arguments
-    before making the investment decision.
+    In the default "rescore" mode this performs one final scoring of all
+    remaining arguments before the investment decision. The W9 modes
+    ("reuse"/"rescore_changed") skip scoring for arguments whose carried
+    selection-time score is still trusted; see _final_score_mode.
     """
     state.final_arguments = state.current_arguments
 
-    # Score the final arguments
-    scored_arguments = await score_arguments_in_parallel(state.final_arguments)
+    mode = _final_score_mode()
+    if mode == "rescore":
+        # Score the final arguments
+        scored_arguments = await score_arguments_in_parallel(state.final_arguments)
+    else:
+        arguments_to_score = _arguments_needing_final_score(state, mode)
+        if arguments_to_score:
+            # Scoring mutates the Argument objects in place, so the full
+            # final_arguments list ends up consistent.
+            await score_arguments_in_parallel(arguments_to_score)
+        scored_arguments = state.final_arguments
+
     state.arguments_history.append(
         {
             "iteration": state.current_iteration,
