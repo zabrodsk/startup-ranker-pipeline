@@ -16,6 +16,10 @@ from agent.common.llm_config import get_llm
 from agent.common.utils import format_qa_pairs_with_index
 from agent.dataclasses.argument import Argument
 from agent.prompt_library.manager import get_prompt
+from agent.pipeline.stages.evidence_digest import (
+    compose_refinement_evidence,
+    is_evidence_digest_enabled,
+)
 from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
 from agent.pipeline.state.schemas import IndividualRefinedArgumentOutput
 from agent.rate_limit import gather_with_concurrency
@@ -97,6 +101,25 @@ async def _refine_individual_contra_argument(
     return refined_argument
 
 
+def _refinement_evidence_for_argument(
+    state: IterativeInvestmentStoryState,
+    argument: Argument,
+    formatted_qa_pairs: str,
+) -> str:
+    """Evidence text injected into one refinement call.
+
+    Legacy: the full corpus with global indices. When the W3 digest flag is on
+    and the state carries a digest, the call instead gets the digest plus only
+    the evidence cited by this argument — still rendered with GLOBAL indices,
+    because refined_qa_indices must index into state.all_qa_pairs.
+    """
+    if is_evidence_digest_enabled() and state.evidence_digest:
+        return compose_refinement_evidence(
+            state.evidence_digest, argument, state.all_qa_pairs
+        )
+    return formatted_qa_pairs
+
+
 async def refine_pro_arguments(
     state: IterativeInvestmentStoryState,
 ) -> dict:
@@ -119,7 +142,7 @@ async def refine_pro_arguments(
     refinement_tasks = [
         _refine_individual_pro_argument(
             arg,
-            formatted_qa_pairs,
+            _refinement_evidence_for_argument(state, arg, formatted_qa_pairs),
             prompt_overrides=state.prompt_overrides,
         )
         for arg in pro_arguments_with_critiques
@@ -162,7 +185,7 @@ async def refine_contra_arguments(
     refinement_tasks = [
         _refine_individual_contra_argument(
             arg,
-            formatted_qa_pairs,
+            _refinement_evidence_for_argument(state, arg, formatted_qa_pairs),
             prompt_overrides=state.prompt_overrides,
         )
         for arg in contra_arguments_with_critiques

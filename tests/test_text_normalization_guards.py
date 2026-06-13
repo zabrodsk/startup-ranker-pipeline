@@ -201,7 +201,7 @@ def _run_answer_with_gating(
 
     search_calls: list[tuple] = []
 
-    def _fake_run_web_search(query, domain_filter=None, trigger_reason=None, gating_mode=None):  # noqa: ANN001
+    def _fake_run_web_search(query, domain_filter=None, trigger_reason=None, gating_mode=None, cache_info=None):  # noqa: ANN001
         search_calls.append((query, trigger_reason, gating_mode))
         return (
             "Apaleo operates in the hospitality software market. Analyst reports "

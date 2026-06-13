@@ -75,9 +75,13 @@ def _normalize_specter_urls(run_config: dict[str, Any]) -> list[dict[str, str]]:
         if isinstance(item, dict):
             url = (item.get("url") or "").strip()
             expected_name = (item.get("name") or "").strip() or None
+            # Preflight-resolved Specter id (Sprint 3 W7); empty when the
+            # identity-reuse flag is off or preflight didn't resolve.
+            specter_company_id = str(item.get("specter_company_id") or "").strip()
         else:
             url = str(item or "").strip()
             expected_name = None
+            specter_company_id = ""
         if not url:
             continue
         domain_key = _domain_root(url) or url.lower()
@@ -91,6 +95,7 @@ def _normalize_specter_urls(run_config: dict[str, Any]) -> list[dict[str, str]]:
                 "expected_name": expected_name or "",
                 "slug": _slug_from_url(url),
                 "name": expected_name or domain_key,
+                "specter_company_id": specter_company_id,
             }
         )
     return out
@@ -389,6 +394,14 @@ async def _run_company_subprocess(
         expected = str(company_descriptor.get("expected_name") or "").strip()
         if expected:
             cmd.extend(["--expected-name", expected])
+        # Preflight-resolved identity (Sprint 3 W7): lets the child skip
+        # find_company + match verification; stale ids fall back inside
+        # fetch_specter_company.
+        specter_company_id = str(
+            company_descriptor.get("specter_company_id") or ""
+        ).strip()
+        if specter_company_id:
+            cmd.extend(["--specter-company-id", specter_company_id])
         if fetch_full_team:
             cmd.append("--fetch-full-team")
     else:

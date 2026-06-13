@@ -6381,6 +6381,30 @@ def _quality_name_from_url_or_filename(
     return None, normalized.reason or "Company identity is not usable.", source
 
 
+# Specter identity reuse (Sprint 3 W7):
+#   "off" = preflight resolves and discards, legacy behavior (default)
+#   "on"  = preflight writes the resolved Specter id/name/domain back onto the
+#           intake items so workers skip a second find_company per URL
+# Read at call time (not import time) so tests and rollout can flip it via env.
+RDI_SPECTER_IDENTITY_REUSE_ENV = "RDI_SPECTER_IDENTITY_REUSE"
+_SPECTER_IDENTITY_REUSE_MODES = ("off", "on")
+_WARNED_INVALID_IDENTITY_REUSE: set[str] = set()
+
+
+def _specter_identity_reuse_enabled() -> bool:
+    raw = os.getenv(RDI_SPECTER_IDENTITY_REUSE_ENV, "off")
+    mode = raw.strip().lower()
+    if mode not in _SPECTER_IDENTITY_REUSE_MODES:
+        if mode not in _WARNED_INVALID_IDENTITY_REUSE:
+            _WARNED_INVALID_IDENTITY_REUSE.add(mode)
+            logging.getLogger(__name__).warning(
+                "Invalid %s=%r; falling back to 'off'",
+                RDI_SPECTER_IDENTITY_REUSE_ENV, raw,
+            )
+        return False
+    return mode == "on"
+
+
 async def _resolve_specter_url_for_preflight(item: Any) -> tuple[Any | None, str | None]:
     identifier = _url_value_for_intake_item(item)
     if not identifier:
@@ -6463,6 +6487,8 @@ async def _preflight_specter_inputs(
             remediation="Enable the Specter worker service or upload Specter CSV exports instead.",
         )
 
+    identity_reuse = _specter_identity_reuse_enabled()
+    enriched_url_items: list[Any] = []
     for item in specter_urls:
         identifier = _url_value_for_intake_item(item)
         company, error = await _resolve_specter_url_for_preflight(item)
@@ -6473,6 +6499,7 @@ async def _preflight_specter_inputs(
                 reason=f"Specter could not resolve this URL before run start: {error}",
                 remediation="Replace it with a company website that Specter resolves, or remove it from the batch.",
             )
+            enriched_url_items.append(item)
             continue
         raw_name = getattr(company, "name", None)
         normalized = normalize_company_display_name(raw_name, source="specter_url")
@@ -6488,6 +6515,7 @@ async def _preflight_specter_inputs(
                 reason=normalized.reason or "Resolved Specter company has no usable name.",
                 remediation="Use a URL that resolves to a company with a canonical Specter profile.",
             )
+            enriched_url_items.append(item)
             continue
         _quality_normalized(
             report,
@@ -6497,6 +6525,21 @@ async def _preflight_specter_inputs(
             source="specter_url",
             domain=getattr(company, "domain", None),
         )
+        # W7 (flag-gated): keep the identity preflight just resolved so the
+        # worker can skip a second find_company per URL. Items stay in place
+        # and order; string items become dicts.
+        specter_company_id = str(getattr(company, "specter_company_id", "") or "")
+        if identity_reuse and specter_company_id:
+            enriched_item = dict(item) if isinstance(item, dict) else {"url": identifier}
+            enriched_item["specter_company_id"] = specter_company_id
+            enriched_item["resolved_name"] = normalized.value
+            enriched_item["resolved_domain"] = str(getattr(company, "domain", None) or "")
+            enriched_url_items.append(enriched_item)
+        else:
+            enriched_url_items.append(item)
+
+    if identity_reuse and specter_urls:
+        cache["specter_urls"] = enriched_url_items
 
     if descriptor_count == 0 and not specter_urls:
         _quality_invalid(
