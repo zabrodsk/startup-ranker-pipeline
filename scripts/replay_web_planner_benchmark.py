@@ -37,13 +37,14 @@ from web.replay_web_planner import (  # noqa: E402
     load_route_tags,
     run_live_stage,
     run_tag_stage,
+    skip_prediction_stats,
 )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--job-id", default=DEFAULT_JOB_ID)
-    parser.add_argument("--stage", required=True, choices=["tag", "replay", "live", "report"])
+    parser.add_argument("--stage", required=True, choices=["tag", "replay", "skip", "live", "report"])
     parser.add_argument("--sample-size", type=int, default=DEFAULT_LIVE_SAMPLE_SIZE)
     parser.add_argument(
         "--routes", nargs="*", default=list(TOPIC_ROUTES_FOR_LIVE),
@@ -66,6 +67,22 @@ def main() -> int:
     if not route_tags:
         print("WARNING: no route_tags.json found — run --stage tag first; "
               "falling back to keyword routing only.")
+
+    if args.stage == "skip":
+        # FREE/offline: predict which "documents incomplete" searches the
+        # skip-unanswerable gate (Sprint 4 C) would suppress; hard 0/35 gate.
+        stats = skip_prediction_stats(rows, route_tags)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "skip_report.json").write_text(json.dumps(stats, indent=2))
+        print(json.dumps(stats, indent=2))
+        if not stats["pass"]:
+            print(
+                f"FAIL: {stats['rescued_predicted_skip']} rescued answers would be "
+                f"skipped by the unanswerable gate (hard gate is 0)."
+            )
+            return 1
+        print("PASS: 0 rescued answers predicted-skip.")
+        return 0
 
     if args.stage == "live":
         summary = run_live_stage(

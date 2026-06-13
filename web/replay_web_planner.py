@@ -44,6 +44,7 @@ from agent.web_search.planner import (
     evaluate_web_result_relevance,
     normalize_route_tag,
 )
+from agent.web_search.unanswerable import predict_search_unanswerable
 
 DEFAULT_JOB_ID = "f20aa510"
 DEFAULT_OUT_DIR = Path("exports/web_planner_replay")
@@ -192,6 +193,82 @@ def find_skip_route_false_positives(
     return offenders
 
 
+# ---------------------------------------------------------------------------
+# Skip-unanswerable gate (Sprint 4 C) — same router, so equivalent to the
+# planner skip-route check above; exposed for the `skip` stage / merge gate.
+# ---------------------------------------------------------------------------
+
+
+def predict_skip_for_row(
+    row: dict[str, Any],
+    route_tags: dict[str, str] | None = None,
+) -> tuple[bool, str]:
+    """Run the skip-unanswerable predictor for one persisted row."""
+    tag = (route_tags or {}).get(row["question_hash"])
+    return predict_search_unanswerable(
+        question=row["question"],
+        route_tag=tag,
+        aspect=row.get("aspect"),
+        company_name=row["company_name"],
+        company_domain=row.get("domain"),
+        industry=row.get("industry"),
+        is_root=False,
+    )
+
+
+def skip_predictor_false_positives(
+    rows: Iterable[dict[str, Any]],
+    route_tags: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """HARD GATE: rescued answers the skip-unanswerable gate would suppress.
+
+    Must be empty. The predictor delegates to build_web_search_plan, so this is
+    equivalent to find_skip_route_false_positives — proving the gate can never
+    regress the planner's already-passing 0/35 check.
+    """
+    offenders = []
+    for row in rows:
+        if not is_rescued(row):
+            continue
+        skip, reason = predict_skip_for_row(row, route_tags)
+        if skip:
+            offenders.append(
+                {
+                    "company_name": row["company_name"],
+                    "question": row["question"],
+                    "reason": reason,
+                }
+            )
+    return offenders
+
+
+def skip_prediction_stats(
+    rows: Iterable[dict[str, Any]],
+    route_tags: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Skip-rate, the 0-false-positive count, and projected per-company savings."""
+    rows = list(rows)
+    total = len(rows)
+    # "documents incomplete" subset: thin answers that actually ran a search.
+    thin_searched = [r for r in rows if was_searched(r) and is_thin_answer(r.get("answer", ""))]
+    skipped_all = sum(1 for r in rows if predict_skip_for_row(r, route_tags)[0])
+    skipped_thin = sum(1 for r in thin_searched if predict_skip_for_row(r, route_tags)[0])
+    companies = {r["company_name"] for r in rows}
+    offenders = skip_predictor_false_positives(rows, route_tags)
+    return {
+        "total_rows": total,
+        "documents_incomplete_rows": len(thin_searched),
+        "skip_rate_all": round(skipped_all / total, 4) if total else 0.0,
+        "skip_rate_documents_incomplete": (
+            round(skipped_thin / len(thin_searched), 4) if thin_searched else 0.0
+        ),
+        "rescued_predicted_skip": len(offenders),
+        "projected_searches_saved_per_company": round(skipped_thin / max(1, len(companies)), 2),
+        "offenders": offenders,
+        "pass": not offenders,
+    }
+
+
 def gate_confusion_matrix(
     rows: Iterable[dict[str, Any]],
     route_tags: dict[str, str] | None = None,
@@ -302,6 +379,7 @@ def build_replay_report(
             "offenders": offenders,
             "pass": not offenders,
         },
+        "skip_predictor": skip_prediction_stats(rows, route_tags),
         "tagged_questions": len(route_tags or {}),
     }
     if live_results:

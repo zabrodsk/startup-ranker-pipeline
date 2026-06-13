@@ -89,6 +89,7 @@ def harness(monkeypatch):
     monkeypatch.setattr(ea, "_run_web_search", fake_run_web_search)
     monkeypatch.delenv("RDI_WEB_EVIDENCE_PLANNER", raising=False)
     monkeypatch.delenv("WEB_SEARCH_HEAVY_OVERRIDE", raising=False)
+    monkeypatch.delenv("RDI_SKIP_UNANSWERABLE_SEARCH", raising=False)
     return rec
 
 
@@ -358,3 +359,67 @@ def test_specter_ingest_populates_geo_from_hq_location(tmp_path):
     by_name = {company.name: company for company, _ in results}
     assert by_name["Alpha"].geo == "Prague, Czechia"
     assert by_name["Beta"].geo is None
+
+
+# --- Sprint 4 C: skip predictably-unanswerable searches -------------------------
+# The skip-gate consults predict_search_unanswerable (which delegates to the
+# planner router) only for the ungated "documents incomplete" reason.
+SKIP_QUESTION = "What is the company's current ARR and burn rate?"
+
+
+def test_skip_gate_off_is_byte_identical(harness, monkeypatch):
+    company = _company()
+    _, prov_default = _answer(SKIP_QUESTION, company, _state())
+    default_searches = list(harness.searches)
+    assert "skip_unanswerable" not in prov_default
+
+    harness.searches.clear()
+    monkeypatch.setenv("RDI_SKIP_UNANSWERABLE_SEARCH", "off")
+    _, prov_off = _answer(SKIP_QUESTION, company, _state())
+
+    assert harness.searches == default_searches
+    assert prov_off == prov_default
+
+
+def test_skip_gate_shadow_logs_but_still_searches(harness, monkeypatch):
+    monkeypatch.setenv("RDI_SKIP_UNANSWERABLE_SEARCH", "shadow")
+    _, prov = _answer(SKIP_QUESTION, _company(), _state())
+
+    assert len(harness.searches) == 1  # search still ran (behavior == off)
+    assert prov["skip_unanswerable"]["mode"] == "shadow"
+    assert prov["skip_unanswerable"]["predicted_skip"] is True
+    # Shadow records the prediction but does NOT act on it (no early skip).
+    assert not prov["web_search_decision"].startswith("skipped: predicted")
+
+
+def test_skip_gate_on_skips_search_and_consumes_no_cap(harness, monkeypatch):
+    monkeypatch.setenv("RDI_SKIP_UNANSWERABLE_SEARCH", "on")
+    state = _state()
+    answer, prov = _answer(SKIP_QUESTION, _company(), state)
+
+    assert len(harness.searches) == 0
+    assert state["count"][0] == 0  # no cap slot consumed
+    assert answer == THIN_ANSWER  # grounded answer kept
+    assert prov["web_search_used"] is False
+    assert prov["web_search_decision"].startswith("skipped: predicted unanswerable")
+    assert prov["skip_unanswerable"]["predicted_skip"] is True
+
+
+def test_skip_gate_on_does_not_skip_answerable(harness, monkeypatch):
+    monkeypatch.setenv("RDI_SKIP_UNANSWERABLE_SEARCH", "on")
+    _, prov = _answer("Has the company announced funding?", _company(), _state())
+
+    assert len(harness.searches) == 1  # answerable -> search runs
+    assert prov["skip_unanswerable"]["predicted_skip"] is False
+    assert prov["web_search_used"] is True
+
+
+def test_skip_gate_on_with_planner_on_skips_once_gate_wins(harness, monkeypatch):
+    monkeypatch.setenv("RDI_WEB_EVIDENCE_PLANNER", "on")
+    monkeypatch.setenv("RDI_SKIP_UNANSWERABLE_SEARCH", "on")
+    state = _state()
+    _, prov = _answer(SKIP_QUESTION, _company(), state)
+
+    assert len(harness.searches) == 0  # single skip, no double-anything
+    assert state["count"][0] == 0
+    assert prov["web_search_decision"].startswith("skipped: predicted unanswerable")
