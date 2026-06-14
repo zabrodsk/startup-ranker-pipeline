@@ -258,3 +258,57 @@ def test_skip_prediction_stats_reports_rates_and_pass():
     assert stats["rescued_predicted_skip"] == 0
     assert stats["pass"] is True
     assert 0.0 < stats["skip_rate_documents_incomplete"] <= 1.0
+
+
+# --- persisted payload shape (real load_job_results output) ---------------------
+
+
+def _persisted_payload(qa_provenance_rows):
+    """The worker-composed shape load_job_results actually returns: flat
+    qa_provenance_rows (build_qa_provenance_rows), NOT a company list with
+    final_state. industry/domain/geo are not persisted at the row level."""
+    return {
+        "results": {
+            "summary_rows": [{"company_name": "Mantic", "startup_slug": "mantic"}],
+            "qa_provenance_rows": qa_provenance_rows,
+            "job_status": "done",
+        }
+    }
+
+
+def _prov(question, answer=THIN, used=False):
+    return {
+        "company_name": "Mantic",
+        "startup_slug": "mantic",
+        "aspect": "market",
+        "question": question,
+        "answer": answer,
+        "chunks_preview": "[chunk_0]: deck text",
+        "web_search_query": "Mantic q",
+        "web_search_results": "",
+        "web_search_used": used,
+        "web_search_decision": "used" if used else "skipped",
+    }
+
+
+def test_extract_qa_rows_reads_persisted_qa_provenance_shape():
+    payload = _persisted_payload([
+        _prov("What is the company's ARR?", used=True),
+        _prov("Has the company announced funding?", answer=RICH, used=True),
+    ])
+    rows = extract_qa_rows(payload)
+    assert len(rows) == 2
+    assert rows[0]["company_name"] == "Mantic"
+    assert rows[0]["question"] == "What is the company's ARR?"
+    assert rows[0]["web_search_used"] is True
+    assert rows[1]["answer"] == RICH
+    # Downstream consumers work on these rows (this is what the benchmark needs).
+    assert predict_skip_for_row(rows[0])[0] is True  # ARR -> skip route
+    assert is_rescued(rows[1]) is True
+
+
+def test_extract_qa_rows_still_reads_in_memory_company_list():
+    """Backward-compat: the synthetic in-memory shape must still parse."""
+    rows = extract_qa_rows(_payload([_qa("Q1?"), _qa("Q2?")]))
+    assert len(rows) == 2
+    assert rows[0]["company_name"] == "Mantic"
