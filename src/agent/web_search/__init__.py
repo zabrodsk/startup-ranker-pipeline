@@ -10,5 +10,6 @@ from .planner import (  # noqa: F401
     normalize_route_tag,
 )
 from .providers import BraveSearchProvider, SonarSearchProvider, WebSearchProvider, get_provider  # noqa: F401
+from .unanswerable import predict_search_unanswerable, skip_unanswerable_mode  # noqa: F401
 
 

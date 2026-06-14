@@ -20,9 +20,12 @@ from web.replay_web_planner import (
     gate_confusion_matrix,
     is_rescued,
     merge_route_tags,
+    predict_skip_for_row,
     question_hash,
     route_distribution,
     select_live_sample,
+    skip_prediction_stats,
+    skip_predictor_false_positives,
 )
 
 THIN = "Insufficient information available."
@@ -203,3 +206,55 @@ def test_select_live_sample_is_seeded_and_filters_routes():
     assert [r["question"] for r in sample_a] == [r["question"] for r in sample_b]
     assert len(sample_a) == 5
     assert all("market segment" in r["question"] for r in sample_a)
+
+
+# --- Sprint 4 C: skip-unanswerable predictor over the benchmark -----------------
+
+
+def test_predict_skip_for_row_skips_arr_not_funding():
+    rows = extract_qa_rows(_payload([
+        _qa("What is the company's ARR?"),
+        _qa("Has the company announced funding?"),
+    ]))
+    skip_arr, _ = predict_skip_for_row(rows[0])
+    skip_funding, _ = predict_skip_for_row(rows[1])
+    assert skip_arr is True
+    assert skip_funding is False
+
+
+def test_skip_predictor_false_positives_flags_rescued_skip_route():
+    # A rescued ARR answer would be wrongly suppressed -> flagged by the hard gate.
+    rows = extract_qa_rows(_payload([_qa("What is the company's ARR?", answer=RICH, used=True)]))
+    offenders = skip_predictor_false_positives(rows)
+    assert len(offenders) == 1
+    assert offenders[0]["company_name"] == "Mantic"
+
+
+def test_skip_predictor_false_positive_resolved_by_company_specific_tag():
+    rows = extract_qa_rows(_payload([_qa("What is the company's ARR?", answer=RICH, used=True)]))
+    tags = {rows[0]["question_hash"]: "company_specific"}
+    assert skip_predictor_false_positives(rows, tags) == []
+
+
+def test_skip_predictor_equivalent_to_planner_skip_routes():
+    rows = extract_qa_rows(_payload([
+        _qa("What is the company's ARR?", answer=RICH, used=True),
+        _qa("Has the company announced funding?", answer=RICH, used=True),
+        _qa("What is the market size?", answer=RICH, used=True),
+    ]))
+    predictor = {(o["company_name"], o["question"]) for o in skip_predictor_false_positives(rows)}
+    planner = {(o["company_name"], o["question"]) for o in find_skip_route_false_positives(rows)}
+    assert predictor == planner
+
+
+def test_skip_prediction_stats_reports_rates_and_pass():
+    rows = extract_qa_rows(_payload([
+        _qa("What is the company's ARR?", answer=THIN, used=True),  # skippable, not rescued
+        _qa("What is the market size?", answer=THIN, used=True),     # answerable
+        _qa("Has the company announced funding?", answer=RICH, used=True),  # rescued, answerable
+    ]))
+    stats = skip_prediction_stats(rows)
+    assert stats["total_rows"] == 3
+    assert stats["rescued_predicted_skip"] == 0
+    assert stats["pass"] is True
+    assert 0.0 < stats["skip_rate_documents_incomplete"] <= 1.0

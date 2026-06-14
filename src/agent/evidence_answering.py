@@ -167,6 +167,10 @@ from agent.web_search.planner import (
     build_web_search_plan,
     evaluate_web_result_relevance,
 )
+from agent.web_search.unanswerable import (
+    predict_search_unanswerable,
+    skip_unanswerable_mode,
+)
 from agent.run_context import (
     get_current_collector,
     get_current_pipeline_policy,
@@ -575,6 +579,7 @@ async def answer_question_from_evidence(
     web_search_decision = "not requested"
     web_search_route: str | None = None
     web_search_plan_dict: dict[str, Any] | None = None
+    skip_prediction_dict: dict[str, Any] | None = None
 
     def _provenance() -> dict:
         prov: dict[str, Any] = {
@@ -589,6 +594,9 @@ async def answer_question_from_evidence(
         if web_search_plan_dict is not None:
             prov["web_search_route"] = web_search_route
             prov["web_search_plan"] = web_search_plan_dict
+        # Skip-gate prediction (Sprint 4 C) — present only in shadow/on modes.
+        if skip_prediction_dict is not None:
+            prov["skip_unanswerable"] = skip_prediction_dict
         return prov
 
 
@@ -613,7 +621,7 @@ async def answer_question_from_evidence(
 
     async def _do_llm_call() -> tuple[str, dict]:
         nonlocal web_search_query, web_search_results, web_search_used, web_search_decision
-        nonlocal web_search_route, web_search_plan_dict
+        nonlocal web_search_route, web_search_plan_dict, skip_prediction_dict
         policy = get_current_pipeline_policy()
 
         async def _hybrid_answer(web_results_text: str) -> str:
@@ -765,6 +773,32 @@ async def answer_question_from_evidence(
                 search_reason = "no chunks"
         needs_search = search_reason is not None
         web_search_decision = f"needed: {search_reason}" if search_reason else "not needed"
+
+        # Skip predictably-unanswerable searches (Sprint 4 C): gate ONLY the
+        # ungated "documents incomplete" reason. Off-mode never consults the
+        # predictor, so the search path stays byte-identical. The predictor
+        # delegates to the planner router, so when the planner is also "on" it
+        # would skip the same set — this gate just decides it first (no double
+        # skip, no cap double-count).
+        skip_mode = skip_unanswerable_mode()
+        if skip_mode != "off" and search_reason == "documents incomplete":
+            predicted_skip, skip_reason_text = predict_search_unanswerable(
+                question=question,
+                route_tag=route,
+                aspect=aspect,
+                company_name=company.name,
+                company_domain=company.domain,
+                industry=company.industry,
+                is_root=is_root,
+            )
+            skip_prediction_dict = {
+                "mode": skip_mode,
+                "predicted_skip": predicted_skip,
+                "reason": skip_reason_text,
+            }
+            if skip_mode == "on" and predicted_skip:
+                web_search_decision = f"skipped: predicted unanswerable — {skip_reason_text}"
+                return (grounded_answer, _provenance())
 
         # WebEvidencePlanner (Sprint 2): build a route-aware plan in shadow/on
         # modes. Shadow only records the plan; legacy behavior runs unchanged.
