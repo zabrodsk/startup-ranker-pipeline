@@ -11,9 +11,18 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
+import pytest
+
 import web.app as web_app
 from agent.company_chat import answer_company_question
 from agent.ingest.store import Chunk
+
+
+@pytest.fixture(autouse=True)
+def _session_secret_configured(monkeypatch):
+    """Pin a session secret so /api/login mints a valid session (the app fails
+    closed when SESSION_SECRET is unset)."""
+    monkeypatch.setattr(web_app, "SESSION_SECRET", "test-session-secret")
 
 
 class _FakeChatRunnable:

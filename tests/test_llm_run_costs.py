@@ -49,10 +49,15 @@ def _hermetic_supabase_env(monkeypatch: pytest.MonkeyPatch) -> None:
     make `_supabase_public_auth_config()["required"]` true or open live clients.
 
     Tests that exercise the Supabase-auth path re-set these variables themselves.
+    Also pin a session secret so the password-login flow mints a valid session
+    (the app fails closed when SESSION_SECRET is unset).
     """
+    from web import app as web_app_module
+
     monkeypatch.delenv("SUPABASE_URL", raising=False)
     monkeypatch.delenv("SUPABASE_ANON_KEY", raising=False)
     monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+    monkeypatch.setattr(web_app_module, "SESSION_SECRET", "test-session-secret")
 
 
 @pytest.fixture(autouse=True)
