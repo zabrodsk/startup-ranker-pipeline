@@ -87,19 +87,78 @@ def _company_fields(entry: dict[str, Any]) -> dict[str, Optional[str]]:
     }
 
 
+def _find_qa_provenance_rows(obj: Any, depth: int = 0) -> Optional[list]:
+    """Locate the flat ``qa_provenance_rows`` list anywhere under the payload.
+
+    ``load_job_results`` returns the worker-composed persisted shape, which
+    stores QA as a flat ``qa_provenance_rows`` list (build_qa_provenance_rows),
+    not the in-memory company list with ``final_state.all_qa_pairs``.
+    """
+    if not isinstance(obj, dict) or depth > 4:
+        return None
+    rows = obj.get("qa_provenance_rows")
+    if isinstance(rows, list) and rows:
+        return rows
+    for value in obj.values():
+        if isinstance(value, dict):
+            found = _find_qa_provenance_rows(value, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
+def _rows_from_qa_provenance(qa_rows: list) -> list[dict[str, Any]]:
+    """Build benchmark rows from persisted ``qa_provenance_rows``.
+
+    industry/domain/geo are not persisted at the row level; they don't affect
+    the skip decision (routing is by question + tag + aspect), so leaving them
+    None keeps the 0/35 gate correct while degrading only the query-text diff.
+    """
+    rows: list[dict[str, Any]] = []
+    for qa in qa_rows:
+        if not isinstance(qa, dict):
+            continue
+        question = qa.get("question") or ""
+        rows.append(
+            {
+                "company_name": qa.get("company_name") or qa.get("startup_slug") or "",
+                "industry": None,
+                "domain": None,
+                "geo": None,
+                "aspect": qa.get("aspect"),
+                "question": question,
+                "question_hash": question_hash(question),
+                "answer": qa.get("answer") or "",
+                "chunks_preview": qa.get("chunks_preview") or "",
+                "web_search_query": qa.get("web_search_query") or "",
+                "web_search_results": qa.get("web_search_results") or "",
+                "web_search_used": bool(qa.get("web_search_used")),
+                "web_search_decision": qa.get("web_search_decision") or "",
+            }
+        )
+    return rows
+
+
 def extract_qa_rows(results_payload: Any) -> list[dict[str, Any]]:
     """Flatten a persisted job results payload into per-question rows.
 
-    Accepts the ``load_job_results(...)`` return value (or any nesting of
-    ``{"results": ...}`` around the company list) and tolerates company
-    entries persisted as dicts.
+    Handles two shapes: the worker-composed persisted shape (flat
+    ``qa_provenance_rows``, what ``load_job_results`` returns) and the in-memory
+    pipeline shape (a list of company entries with ``final_state.all_qa_pairs``,
+    used by the synthetic tests).
     """
+    persisted = _find_qa_provenance_rows(results_payload) if isinstance(results_payload, dict) else None
+    if persisted is not None:
+        return _rows_from_qa_provenance(persisted)
+
     payload = results_payload
     for _ in range(3):
         if isinstance(payload, dict) and "results" in payload:
             payload = payload["results"]
     if not isinstance(payload, list):
-        raise ValueError("Unrecognized results payload shape: expected a company list")
+        raise ValueError(
+            "Unrecognized results payload shape: expected a company list or qa_provenance_rows"
+        )
 
     rows: list[dict[str, Any]] = []
     for entry in payload:
