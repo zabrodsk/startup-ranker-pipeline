@@ -113,12 +113,13 @@ class WebSearchPlan:
         }
 
 
+# Only genuinely-unanswerable private metrics skip. internal_fit was removed as
+# a skip route after the f20aa510 Gate-1 replay: those compound "does [company
+# fact] fit the VC?" questions are rescued by web search (the company-fact half
+# is public), so internal_fit now searches company-anchored instead of skipping.
 _SKIP_ROUTE_REASONS = {
     QuestionRoute.SKIP_PUBLIC_WEB: (
         "Exact private company metrics are unlikely to be publicly available."
-    ),
-    QuestionRoute.INTERNAL_FIT: (
-        "Question concerns the VC's internal investment fit; public web adds no evidence."
     ),
 }
 
@@ -379,6 +380,23 @@ def build_web_search_plan(
         rationale = f"static_root:{aspect}"
     else:
         route, rationale = _fallback_keyword_route(question)
+
+    # Gate-1 evidence (f20aa510): internal_fit questions are compound
+    # "does [company fact] fit the VC?" and the web rescues the company-fact
+    # half, so never skip them — search company-anchored instead. And only honor
+    # skip_public_web for genuinely-private metrics (funding stage etc. are
+    # public); a skip_public_web tag on anything else searches instead.
+    if route == QuestionRoute.INTERNAL_FIT:
+        return WebSearchPlan(
+            route=route,
+            queries=_company_specific_queries(question, company_name, company_domain),
+            relevance_policy=RelevancePolicy.COMPANY_MENTION,
+            skip_reason=None,
+            rationale=rationale,
+        )
+    if route == QuestionRoute.SKIP_PUBLIC_WEB and not _FALLBACK_SKIP_RE.search(question):
+        route = QuestionRoute.COMPANY_SPECIFIC
+        rationale = f"{rationale}->company_specific:not_private_metric"
 
     if route in _SKIP_ROUTE_REASONS:
         return WebSearchPlan(

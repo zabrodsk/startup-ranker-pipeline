@@ -46,24 +46,23 @@ def test_burn_rate_question_predicts_skip():
     assert skip is True
 
 
-def test_vc_thesis_question_predicts_internal_fit_skip():
-    skip, reason = predict_search_unanswerable(
+def test_vc_thesis_question_not_skipped():
+    # internal_fit now searches company-anchored (Gate-1 evidence), so no skip.
+    skip, _ = predict_search_unanswerable(
         question="Does this match the fund's investment thesis and stage focus?",
         company_name="Mantic",
     )
-    assert skip is True
-    assert reason.startswith("internal_fit")
+    assert skip is False
 
 
-def test_general_company_root_predicts_skip():
-    skip, reason = predict_search_unanswerable(
+def test_general_company_root_not_skipped():
+    skip, _ = predict_search_unanswerable(
         question="Overall assessment of the company.",
         company_name="Mantic",
         aspect="general_company",
         is_root=True,
     )
-    assert skip is True
-    assert reason.startswith("internal_fit")
+    assert skip is False
 
 
 def test_market_size_question_not_skipped():

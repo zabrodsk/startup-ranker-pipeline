@@ -87,14 +87,38 @@ def test_regulation_question_gets_broad_web():
     assert all(spec.domain_filter is None for spec in plan.queries)
 
 
-def test_internal_fit_route_runs_zero_queries():
+def test_internal_fit_route_searches_company_anchored():
+    # Gate-1 evidence (f20aa510): these compound questions are web-rescuable, so
+    # internal_fit now searches company-anchored instead of skipping.
     plan = build_web_search_plan(
         question="Does the company's stage align with the VC's investment thesis?",
         **MANTIC,
     )
     assert plan.route == QuestionRoute.INTERNAL_FIT
-    assert plan.queries == ()
-    assert plan.skip_reason
+    assert plan.queries
+    assert not plan.is_skip
+    assert plan.relevance_policy == RelevancePolicy.COMPANY_MENTION
+
+
+def test_skip_public_web_tag_downgraded_when_not_a_private_metric():
+    # Funding stage is public — a skip_public_web tag must not cause a skip.
+    plan = build_web_search_plan(
+        question="Is the company pre-seed, seed, or Series A?",
+        route_tag="skip_public_web",
+        **MANTIC,
+    )
+    assert not plan.is_skip
+    assert plan.route == QuestionRoute.COMPANY_SPECIFIC
+
+
+def test_skip_public_web_tag_honored_for_strict_private_metric():
+    plan = build_web_search_plan(
+        question="What is the company's ARR and monthly burn rate?",
+        route_tag="skip_public_web",
+        **MANTIC,
+    )
+    assert plan.is_skip
+    assert plan.route == QuestionRoute.SKIP_PUBLIC_WEB
 
 
 @pytest.mark.parametrize(
