@@ -232,18 +232,17 @@ def test_on_mode_competitors_multi_query_broad_web(harness, monkeypatch):
     assert answer == HYBRID_ANSWER
 
 
-def test_on_mode_internal_fit_runs_zero_searches(harness, monkeypatch):
+def test_on_mode_internal_fit_searches_company_anchored(harness, monkeypatch):
+    # internal_fit no longer skips — it searches company-anchored (Gate-1 fix).
     monkeypatch.setenv("RDI_WEB_EVIDENCE_PLANNER", "on")
     state = _state()
-    answer, prov = _answer(
+    _, prov = _answer(
         "Does the company's stage align with the VC's investment thesis?",
         _company(), state,
     )
-    assert harness.searches == []
-    assert state["count"][0] == 0  # no cap slot consumed
-    assert prov["web_search_decision"].startswith("skipped: planner internal_fit")
-    assert prov["web_search_used"] is False
-    assert answer == THIN_ANSWER
+    assert len(harness.searches) >= 1
+    assert prov["web_search_route"] == "internal_fit"
+    assert not prov["web_search_decision"].startswith("skipped: planner internal_fit")
 
 
 def test_on_mode_cap_counts_each_provider_call(harness, monkeypatch):
