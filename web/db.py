@@ -1994,6 +1994,35 @@ def upsert_job_control(
         _log_supabase_error("upsert_job_control", "job_controls", exc, job_id_legacy=job_id_legacy)
 
 
+def get_job_control(job_id_legacy: str) -> dict[str, Any]:
+    """Read persisted control flags (stop/pause) for a job.
+
+    Fail-open: a missing client/row or any read error returns all-False so a
+    flaky DB read can never spuriously stop a running batch.
+    """
+    default = {"stop_requested": False, "pause_requested": False, "last_action": None}
+    client = _get_client()
+    if not client:
+        return default
+    try:
+        resp = (
+            client.table("job_controls")
+            .select("stop_requested, pause_requested, last_action")
+            .eq("job_id_legacy", job_id_legacy)
+            .limit(1)
+            .execute()
+        )
+        row = (resp.data or [{}])[0] or {}
+        return {
+            "stop_requested": bool(row.get("stop_requested")),
+            "pause_requested": bool(row.get("pause_requested")),
+            "last_action": row.get("last_action"),
+        }
+    except Exception as exc:
+        _log_supabase_error("get_job_control", "job_controls", exc, job_id_legacy=job_id_legacy)
+        return default
+
+
 def insert_job_status_history(
     job_id_legacy: str,
     *,
