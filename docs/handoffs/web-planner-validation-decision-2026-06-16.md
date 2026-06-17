@@ -66,9 +66,10 @@ metadata was absent.
 - Flags ship **OFF by default**: `RDI_WEB_EVIDENCE_PLANNER`, `RDI_SKIP_UNANSWERABLE_SEARCH`.
   Merged Sprint 4 safety fixes (A1 CORS allowlist, A5 SESSION_SECRET fail-closed, A2 worker
   stop) are unaffected and stay merged.
-- **Action (Dusan):** confirm neither flag is set to `shadow`/`on` in the Railway **staging**
-  env. Validation used the offline/live replay harness, which calls the router directly
-  regardless of the prod flag — so the flag should already be unset, but please verify.
+- **Verified 2026-06-16:** neither flag is set in the Railway **staging** env (`railway status`
+  = staging; `railway variables | grep` returned nothing) — both sit at their default **off**.
+  Validation used the offline/live replay harness, which calls the router directly regardless of
+  the prod flag, so this confirms nothing was left enabled.
 - Replay tooling + `scripts/show_rescued_examples.py` (rescued-example inspector, company
   names tokenised) are retained for any future re-evaluation. Confidential replay artifacts
   live under `exports/` (gitignored).
