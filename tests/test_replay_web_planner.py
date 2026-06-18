@@ -21,11 +21,16 @@ from web.replay_web_planner import (
     is_rescued,
     merge_route_tags,
     predict_skip_for_row,
+    predict_targeted_skip_for_row,
     question_hash,
     route_distribution,
     select_live_sample,
     skip_prediction_stats,
     skip_predictor_false_positives,
+    synthesize_is_root,
+    targeted_skip_false_positives_by_aspect,
+    targeted_skip_stats,
+    web_added,
 )
 
 THIN = "Insufficient information available."
@@ -312,3 +317,86 @@ def test_extract_qa_rows_still_reads_in_memory_company_list():
     rows = extract_qa_rows(_payload([_qa("Q1?"), _qa("Q2?")]))
     assert len(rows) == 2
     assert rows[0]["company_name"] == "Mantic"
+
+
+# --- PR1: shared web_added + synthesize_is_root + Targeted skip set --------------
+
+
+def _qa_aspect(question, aspect, answer=THIN, used=False, query="Mantic q", results=""):
+    row = _qa(question, answer=answer, used=used, query=query, results=results)
+    row["aspect"] = aspect
+    return row
+
+
+def test_web_added_is_the_shared_real_win_definition():
+    # Searched + [web] cite + substantive -> a real win.
+    assert web_added(_qa("Q?", answer=RICH, used=True)) is True
+    # Searched but thin -> not a win.
+    assert web_added(_qa("Q?", answer=THIN, used=True)) is False
+    # Searched but no [web] cite -> not a win.
+    assert web_added({"answer": "Founders are strong [chunk_1].", "web_search_query": "q"}) is False
+    # Not searched -> not a win even if the text mentions [web].
+    assert web_added({"answer": "mentions [web]", "web_search_query": ""}) is False
+
+
+def test_synthesize_is_root_matches_canonical_questions():
+    from agent.pipeline.stages.constants import INVESTMENT_QUESTIONS
+
+    team_q = INVESTMENT_QUESTIONS["team"]
+    assert synthesize_is_root({"question": team_q}) is True
+    assert synthesize_is_root({"question": f"  {team_q.upper()}  "}) is True  # normalized
+    assert synthesize_is_root({"question": "Who are the founders?"}) is False
+    assert synthesize_is_root({"question": ""}) is False
+
+
+def test_predict_targeted_skip_for_row_skips_team_keeps_market():
+    rows = extract_qa_rows(_payload([
+        _qa_aspect("Who are the key founders and their track record?", "team", answer=RICH, used=True),
+        _qa_aspect("What is the market size and TAM?", "market", answer=RICH, used=True),
+    ]))
+    skip_team, reason_team = predict_targeted_skip_for_row(rows[0])
+    skip_market, _ = predict_targeted_skip_for_row(rows[1])
+    assert skip_team is True
+    assert "team" in reason_team
+    assert skip_market is False
+
+
+def test_targeted_false_positives_market_product_empty_on_rescued_set():
+    rows = extract_qa_rows(_payload([
+        _qa_aspect("Who are the founders?", "team", answer=RICH, used=True),
+        _qa_aspect("What is the market size and TAM?", "market", answer=RICH, used=True),
+        _qa_aspect("What are the product's core features?", "product", answer=RICH, used=True),
+    ]))
+    by_aspect = targeted_skip_false_positives_by_aspect([r for r in rows if is_rescued(r)])
+    assert by_aspect.get("market", []) == []      # the theorem
+    assert by_aspect.get("product", []) == []     # the theorem
+    assert len(by_aspect.get("team", [])) == 1    # allowed, intended drop
+
+
+def test_targeted_skip_stats_shape_and_band_scoped_pass():
+    rows = extract_qa_rows(_payload([
+        _qa_aspect("Who are the founders?", "team", answer=THIN, used=True),            # team -> suppressed
+        _qa_aspect("What is the market size and TAM?", "market", answer=RICH, used=True),  # market rescue, kept
+        _qa_aspect("What is the company's ARR?", "general_company", answer=THIN, used=True),  # private metric
+    ]))
+    stats = targeted_skip_stats(rows)
+    assert stats["total_rows"] == 3
+    assert stats["pass"] is True                          # no market/product false-skips
+    assert stats["false_skips"]["market"] == 0
+    assert stats["false_skips"]["product"] == 0
+    assert stats["saving"]["searches_suppressed_total"] >= 2   # team + ARR
+    # team arm buys at least one extra suppression over the shipped predictor.
+    assert stats["saving"]["delta_vs_current_skip_set"] >= 1
+    assert stats["tag_coverage"]["total"] == 3
+    assert "web_added_denominator" in stats["false_skips"]
+
+
+def test_targeted_skip_stats_fails_when_market_rescue_would_be_dropped():
+    # Force the residual-risk cell: a rescued market answer mistagged internal_fit.
+    rows = extract_qa_rows(_payload([
+        _qa_aspect("What is the market size and TAM?", "market", answer=RICH, used=True),
+    ]))
+    tags = {rows[0]["question_hash"]: "internal_fit"}
+    stats = targeted_skip_stats(rows, tags)
+    assert stats["false_skips"]["market"] == 1
+    assert stats["pass"] is False

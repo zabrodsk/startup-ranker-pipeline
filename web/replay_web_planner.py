@@ -27,6 +27,7 @@ import csv
 import hashlib
 import json
 import random
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -36,6 +37,7 @@ from agent.evidence_answering import (
     _run_web_search,
     _web_results_add_value,
 )
+from agent.pipeline.stages.constants import INVESTMENT_QUESTIONS
 from agent.web_search.planner import (
     ROUTE_TAGGING_INSTRUCTION,
     QuestionRoute,
@@ -44,7 +46,10 @@ from agent.web_search.planner import (
     evaluate_web_result_relevance,
     normalize_route_tag,
 )
-from agent.web_search.unanswerable import predict_search_unanswerable
+from agent.web_search.unanswerable import (
+    predict_search_unanswerable,
+    predict_targeted_skip,
+)
 
 DEFAULT_JOB_ID = "f20aa510"
 DEFAULT_OUT_DIR = Path("exports/web_planner_replay")
@@ -201,6 +206,33 @@ def was_searched(row: dict[str, Any]) -> bool:
     return bool(row.get("web_search_query"))
 
 
+# The single source of truth for "web search actually made it into the answer":
+# a search ran AND the final answer cites [web] AND the answer is not thin. The
+# audit tool (scripts/audit_run_evidence.py) imports this so its WEB_ADDED bucket
+# and the replay merge-gate's false-skip denominator can never drift apart.
+WEB_CITE = re.compile(r"\[web\]", re.IGNORECASE)
+
+
+def web_added(row: dict[str, Any]) -> bool:
+    """True iff a web search ran and its evidence reached a substantive answer."""
+    if not was_searched(row):
+        return False
+    answer = row.get("answer", "") or ""
+    return bool(WEB_CITE.search(answer)) and not is_thin_answer(answer)
+
+
+# Persisted rows lose tree depth (build_plan_for_row pins is_root=False), so the
+# planner's static-root map never fires in replay. Recover it for the targeted
+# scorer by matching the question text against the canonical root questions
+# (Risk R1) — otherwise the four templated root questions go unmeasured.
+_ROOT_QUESTIONS = frozenset(q.strip().lower() for q in INVESTMENT_QUESTIONS.values())
+
+
+def synthesize_is_root(row: dict[str, Any]) -> bool:
+    """True when the persisted question is a canonical root investment question."""
+    return (row.get("question") or "").strip().lower() in _ROOT_QUESTIONS
+
+
 # ---------------------------------------------------------------------------
 # Plan building (replay + live share this)
 # ---------------------------------------------------------------------------
@@ -325,6 +357,132 @@ def skip_prediction_stats(
         "projected_searches_saved_per_company": round(skipped_thin / max(1, len(companies)), 2),
         "offenders": offenders,
         "pass": not offenders,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Targeted ("Off / Targeted / Full") skip set — broader than the shipped
+# predictor (re-adds internal_fit + the team aspect band). Opt-in, so the merge
+# gate is band-scoped: ZERO false-skips on market/product (a theorem for the
+# team arm), while team / general_company drops are the intended savings.
+# ---------------------------------------------------------------------------
+
+
+def predict_targeted_skip_for_row(
+    row: dict[str, Any],
+    route_tags: dict[str, str] | None = None,
+) -> tuple[bool, str]:
+    """Run the Targeted predictor for one persisted row (root-aware via R1)."""
+    tag = (route_tags or {}).get(row["question_hash"])
+    return predict_targeted_skip(
+        question=row["question"],
+        route_tag=tag,
+        aspect=row.get("aspect"),
+        company_name=row["company_name"],
+        company_domain=row.get("domain"),
+        industry=row.get("industry"),
+        is_root=synthesize_is_root(row),
+    )
+
+
+def targeted_skip_false_positives_by_aspect(
+    rows: Iterable[dict[str, Any]],
+    route_tags: dict[str, str] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Bucket, by aspect, value-adding rows that Targeted would have skipped.
+
+    Pass rows that genuinely earned their search (``is_rescued`` or ``web_added``);
+    every returned row is therefore a false skip. The market and product buckets
+    MUST be empty for the gate to pass.
+    """
+    by_aspect: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        skip, reason = predict_targeted_skip_for_row(row, route_tags)
+        if not skip:
+            continue
+        aspect = str(row.get("aspect") or "?")
+        by_aspect.setdefault(aspect, []).append(
+            {
+                "company_name": row["company_name"],
+                "question": row["question"],
+                "aspect": row.get("aspect"),
+                "reason": reason,
+            }
+        )
+    return by_aspect
+
+
+def targeted_skip_stats(
+    rows: Iterable[dict[str, Any]],
+    route_tags: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Saving + band-scoped false-skip stats for the Targeted skip set.
+
+    ``pass`` == zero false-skips on the market and product aspect bands, measured
+    over the conservative ``is_rescued`` denominator (also reported over the
+    stricter ``web_added`` denominator). team / general_company drops are the
+    intended, opted-into savings and do not fail the gate.
+    """
+    rows = list(rows)
+    total = len(rows)
+    companies = {r["company_name"] for r in rows}
+
+    # "documents incomplete" proxy: thin answers that actually ran a search.
+    thin_searched = [r for r in rows if was_searched(r) and is_thin_answer(r.get("answer", ""))]
+    suppressed = [r for r in thin_searched if predict_targeted_skip_for_row(r, route_tags)[0]]
+    suppressed_by_aspect: dict[str, int] = {}
+    for r in suppressed:
+        key = str(r.get("aspect") or "?")
+        suppressed_by_aspect[key] = suppressed_by_aspect.get(key, 0) + 1
+    current_suppressed = sum(
+        1 for r in thin_searched if predict_skip_for_row(r, route_tags)[0]
+    )
+
+    rescued_rows = [r for r in rows if is_rescued(r)]
+    fs_by_aspect = targeted_skip_false_positives_by_aspect(rescued_rows, route_tags)
+    web_added_rows = [r for r in rows if web_added(r)]
+    fs_web_added = targeted_skip_false_positives_by_aspect(web_added_rows, route_tags)
+
+    market_fs = len(fs_by_aspect.get("market", []))
+    product_fs = len(fs_by_aspect.get("product", []))
+    team_fs = len(fs_by_aspect.get("team", []))
+    tagged = sum(1 for r in rows if (route_tags or {}).get(r["question_hash"]))
+
+    return {
+        "total_rows": total,
+        "documents_incomplete_rows": len(thin_searched),
+        "saving": {
+            "searches_suppressed_total": len(suppressed),
+            "searches_suppressed_by_aspect": suppressed_by_aspect,
+            "projected_searches_saved_per_company": round(
+                len(suppressed) / max(1, len(companies)), 2
+            ),
+            "delta_vs_current_skip_set": len(suppressed) - current_suppressed,
+        },
+        "false_skips": {
+            "denominator": "is_rescued",
+            "rescued_rows": len(rescued_rows),
+            "market": market_fs,
+            "product": product_fs,
+            "team": team_fs,
+            "by_aspect": {a: len(v) for a, v in fs_by_aspect.items()},
+            "offenders_market_product": (
+                fs_by_aspect.get("market", []) + fs_by_aspect.get("product", [])
+            ),
+            "offenders_team": fs_by_aspect.get("team", []),
+            "web_added_denominator": {
+                "web_added_rows": len(web_added_rows),
+                "market": len(fs_web_added.get("market", [])),
+                "product": len(fs_web_added.get("product", [])),
+                "by_aspect": {a: len(v) for a, v in fs_web_added.items()},
+            },
+        },
+        "tag_coverage": {
+            "tagged": tagged,
+            "total": total,
+            "ratio": round(tagged / total, 4) if total else 0.0,
+        },
+        "pass": market_fs == 0 and product_fs == 0,
     }
 
 

@@ -38,6 +38,7 @@ from web.replay_web_planner import (  # noqa: E402
     run_live_stage,
     run_tag_stage,
     skip_prediction_stats,
+    targeted_skip_stats,
 )
 
 
@@ -52,6 +53,13 @@ def main() -> int:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument(
+        "--targeted",
+        action="store_true",
+        help="On --stage skip: score the Targeted (Off/Targeted/Full) skip set "
+        "with a band-scoped 0-false-skip gate on market/product, instead of the "
+        "shipped conservative predictor.",
+    )
     args = parser.parse_args()
 
     out_dir = args.out / args.job_id
@@ -67,6 +75,30 @@ def main() -> int:
     if not route_tags:
         print("WARNING: no route_tags.json found — run --stage tag first; "
               "falling back to keyword routing only.")
+
+    if args.stage == "skip" and args.targeted:
+        # FREE/offline: score the Targeted skip set. Band-scoped gate — ZERO
+        # false-skips on the market/product bands (is_rescued denominator);
+        # team / general_company drops are the intended, opted-into savings.
+        stats = targeted_skip_stats(rows, route_tags)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "targeted_skip_report.json").write_text(json.dumps(stats, indent=2))
+        print(json.dumps(stats, indent=2))
+        fs = stats["false_skips"]
+        cov = stats["tag_coverage"]
+        if not stats["pass"]:
+            print(
+                f"FAIL: Targeted would skip rescued market/product answers "
+                f"(market={fs['market']}, product={fs['product']}; hard gate is 0). "
+                f"See targeted_skip_report.json offenders_market_product."
+            )
+            return 1
+        print(
+            f"PASS: 0 market/product false-skips (allowed team={fs['team']}; "
+            f"saving delta_vs_current={stats['saving']['delta_vs_current_skip_set']}; "
+            f"tag_coverage={cov['tagged']}/{cov['total']})."
+        )
+        return 0
 
     if args.stage == "skip":
         # FREE/offline: predict which "documents incomplete" searches the
