@@ -187,6 +187,9 @@ async def _process_company(args: argparse.Namespace) -> int:
     versions = payload.get("versions") or {}
     job_id = args.job_id
     use_web_search = bool(args.use_web_search)
+    # Per-run web-search intensity (Off/Targeted/Full) rides in run_config; carry
+    # it on the run context so the answering hook can gate Targeted vs Full.
+    web_search_mode = run_config.get("web_search_mode")
     vc_investment_strategy = args.vc_investment_strategy or run_config.get("vc_investment_strategy")
     llm_selection = _llm_selection_from_run_config(run_config)
     pipeline_policy = _pipeline_policy_from_run_config(run_config)
@@ -237,6 +240,7 @@ async def _process_company(args: argparse.Namespace) -> int:
             llm_selection=llm_selection,
             telemetry_collector=collector,
             pipeline_policy=pipeline_policy,
+            web_search_mode=web_search_mode,
         ):
             result = await evaluate_from_specter(
                 company,

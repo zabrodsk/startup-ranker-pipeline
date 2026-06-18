@@ -90,6 +90,9 @@ def harness(monkeypatch):
     monkeypatch.delenv("RDI_WEB_EVIDENCE_PLANNER", raising=False)
     monkeypatch.delenv("WEB_SEARCH_HEAVY_OVERRIDE", raising=False)
     monkeypatch.delenv("RDI_SKIP_UNANSWERABLE_SEARCH", raising=False)
+    # The hook resolves a web-search mode on every answer; keep the fleet-default
+    # env unset so all tests default to "full" (byte-identical legacy behavior).
+    monkeypatch.delenv("RDI_WEB_SEARCH_MODE", raising=False)
     return rec
 
 
@@ -422,3 +425,101 @@ def test_skip_gate_on_with_planner_on_skips_once_gate_wins(harness, monkeypatch)
     assert len(harness.searches) == 0  # single skip, no double-anything
     assert state["count"][0] == 0
     assert prov["web_search_decision"].startswith("skipped: predicted unanswerable")
+
+
+# --- PR2: per-run Targeted intensity (Off / Targeted / Full) --------------------
+# Mode precedence in the hook: explicit arg > run-context > RDI_WEB_SEARCH_MODE >
+# "full". "off" is enforced upstream (use_web_search=False) and never reaches here.
+TEAM_QUESTION = "Who are the key members of the founding team and their track record?"
+MARKET_QUESTION = "What is the market size, TAM, and growth of the target market?"
+
+
+def test_targeted_skips_thin_team_question_no_cap(harness):
+    state = _state()
+    answer, prov = _answer(
+        TEAM_QUESTION, _company(), state,
+        aspect="team", web_search_mode="targeted",
+    )
+    assert len(harness.searches) == 0           # team band -> suppressed
+    assert state["count"][0] == 0               # no cap slot consumed
+    assert answer == THIN_ANSWER                # grounded answer kept
+    assert prov["web_search_used"] is False
+    assert prov["web_search_decision"].startswith("skipped: targeted")
+    assert prov["targeted_skip"]["predicted_skip"] is True
+    assert prov["targeted_skip"]["mode"] == "targeted"
+
+
+def test_targeted_preserves_market_question(harness):
+    harness.search_result = SECTOR_RESULT
+    _, prov = _answer(
+        MARKET_QUESTION, _company(), _state(),
+        aspect="market", web_search_mode="targeted",
+    )
+    assert len(harness.searches) >= 1           # market band -> search runs
+    assert prov["targeted_skip"]["predicted_skip"] is False
+
+
+def test_full_and_none_modes_are_byte_identical(harness):
+    company = _company()
+    _, prov_default = _answer(SKIP_QUESTION, company, _state())
+    default_searches = list(harness.searches)
+    assert "targeted_skip" not in prov_default
+
+    harness.searches.clear()
+    _, prov_full = _answer(SKIP_QUESTION, company, _state(), web_search_mode="full")
+    assert harness.searches == default_searches
+    assert prov_full == prov_default
+    assert "targeted_skip" not in prov_full
+
+    harness.searches.clear()
+    _, prov_none = _answer(SKIP_QUESTION, company, _state(), web_search_mode=None)
+    assert harness.searches == default_searches
+    assert prov_none == prov_default
+
+
+def test_off_is_enforced_upstream_not_in_answer_layer(harness):
+    # "off" only resolves a label here; suppression is upstream (use_web_search).
+    # With use_web_search=True + mode "off", the search still runs (off never
+    # reaches this layer in production) and no targeted prediction is recorded.
+    _, prov = _answer(
+        "Has the company announced funding?", _company(), _state(),
+        web_search_mode="off",
+    )
+    assert len(harness.searches) == 1
+    assert "targeted_skip" not in prov
+
+
+def test_targeted_suppresses_c1_env_hook_no_double_fire(harness, monkeypatch):
+    monkeypatch.setenv("RDI_SKIP_UNANSWERABLE_SEARCH", "on")
+    state = _state()
+    _, prov = _answer(
+        TEAM_QUESTION, _company(), state,
+        aspect="team", web_search_mode="targeted",
+    )
+    assert len(harness.searches) == 0
+    assert state["count"][0] == 0
+    assert prov["web_search_decision"].startswith("skipped: targeted")
+    assert "skip_unanswerable" not in prov       # C1 block guarded off under targeted
+
+
+def test_run_context_mode_used_when_arg_absent(harness):
+    from agent.run_context import use_run_context
+
+    state = _state()
+    with use_run_context(web_search_mode="targeted"):
+        _, prov = _answer(TEAM_QUESTION, _company(), state, aspect="team")
+    assert len(harness.searches) == 0            # per-run context mode honored
+    assert prov["targeted_skip"]["predicted_skip"] is True
+
+
+def test_explicit_arg_overrides_run_context(harness):
+    from agent.run_context import use_run_context
+
+    # Context says targeted, explicit arg says full -> full wins (search runs).
+    with use_run_context(web_search_mode="targeted"):
+        _, prov = _answer(
+            TEAM_QUESTION, _company(), _state(),
+            aspect="team", web_search_mode="full",
+        )
+    assert len(harness.searches) == 1
+    assert "targeted_skip" not in prov

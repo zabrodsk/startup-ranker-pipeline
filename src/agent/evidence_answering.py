@@ -169,11 +169,14 @@ from agent.web_search.planner import (
 )
 from agent.web_search.unanswerable import (
     predict_search_unanswerable,
+    predict_targeted_skip,
+    resolve_web_search_mode,
     skip_unanswerable_mode,
 )
 from agent.run_context import (
     get_current_collector,
     get_current_pipeline_policy,
+    get_current_web_search_mode,
     use_phase_llm,
     use_stage_context,
 )
@@ -528,6 +531,7 @@ async def answer_question_from_evidence(
     prompt_overrides: dict[str, Any] | None = None,
     is_root: bool = False,
     route: str | None = None,
+    web_search_mode: str | None = None,
 ) -> tuple[str, dict]:
     """Answer a single question using retrieved document chunks and optional web search.
 
@@ -580,6 +584,7 @@ async def answer_question_from_evidence(
     web_search_route: str | None = None
     web_search_plan_dict: dict[str, Any] | None = None
     skip_prediction_dict: dict[str, Any] | None = None
+    targeted_skip_dict: dict[str, Any] | None = None
 
     def _provenance() -> dict:
         prov: dict[str, Any] = {
@@ -597,6 +602,10 @@ async def answer_question_from_evidence(
         # Skip-gate prediction (Sprint 4 C) — present only in shadow/on modes.
         if skip_prediction_dict is not None:
             prov["skip_unanswerable"] = skip_prediction_dict
+        # Targeted intensity prediction — present only when the resolved mode is
+        # "targeted"; absent in Full/unset so off-mode provenance is identical.
+        if targeted_skip_dict is not None:
+            prov["targeted_skip"] = targeted_skip_dict
         return prov
 
 
@@ -621,7 +630,7 @@ async def answer_question_from_evidence(
 
     async def _do_llm_call() -> tuple[str, dict]:
         nonlocal web_search_query, web_search_results, web_search_used, web_search_decision
-        nonlocal web_search_route, web_search_plan_dict, skip_prediction_dict
+        nonlocal web_search_route, web_search_plan_dict, skip_prediction_dict, targeted_skip_dict
         policy = get_current_pipeline_policy()
 
         async def _hybrid_answer(web_results_text: str) -> str:
@@ -774,14 +783,44 @@ async def answer_question_from_evidence(
         needs_search = search_reason is not None
         web_search_decision = f"needed: {search_reason}" if search_reason else "not needed"
 
+        # Per-run Targeted intensity (Off/Targeted/Full): gate ONLY the ungated
+        # "documents incomplete" reason — the heavy-override (market/product win
+        # band) stays ungated in every mode, which is how Targeted keeps searching
+        # market/product while suppressing the wasteful documents-incomplete gaps.
+        # Mode precedence: explicit arg > per-run run-context > RDI_WEB_SEARCH_MODE
+        # > "full". Full/unset resolves to "full" and skips this branch entirely,
+        # so the path stays byte-identical.
+        web_mode = resolve_web_search_mode(
+            web_search_mode if web_search_mode is not None else get_current_web_search_mode()
+        )
+        if web_mode == "targeted" and search_reason == "documents incomplete":
+            predicted_skip, targeted_reason = predict_targeted_skip(
+                question=question,
+                route_tag=route,
+                aspect=aspect,
+                company_name=company.name,
+                company_domain=company.domain,
+                industry=company.industry,
+                is_root=is_root,
+            )
+            targeted_skip_dict = {
+                "mode": web_mode,
+                "predicted_skip": predicted_skip,
+                "reason": targeted_reason,
+            }
+            if predicted_skip:
+                web_search_decision = f"skipped: targeted — {targeted_reason}"
+                return (grounded_answer, _provenance())
+
         # Skip predictably-unanswerable searches (Sprint 4 C): gate ONLY the
         # ungated "documents incomplete" reason. Off-mode never consults the
         # predictor, so the search path stays byte-identical. The predictor
         # delegates to the planner router, so when the planner is also "on" it
         # would skip the same set — this gate just decides it first (no double
-        # skip, no cap double-count).
+        # skip, no cap double-count). Suppressed under "targeted" (the broadened
+        # predictor above already decided) so the two never double-skip.
         skip_mode = skip_unanswerable_mode()
-        if skip_mode != "off" and search_reason == "documents incomplete":
+        if web_mode != "targeted" and skip_mode != "off" and search_reason == "documents incomplete":
             predicted_skip, skip_reason_text = predict_search_unanswerable(
                 question=question,
                 route_tag=route,
@@ -934,6 +973,7 @@ async def _answer_node_from_evidence(
     aspect: str = "",
     prompt_overrides: dict[str, Any] | None = None,
     is_root: bool = False,
+    web_search_mode: str | None = None,
 ) -> None:
     """Recursively answer a question node and its children from evidence.
 
@@ -961,6 +1001,7 @@ async def _answer_node_from_evidence(
                 aspect=aspect,
                 prompt_overrides=prompt_overrides,
                 is_root=False,
+                web_search_mode=web_search_mode,
             )
             for child in node.sub_nodes
         ]
@@ -980,6 +1021,7 @@ async def _answer_node_from_evidence(
         # Decomposition-time route tag (PR4 adds QuestionNode.route; getattr
         # keeps this working against routeless trees and old cached payloads).
         route=getattr(node, "route", None),
+        web_search_mode=web_search_mode,
     )
     node.answer = answer
     node.provenance = provenance
@@ -1002,6 +1044,7 @@ async def answer_all_trees_from_evidence(
     on_cooperate: Callable[[], Awaitable[None]] | None = None,
     vc_context: str = "",
     prompt_overrides: dict[str, Any] | None = None,
+    web_search_mode: str | None = None,
 ) -> List[Dict[str, str]]:
     """Answer all question trees using document evidence and optional web search.
 
@@ -1044,6 +1087,7 @@ async def answer_all_trees_from_evidence(
             aspect=aspect,
             prompt_overrides=prompt_overrides,
             is_root=True,
+            web_search_mode=web_search_mode,
         )
         for aspect, tree in question_trees.items()
     ]

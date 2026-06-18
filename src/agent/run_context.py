@@ -30,6 +30,10 @@ _pipeline_policy_var: ContextVar["PipelineModelPolicy | None"] = ContextVar(
     "pipeline_policy",
     default=None,
 )
+# Per-run web-search intensity ("off" | "targeted" | "full"), set once at the
+# run boundary (web app or worker) from the per-run request/run_config. The
+# answering layer reads it as the fallback when no explicit mode is threaded.
+_web_search_mode_var: ContextVar[str | None] = ContextVar("web_search_mode", default=None)
 
 
 def get_current_llm_selection() -> dict[str, Any] | None:
@@ -54,6 +58,11 @@ def get_current_llm_request_settings() -> dict[str, Any] | None:
 
 def get_current_pipeline_policy() -> "PipelineModelPolicy | None":
     return _pipeline_policy_var.get()
+
+
+def get_current_web_search_mode() -> str | None:
+    """Per-run web-search intensity (off|targeted|full); None when unset."""
+    return _web_search_mode_var.get()
 
 
 def _normalize_selection(selection: dict[str, Any]) -> dict[str, Any]:
@@ -88,10 +97,12 @@ def use_run_context(
     llm_selection: dict[str, Any] | None = None,
     telemetry_collector: "RunTelemetryCollector | None" = None,
     pipeline_policy: "PipelineModelPolicy | None" = None,
+    web_search_mode: str | None = None,
 ) -> Iterator[None]:
     llm_token: Token[dict[str, Any] | None] | None = None
     telemetry_token: Token[RunTelemetryCollector | None] | None = None
     policy_token: Token["PipelineModelPolicy | None"] | None = None
+    web_mode_token: Token[str | None] | None = None
     request_settings_token = _llm_request_settings_var.set(None)
     if llm_selection is not None:
         llm_token = _llm_selection_var.set(_normalize_selection(llm_selection))
@@ -99,9 +110,13 @@ def use_run_context(
         telemetry_token = _telemetry_collector_var.set(telemetry_collector)
     if pipeline_policy is not None:
         policy_token = _pipeline_policy_var.set(pipeline_policy)
+    if web_search_mode is not None:
+        web_mode_token = _web_search_mode_var.set(web_search_mode)
     try:
         yield
     finally:
+        if web_mode_token is not None:
+            _web_search_mode_var.reset(web_mode_token)
         if policy_token is not None:
             _pipeline_policy_var.reset(policy_token)
         if telemetry_token is not None:

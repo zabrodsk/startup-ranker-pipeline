@@ -954,8 +954,17 @@ def _ensure_str(val: Any) -> str:
     return str(val)
 
 
+def _request_web_search_mode(web_search_mode: str | None, use_web_search: bool) -> str:
+    """Derive the per-run web-search mode: an explicit value wins; otherwise the
+    legacy use_web_search bool maps (True -> "full", False -> "off")."""
+    return web_search_mode or ("full" if use_web_search else "off")
+
+
 class AnalyzeRequest(BaseModel):
     use_web_search: bool = False
+    # Per-run web-search intensity. None keeps legacy use_web_search semantics
+    # (True -> "full", False -> "off"); an explicit value is authoritative.
+    web_search_mode: Literal["off", "targeted", "full"] | None = None
     use_specter_mcp: bool = True
     fetch_full_team: bool = False
     # Duplicate-run gate (Sprint 3): bypass reuse of recent identical runs.
@@ -1934,6 +1943,7 @@ def _get_job_summary(job_id: str, job: AnalysisStatus) -> dict[str, Any]:
             else cache.get("input_mode")
         ),
         "use_web_search": None,
+        "web_search_mode": run_config.get("web_search_mode"),
         "run_name": cache.get("run_name") or run_config.get("run_name"),
         "started_by_user_id": job.started_by_user_id or run_config.get("started_by_user_id"),
         "started_by_email": job.started_by_email or run_config.get("started_by_email"),
@@ -1982,6 +1992,10 @@ def _list_jobs_for_ui() -> list[dict[str, Any]]:
                     "created_at": entry.get("created_at") or (existing or {}).get("created_at"),
                     "input_mode": entry.get("input_mode") or (existing or {}).get("input_mode"),
                     "use_web_search": entry.get("use_web_search"),
+                    "web_search_mode": (
+                        (entry.get("run_config") or {}).get("web_search_mode")
+                        or (existing or {}).get("web_search_mode")
+                    ),
                     "run_name": entry.get("run_name") or (existing or {}).get("run_name"),
                     "started_by_user_id": entry.get("started_by_user_id") or (existing or {}).get("started_by_user_id"),
                     "started_by_email": entry.get("started_by_email") or (existing or {}).get("started_by_email"),
@@ -7010,10 +7024,15 @@ async def _start_analysis_job(
     cache["started_by_email"] = started_by.get("started_by_email")
     cache["started_by_display_name"] = started_by.get("started_by_display_name")
     cache["started_by_label"] = started_by.get("started_by_label")
+    # Resolve the per-run web-search intensity once; keep use_web_search a
+    # consistent derived bool (mode != "off") for the legacy worker plumbing.
+    web_search_mode = _request_web_search_mode(req.web_search_mode, req.use_web_search)
+    use_web_search_effective = web_search_mode != "off"
     cache["input_mode"] = req.input_mode
     cache["run_name"] = req.run_name
     cache["vc_investment_strategy"] = req.vc_investment_strategy
-    cache["use_web_search"] = req.use_web_search
+    cache["use_web_search"] = use_web_search_effective
+    cache["web_search_mode"] = web_search_mode
     cache["use_specter_mcp"] = req.use_specter_mcp
     cache["fetch_full_team"] = req.fetch_full_team
     cache["instructions"] = req.instructions
@@ -7032,7 +7051,8 @@ async def _start_analysis_job(
         "run_name": req.run_name,
         "vc_investment_strategy": req.vc_investment_strategy,
         "instructions": req.instructions,
-        "use_web_search": req.use_web_search,
+        "use_web_search": use_web_search_effective,
+        "web_search_mode": web_search_mode,
         "use_specter_mcp": req.use_specter_mcp,
         "fetch_full_team": req.fetch_full_team,
         "phase_models": phase_models if (req.phase_models or pipeline_policy is not None and quality_tier is None) else None,
@@ -7066,7 +7086,7 @@ async def _start_analysis_job(
         if queued:
             _set_job_status(job_id, "running", worker_message or "Queued for worker...", source="start_analysis")
             _append_progress_and_log(job_id, worker_message or "Queued for worker...")
-            return {"status": "running", "use_web_search": req.use_web_search, "llm": llm_display}
+            return {"status": "running", "use_web_search": use_web_search_effective, "web_search_mode": web_search_mode, "llm": llm_display}
         queue_error = worker_message or "Unknown worker queue error."
         _set_job_status(job_id, "error", f"Worker queue failed. {queue_error}", source="start_analysis")
         _append_progress_and_log(job_id, f"Worker queue failed — {queue_error}")
@@ -7078,7 +7098,7 @@ async def _start_analysis_job(
         target=lambda: asyncio.run(
             _run_analysis(
                 job_id,
-                use_web_search=req.use_web_search,
+                use_web_search=use_web_search_effective,
                 use_specter_mcp=req.use_specter_mcp,
                 fetch_full_team=req.fetch_full_team,
                 instructions=inst,
@@ -7086,11 +7106,12 @@ async def _start_analysis_job(
                 vc_investment_strategy=vc_str,
                 llm_selection=llm_selection,
                 pipeline_policy=pipeline_policy,
+                web_search_mode=web_search_mode,
             )
         ),
         daemon=True,
     ).start()
-    return {"status": "running", "use_web_search": req.use_web_search, "llm": llm_display}
+    return {"status": "running", "use_web_search": use_web_search_effective, "web_search_mode": web_search_mode, "llm": llm_display}
 
 
 @app.post("/api/analyze/{job_id}")
@@ -8070,6 +8091,7 @@ async def _run_analysis(
     vc_investment_strategy: str | None = None,
     llm_selection: dict[str, Any] | None = None,
     pipeline_policy: Any = None,
+    web_search_mode: str | None = None,
 ):
     try:
         selection = llm_selection or _resolve_job_llm_selection(job_id)
@@ -8080,6 +8102,7 @@ async def _run_analysis(
             llm_selection=selection,
             telemetry_collector=collector,
             pipeline_policy=pipeline_policy,
+            web_search_mode=web_search_mode,
         ):
             await _cooperate_with_job_control(job_id)
             upload_dir = Path(_results_cache[job_id]["upload_dir"])

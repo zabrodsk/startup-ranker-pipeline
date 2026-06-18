@@ -545,6 +545,38 @@
       border: 1px solid var(--green-border);
       color: var(--green);
     }
+    .web-intensity-toggle {
+      display: flex;
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 4px;
+      gap: 4px;
+      max-width: 280px;
+    }
+    .web-intensity-option {
+      flex: 1;
+      padding: 8px 14px;
+      background: transparent;
+      border: none;
+      border-radius: var(--radius-md);
+      color: var(--text-gray);
+      font: 600 12px var(--font-body);
+      cursor: pointer;
+      transition: all 0.2s;
+      text-align: center;
+    }
+    .web-intensity-option:hover { color: var(--text-light); }
+    .web-intensity-option.active {
+      background: var(--green-surface-muted);
+      border: 1px solid var(--green-border);
+      color: var(--green);
+    }
+    .web-intensity-hint {
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-top: 6px;
+    }
     .input-mode-hint {
       font-size: 12px;
       color: var(--text-dim);
@@ -5055,6 +5087,13 @@
             <span class="toggle-desc">Documents are primary. Web search only fills gaps when uploaded files have no evidence.</span>
           </div>
         </label>
+        <div class="web-search-intensity" id="web-search-intensity" style="display:none;margin-top:12px;padding-left:52px;">
+          <div class="web-intensity-toggle" role="radiogroup" aria-label="Web search intensity">
+            <button type="button" class="web-intensity-option" data-web-intensity="targeted">Targeted</button>
+            <button type="button" class="web-intensity-option active" data-web-intensity="full">Full</button>
+          </div>
+          <p class="web-intensity-hint" id="web-search-intensity-hint">Full searches every gap (default). Targeted searches only market &amp; product landscape questions — cheaper, fewer wasted calls.</p>
+        </div>
       </div>
 
       <div class="web-search-toggle" id="specter-mcp-toggle" style="display:none;margin-top:16px;">
@@ -5860,6 +5899,7 @@ function syncRecentRunsWithSavedJobs() {
     assign('input_mode', saved.input_mode || next.input_mode || null);
     assign('runName', saved.runName || next.runName || null);
     assign('useWebSearch', saved.useWebSearch === true);
+    assign('webSearchMode', saved.webSearchMode || null);
     assign('llm', saved.llm || next.llm || null);
     assign('hasResults', saved.hasResults === true);
     assign('canOpenResults', saved.canOpenResults === true);
@@ -7163,7 +7203,7 @@ function renderSavedJobCards(
       createdLine ? `Saved ${createdLine}` : '',
       modeLabel,
       run.started_by_label ? `Started by ${run.started_by_label}` : 'Legacy run',
-      run.useWebSearch === true ? 'Web search on' : '',
+      run.useWebSearch === true ? `Web search: ${run.webSearchMode === 'targeted' ? 'Targeted' : 'Full'}` : '',
       run.jobId ? `Job ${run.jobId}` : '',
     ].filter(Boolean);
     const subtitle = run.progress || createdLine || 'Saved analysis';
@@ -8499,6 +8539,7 @@ async function fetchSavedJobs({ silent = true } = {}) {
       started_by_display_name: job.started_by_display_name || null,
       started_by_label: job.started_by_label || null,
       useWebSearch: job.use_web_search === true,
+      webSearchMode: job.web_search_mode || null,
       results: job.results || null,
       hasResults: job.has_results === true || !!job.results,
       canOpenResults: job.can_open_results === true,
@@ -8612,6 +8653,7 @@ async function fetchSavedCompanies({ silent = true } = {}) {
         started_by_display_name: job.started_by_display_name || null,
         started_by_label: job.started_by_label || null,
         useWebSearch: job.use_web_search === true,
+        webSearchMode: job.web_search_mode || null,
         results: job.results || null,
         llm: job.llm || null,
       }));
@@ -10179,6 +10221,7 @@ async function checkWebSearchAvailable() {
       toggle.style.display = 'none';
       $('#web-search-checkbox').checked = false;
     }
+    syncWebSearchIntensity();
   } catch {}
 }
 
@@ -10529,6 +10572,26 @@ $$('.input-mode-option').forEach((btn) => {
   });
 });
 
+// ── Web-search intensity sub-toggle (Off / Targeted / Full) ──
+// The iOS switch stays the on/off control; this sub-toggle (visible only when
+// the switch is on) picks Targeted vs Full. Distinct classes from the input-mode
+// segmented control so its global handlers don't clobber the active state.
+function syncWebSearchIntensity() {
+  const on = !!$('#web-search-checkbox')?.checked;
+  const block = $('#web-search-intensity');
+  if (block) block.style.display = on ? 'block' : 'none';
+}
+function currentWebSearchMode() {
+  if (!$('#web-search-checkbox')?.checked) return 'off';
+  return document.querySelector('.web-intensity-option.active')?.dataset.webIntensity || 'full';
+}
+$('#web-search-checkbox')?.addEventListener('change', syncWebSearchIntensity);
+$$('.web-intensity-option').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    $$('.web-intensity-option').forEach((b) => b.classList.toggle('active', b === btn));
+  });
+});
+
 // ── Specter URL textarea (Phase 4 hybrid intake) ──
 function parseSpecterUrls(raw) {
   return (raw || '')
@@ -10649,6 +10712,7 @@ $('#analyze-btn').addEventListener('click', async () => {
     openAnalysisPage({ focusJobId: uploadRes.job_id });
 
     const useWebSearch = !!$('#web-search-checkbox')?.checked;
+    const webSearchMode = currentWebSearchMode();
     const useSpecterMcp = !!$('#specter-mcp-checkbox')?.checked;
     const fetchFullTeam = !!$('#fetch-full-team-checkbox')?.checked;
     const instructions = ($('#instructions-input')?.value || '').trim();
@@ -10662,6 +10726,7 @@ $('#analyze-btn').addEventListener('click', async () => {
         },
         body: JSON.stringify({
           use_web_search: useWebSearch,
+          web_search_mode: webSearchMode,
           use_specter_mcp: useSpecterMcp,
           fetch_full_team: fetchFullTeam,
           instructions: instructions || undefined,
