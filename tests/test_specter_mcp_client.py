@@ -716,6 +716,7 @@ def test_live_fetch_anthropic():
 from agent.ingest.specter_mcp_client import (  # noqa: E402
     _REFRESH_TOKEN_SECRET_KEY,
     _SpecterCredentials,
+    _AuthExpired,
     _TokenManager,
 )
 
@@ -769,22 +770,27 @@ def _token_payload(access, refresh):
     return {"access_token": access, "refresh_token": refresh, "expires_in": 600}
 
 
-def test_boot_race_keeps_exactly_one_persisted_chain(secret_store):
-    """Two processes booting from the same env token: the loser must adopt the
-    winner's chain instead of clobbering it (the 2026-06-11 outage class)."""
+def test_boot_race_late_refresher_adopts_latest_persisted_chain(secret_store):
+    """Two processes booting from the same env token: a later refresher should
+    adopt the current persisted chain before asking Specter for a token."""
     mgr_a = _TokenManager(_creds())
     mgr_b = _TokenManager(_creds())
+    tokens_requested_by_b: list[str] = []
     mgr_a._request_token = lambda rt: _token_payload("at-a", "A1")
-    mgr_b._request_token = lambda rt: _token_payload("at-b", "B1")
+
+    def request_b(rt):
+        tokens_requested_by_b.append(rt)
+        return _token_payload("at-b", "B1")
+
+    mgr_b._request_token = request_b
 
     assert mgr_a.get_access_token() == "at-a"
     assert secret_store.values[_REFRESH_TOKEN_SECRET_KEY] == "A1"
 
     assert mgr_b.get_access_token() == "at-b"
-    # B lost the CAS: the persisted chain is still A's, and B adopted it.
-    assert secret_store.values[_REFRESH_TOKEN_SECRET_KEY] == "A1"
-    assert mgr_b._creds.refresh_token == "A1"
-    assert mgr_a._creds.refresh_token == "A1"
+    assert tokens_requested_by_b == ["A1"]
+    assert secret_store.values[_REFRESH_TOKEN_SECRET_KEY] == "B1"
+    assert mgr_b._creds.refresh_token == "B1"
 
 
 def test_invalid_grant_reloads_persisted_token_and_retries(secret_store):
@@ -804,6 +810,69 @@ def test_invalid_grant_reloads_persisted_token_and_retries(secret_store):
     # The retried rotation won the CAS from GOOD -> GOOD2.
     assert secret_store.values[_REFRESH_TOKEN_SECRET_KEY] == "GOOD2"
     assert mgr._creds.refresh_token == "GOOD2"
+
+
+def test_invalid_grant_reloads_persisted_token_rotated_during_refresh(secret_store):
+    """If a sibling process rotates after we choose candidates but before our
+    request returns, retry with the newly-persisted winner."""
+    mgr = _TokenManager(_creds("env0"))
+    requested: list[str] = []
+
+    def fake_request(rt):
+        requested.append(rt)
+        if rt == "env0":
+            secret_store.values[_REFRESH_TOKEN_SECRET_KEY] = "GOOD"
+            raise SpecterMCPError("Specter token refresh failed (400): invalid_grant")
+        assert rt == "GOOD"
+        return _token_payload("at-new", "GOOD2")
+
+    mgr._request_token = fake_request
+    assert mgr.get_access_token() == "at-new"
+    assert requested == ["env0", "GOOD"]
+    assert secret_store.values[_REFRESH_TOKEN_SECRET_KEY] == "GOOD2"
+    assert mgr._creds.refresh_token == "GOOD2"
+
+
+def test_refresh_uses_current_persisted_token_before_stale_in_memory_token(secret_store):
+    """A long-lived process should not burn a known-stale in-memory refresh
+    token when Supabase already has a newer chain."""
+    mgr = _TokenManager(_creds("env0"))
+    secret_store.values[_REFRESH_TOKEN_SECRET_KEY] = "GOOD"
+    requested: list[str] = []
+
+    def fake_request(rt):
+        requested.append(rt)
+        if rt == "env0":
+            raise SpecterMCPError("Specter token refresh failed (400): invalid_grant")
+        assert rt == "GOOD"
+        return _token_payload("at-new", "GOOD2")
+
+    mgr._request_token = fake_request
+    assert mgr.get_access_token() == "at-new"
+    assert requested == ["GOOD"]
+    assert secret_store.values[_REFRESH_TOKEN_SECRET_KEY] == "GOOD2"
+    assert mgr._creds.refresh_token == "GOOD2"
+
+
+def test_invalid_persisted_token_can_recover_from_env_bootstrap(secret_store):
+    """If the Supabase secret row is stale but Railway env was repaired, use
+    the env bootstrap token and replace the stale persisted row via CAS."""
+    secret_store.values[_REFRESH_TOKEN_SECRET_KEY] = "BAD-DB"
+    mgr = _TokenManager(_creds("GOOD-ENV"))
+    requested: list[str] = []
+
+    def fake_request(rt):
+        requested.append(rt)
+        if rt == "BAD-DB":
+            raise SpecterMCPError("Specter token refresh failed (400): invalid_grant")
+        assert rt == "GOOD-ENV"
+        return _token_payload("at-env", "ENV2")
+
+    mgr._request_token = fake_request
+    assert mgr.get_access_token() == "at-env"
+    assert requested == ["BAD-DB", "GOOD-ENV"]
+    assert secret_store.values[_REFRESH_TOKEN_SECRET_KEY] == "ENV2"
+    assert mgr._creds.refresh_token == "ENV2"
 
 
 def test_invalid_grant_without_alternative_token_raises(secret_store):
@@ -836,3 +905,36 @@ def test_compare_and_swap_returns_false_without_db_client(monkeypatch):
 
     monkeypatch.setattr(web_db, "_get_client", lambda: None)
     assert web_db.compare_and_swap_mcp_secret("k", "v", "prev") is False
+
+
+def test_call_tool_resets_mcp_session_after_auth_expiry(monkeypatch):
+    creds = _creds("env0")
+    client = SpecterMCPClient(creds)
+    client._initialized = True
+    client._session_id = "stale-session"
+    refresh_calls: list[bool] = []
+    raw_calls: list[tuple[str, str | None]] = []
+
+    def fake_refresh(force_refresh=False):
+        refresh_calls.append(force_refresh)
+        return "fresh-access"
+
+    client._tokens.get_access_token = fake_refresh
+
+    def fake_raw_request(method, params):
+        raw_calls.append((method, client._session_id))
+        if method == "tools/call" and client._session_id == "stale-session":
+            raise _AuthExpired()
+        if method == "initialize":
+            return {}
+        return {"content": [{"type": "text", "text": '{"ok": true}'}]}
+
+    client._raw_request = fake_raw_request
+
+    assert client._call_tool("find_company", {"identifier": "anthropic.com"}) == {"ok": True}
+    assert refresh_calls == [True]
+    assert raw_calls == [
+        ("tools/call", "stale-session"),
+        ("initialize", None),
+        ("tools/call", None),
+    ]

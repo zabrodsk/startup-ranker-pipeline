@@ -375,6 +375,46 @@ def test_preflight_blocks_unresolved_specter_url_before_worker_queue(
     assert response.status_code == 409
     assert body["invalid_inputs"][0]["input"] == "variene.ai"
     assert "could not resolve" in body["invalid_inputs"][0]["reason"]
+    assert web_app._jobs[job_id].progress == "Analysis blocked by quality preflight."
+    assert any(
+        "Specter company worker exited with code 1" in message
+        for message in web_app._jobs[job_id].progress_log
+    )
+
+
+def test_persisted_preflight_status_is_added_to_progress_log(
+    monkeypatch,
+    guardrail_modules,
+) -> None:
+    web_app = guardrail_modules.app
+    _reset_app_state(monkeypatch, web_app)
+
+    class FakeDb:
+        @staticmethod
+        def is_configured() -> bool:
+            return True
+
+        @staticmethod
+        def load_analysis_events(job_id, limit):
+            assert job_id == "blocked1"
+            assert limit == web_app.MAX_PROGRESS_LOG_ENTRIES
+            return ["Received 1 URLs for Specter MCP intake"]
+
+        @staticmethod
+        def load_job_status(job_id):
+            assert job_id == "blocked1"
+            return {
+                "status": "pending",
+                "progress": "Analysis blocked by quality preflight.",
+                "worker_active": False,
+            }
+
+    monkeypatch.setattr(web_app, "db", FakeDb)
+
+    assert web_app._load_worker_progress_log("blocked1") == [
+        "Received 1 URLs for Specter MCP intake",
+        "Analysis blocked by quality preflight.",
+    ]
 
 
 def test_preflight_allows_resolved_specter_url_and_queues_worker(

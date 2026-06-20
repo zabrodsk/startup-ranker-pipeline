@@ -131,8 +131,10 @@ def _persist_rotated_refresh_token(new_value: str, prev_value: str | None) -> bo
 
     Returns True when this process won the rotation. False means another
     process (web vs worker boot race) rotated first — the caller must adopt
-    the persisted winner instead of clobbering it. Failures are swallowed
-    (best-effort persistence, same contract as _persist_refresh_token).
+    the persisted winner instead of clobbering it. ``prev_value`` is the
+    expected value currently stored in Supabase; for env-bootstrap repair it
+    can differ from the refresh token that was just exchanged. Failures are
+    swallowed (best-effort persistence, same contract as _persist_refresh_token).
     """
     try:
         from web import db as _db
@@ -157,6 +159,7 @@ class _TokenManager:
 
     def __init__(self, creds: _SpecterCredentials) -> None:
         self._creds = creds
+        self._env_refresh_token = creds.refresh_token
         # Prefer the live (rotated) token persisted in Supabase. The env-supplied
         # value remains the bootstrap default for first run / fresh deploys.
         persisted = _load_persisted_refresh_token()
@@ -207,18 +210,69 @@ class _TokenManager:
                 f"Specter token refresh failed ({exc.code}): {detail}"
             ) from exc
 
+    def _refresh_token_candidates(self) -> list[tuple[str, str | None]]:
+        """Return refresh tokens to try with their expected persisted value.
+
+        The first candidate is the current Supabase value so a long-lived
+        process adopts rotations performed by a sibling process before burning
+        a stale in-memory token. The env bootstrap remains a last-resort repair
+        path when the persisted row is stale but Railway env has been updated.
+        """
+        persisted = _load_persisted_refresh_token()
+        raw_candidates: list[tuple[str | None, str | None]] = []
+        if persisted:
+            raw_candidates.append((persisted, persisted))
+        raw_candidates.append((
+            self._creds.refresh_token,
+            persisted if persisted is not None else self._creds.refresh_token,
+        ))
+        raw_candidates.append((
+            self._env_refresh_token,
+            persisted if persisted is not None else self._env_refresh_token,
+        ))
+
+        candidates: list[tuple[str, str | None]] = []
+        seen: set[str] = set()
+        for token, expected_current in raw_candidates:
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            candidates.append((token, expected_current))
+        return candidates
+
     def _refresh_locked(self) -> None:
-        try:
-            payload = self._request_token(self._creds.refresh_token)
-        except SpecterMCPError:
-            # Our token may be stale because another process (web vs worker)
-            # rotated the chain. Re-read the persisted token once and retry
-            # with it before surfacing the failure (invalid_grant recovery).
-            persisted = _load_persisted_refresh_token()
-            if not persisted or persisted == self._creds.refresh_token:
-                raise
-            self._creds.refresh_token = persisted
-            payload = self._request_token(persisted)
+        last_exc: SpecterMCPError | None = None
+        used_refresh: str | None = None
+        expected_current: str | None = None
+        payload: dict | None = None
+
+        candidates = self._refresh_token_candidates()
+        candidate_index = 0
+        seen_candidates = {token for token, _expected in candidates}
+        while candidate_index < len(candidates):
+            refresh_token, expected = candidates[candidate_index]
+            candidate_index += 1
+            self._creds.refresh_token = refresh_token
+            try:
+                payload = self._request_token(refresh_token)
+                used_refresh = refresh_token
+                expected_current = expected
+                break
+            except SpecterMCPError as exc:
+                # Our token may be stale because another process (web vs
+                # worker) rotated the chain, or because an operator repaired
+                # Railway env while the persisted row still points at the old
+                # chain. Try every authoritative token source once.
+                last_exc = exc
+                latest = _load_persisted_refresh_token()
+                if latest and latest not in seen_candidates:
+                    seen_candidates.add(latest)
+                    candidates.append((latest, latest))
+                continue
+        if payload is None or used_refresh is None:
+            if last_exc is not None:
+                raise last_exc
+            raise SpecterMCPError("Specter token refresh failed: no refresh token candidates")
 
         access_token = payload.get("access_token")
         if not access_token:
@@ -229,13 +283,12 @@ class _TokenManager:
         expires_in = int(payload.get("expires_in") or 600)
         self._expires_at = time.time() + expires_in
         new_refresh = payload.get("refresh_token")
-        if new_refresh and new_refresh != self._creds.refresh_token:
+        if new_refresh and new_refresh != used_refresh:
             # Specter rotates refresh tokens: persist via compare-and-swap so
             # a concurrent rotation (web + worker boot race) cannot be
             # clobbered by a last-write-wins upsert — that race orphaned the
             # whole chain in the 2026-06-11 outage.
-            prev_refresh = self._creds.refresh_token
-            if _persist_rotated_refresh_token(new_refresh, prev_refresh):
+            if _persist_rotated_refresh_token(new_refresh, expected_current):
                 self._creds.refresh_token = new_refresh
             else:
                 # Lost the race: adopt the winner's persisted chain for the
@@ -311,18 +364,22 @@ class SpecterMCPClient:
             self._initialized = True
 
     def _call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        self._ensure_initialized()
         last_exc: Exception | None = None
         for attempt in range(_MAX_ATTEMPTS):
             try:
+                self._ensure_initialized()
                 result = self._raw_request(
                     "tools/call", {"name": name, "arguments": arguments}
                 )
                 return self._unwrap_tool_result(result)
-            except _AuthExpired:
-                # Refresh once; if still failing, propagate as auth error.
+            except _AuthExpired as exc:
+                # Refresh and reset the MCP session. Some servers bind
+                # sessions to the old access token; keeping the stale
+                # Mcp-Session-Id can make every retry fail until process
+                # restart.
+                last_exc = exc
                 self._tokens.get_access_token(force_refresh=True)
-                last_exc = None  # don't count auth refresh against retry budget
+                self._reset_session()
                 continue
             except SpecterCompanyNotFoundError:
                 # Definitive 'no match' — Specter searched and found nothing.
@@ -336,6 +393,11 @@ class SpecterMCPClient:
         raise SpecterMCPError(
             f"Specter MCP tool {name!r} failed after {_MAX_ATTEMPTS} attempts: {last_exc}"
         )
+
+    def _reset_session(self) -> None:
+        with self._lock:
+            self._initialized = False
+            self._session_id = None
 
     @staticmethod
     def _unwrap_tool_result(result: Any) -> dict[str, Any]:

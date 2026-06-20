@@ -1676,6 +1676,17 @@ def _set_job_status(job_id: str, status: str, progress: str | None = None, sourc
             pass
 
 
+def _quality_preflight_progress_message(report: dict[str, Any]) -> str:
+    invalid_inputs = report.get("invalid_inputs") or []
+    if not invalid_inputs:
+        return "Analysis blocked by quality preflight."
+    first = invalid_inputs[0] if isinstance(invalid_inputs[0], dict) else {}
+    input_ref = str(first.get("input") or "Input").strip()
+    reason = str(first.get("reason") or "Input did not pass preflight.").strip()
+    message = f"Analysis blocked by quality preflight: {input_ref} - {reason}"
+    return message[:1000]
+
+
 def _persist_person_job(job_id: str, request_payload: dict[str, Any] | None = None) -> None:
     if not (db and db.is_configured()):
         return
@@ -6930,6 +6941,7 @@ async def _run_analysis_quality_preflight(
     }
     response = _quality_failure_response(report)
     if response is not None:
+        _append_progress(job_id, _quality_preflight_progress_message(report))
         _set_job_status(
             job_id,
             "pending",
@@ -7498,13 +7510,25 @@ def _is_terminal_job_status(status: str | None) -> bool:
 def _load_worker_progress_log(job_id: str) -> list[str]:
     if not (db and db.is_configured()):
         return []
+    progress_log: list[str] = []
     load_events = getattr(db, "load_analysis_events", None)
-    if not callable(load_events):
-        return []
-    try:
-        return load_events(job_id, limit=MAX_PROGRESS_LOG_ENTRIES) or []
-    except Exception:
-        return []
+    if callable(load_events):
+        try:
+            progress_log = load_events(job_id, limit=MAX_PROGRESS_LOG_ENTRIES) or []
+        except Exception:
+            progress_log = []
+
+    load_status = getattr(db, "load_job_status", None)
+    if callable(load_status):
+        try:
+            persisted_status = load_status(job_id) or {}
+        except Exception:
+            persisted_status = {}
+        status_progress = str(persisted_status.get("progress") or "").strip()
+        if status_progress and status_progress not in progress_log:
+            progress_log = [*progress_log, status_progress]
+
+    return progress_log[-MAX_PROGRESS_LOG_ENTRIES:]
 
 
 def _prepare_worker_source_files(job_id: str) -> list[dict[str, Any]] | None:
