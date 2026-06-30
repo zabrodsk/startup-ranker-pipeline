@@ -60,6 +60,7 @@ _GENERIC_TOKENS = {
     "run",
 }
 _ACRONYMS = {"ai", "api", "ar", "b2b", "b2c", "hr", "iot", "pc", "saas", "vc", "vr"}
+_TRUSTED_DOMAIN_DISPLAY_NAME_SOURCES = {"specter_url", "persistence_specter_url"}
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,17 @@ def _looks_dotted_brand(value: str | None) -> bool:
     )
 
 
+def _allows_domain_display_name(source: str) -> bool:
+    return source in _TRUSTED_DOMAIN_DISPLAY_NAME_SOURCES
+
+
+def _trusted_domain_display_name(value: str) -> str:
+    text = value.strip()
+    if text.startswith(("http://", "https://")) or "/" in text:
+        return _domain_root(text)
+    return text.removeprefix("www.")
+
+
 def _strip_boilerplate(text: str) -> str:
     cleaned = text
     for pattern in _BOILERPLATE_PATTERNS:
@@ -159,7 +171,12 @@ def _invalid_reason(display: str, *, raw: str | None, source: str, allow_domain_
     tokens = set(_TOKEN_RE.findall(display.lower()))
     if tokens and tokens <= _GENERIC_TOKENS:
         return "Company name is generic boilerplate."
-    if _looks_domain_only(display) and not allow_domain_fallback and not _looks_dotted_brand(display):
+    if (
+        _looks_domain_only(display)
+        and not allow_domain_fallback
+        and not _looks_dotted_brand(display)
+        and not _allows_domain_display_name(source)
+    ):
         return "Company name is only a domain."
     if source in {"csv", "specter_csv"} and _looks_domain_only(raw):
         return "Specter CSV company name is only a domain."
@@ -188,7 +205,20 @@ def normalize_company_display_name(
 
     filename_candidate = Path(raw_text.split("?", 1)[0].split("#", 1)[0]).name
     has_file_extension = bool(_FILE_EXT_RE.search(filename_candidate))
-    if _looks_domain_only(raw_text) and not has_file_extension:
+    if (
+        _looks_domain_only(raw_text)
+        and not has_file_extension
+        and not _looks_dotted_brand(raw_text)
+    ):
+        if _allows_domain_display_name(source):
+            value = _trusted_domain_display_name(raw_text)
+            return NormalizedCompanyName(
+                raw=raw_text,
+                value=value,
+                valid=True,
+                source=source,
+                changed=value != raw_text,
+            )
         if not allow_domain_fallback:
             return NormalizedCompanyName(
                 raw=raw_text,

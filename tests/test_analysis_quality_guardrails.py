@@ -120,6 +120,7 @@ def _install_lightweight_agent_stubs() -> None:
     run_context = types.ModuleType("agent.run_context")
     run_context.RunTelemetryCollector = DummyTelemetryCollector
     run_context.build_run_costs_from_model_executions = lambda *_args, **_kwargs: {}
+    run_context.build_stage_costs_from_model_executions = lambda *_args, **_kwargs: {}
     run_context.use_company_context = null_context
     run_context.use_run_context = null_context
     sys.modules.setdefault("agent.run_context", run_context)
@@ -289,6 +290,16 @@ def test_company_display_name_rejects_domain_only_csv_name() -> None:
 
     assert normalized.valid is False
     assert "domain" in normalized.reason.lower()
+
+
+def test_company_display_name_allows_verified_specter_domain_brand() -> None:
+    asilon = normalize_company_display_name("asilon.ai", source="specter_url")
+    aki = normalize_company_display_name("AKI.IO", source="specter_url")
+
+    assert asilon.valid is True
+    assert asilon.value == "asilon.ai"
+    assert aki.valid is True
+    assert aki.value == "AKI.IO"
 
 
 def test_company_display_name_preserves_dotted_brand_casing() -> None:

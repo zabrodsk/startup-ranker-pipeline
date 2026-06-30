@@ -1,6 +1,7 @@
 import importlib
 import logging
 import sys
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -82,6 +83,31 @@ def test_extract_company_runs_sets_lookup_and_dimension_columns() -> None:
     assert rows[0]["strategy_fit_score"] == 80.0
     assert rows[0]["team_score"] == 72.0
     assert rows[0]["upside_score"] == 68.0
+
+
+def test_verified_specter_url_persistence_allows_domain_display_name() -> None:
+    import web.db as web_db
+
+    source = web_db._company_name_normalization_source(
+        company=SimpleNamespace(specter_company_id="specter-asilon"),
+        run_config={"input_mode": "specter"},
+    )
+
+    assert source == "persistence_specter_url"
+    assert web_db._normalize_persisted_company_name(
+        "asilon.ai",
+        job_id_legacy="job-asilon",
+        company_slug="asilon-ai",
+        source=source,
+        record_error=False,
+    ) == "asilon.ai"
+    assert web_db._normalize_persisted_company_name(
+        "asilon.ai",
+        job_id_legacy="job-asilon",
+        company_slug="asilon-ai",
+        source="persistence",
+        record_error=False,
+    ) is None
 
 
 def test_compact_company_run_payload_preserves_company_links() -> None:

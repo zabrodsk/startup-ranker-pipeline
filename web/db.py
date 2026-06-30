@@ -175,6 +175,19 @@ def _normalize_persisted_company_name(
     return None
 
 
+def _company_name_normalization_source(
+    *,
+    company: Any,
+    run_config: dict[str, Any],
+) -> str:
+    if (
+        str((run_config or {}).get("input_mode") or "").strip().lower() == "specter"
+        and getattr(company, "specter_company_id", None)
+    ):
+        return "persistence_specter_url"
+    return "persistence"
+
+
 def _apply_company_name_to_payload(payload: dict[str, Any], company_name: str) -> dict[str, Any]:
     serialized = _serialize(payload or {})
     serialized["company_name"] = company_name
@@ -782,7 +795,7 @@ def _persist_company_analysis_row(
         company_name,
         job_id_legacy=job_id_legacy,
         company_slug=slug,
-        source="persistence",
+        source=_company_name_normalization_source(company=company, run_config=run_config),
     )
     if not normalized_company_name:
         return False
