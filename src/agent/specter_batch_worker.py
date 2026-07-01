@@ -68,6 +68,17 @@ def _slug_from_url(url: str) -> str:
     return _company_slug(root.replace(".", "-"))
 
 
+def _expected_name_from_url_item(item: dict[str, Any], url: str) -> str | None:
+    raw = str(item.get("name") or item.get("expected_name") or "").strip()
+    if not raw:
+        return None
+    url_domain = _domain_root(url)
+    name_domain = _domain_root(raw)
+    if url_domain and name_domain and url_domain == name_domain:
+        return None
+    return raw
+
+
 def _normalize_specter_urls(run_config: dict[str, Any]) -> list[dict[str, str]]:
     raw = run_config.get("specter_urls") or []
     out: list[dict[str, str]] = []
@@ -76,7 +87,7 @@ def _normalize_specter_urls(run_config: dict[str, Any]) -> list[dict[str, str]]:
     for item in raw:
         if isinstance(item, dict):
             url = (item.get("url") or "").strip()
-            expected_name = (item.get("name") or "").strip() or None
+            expected_name = _expected_name_from_url_item(item, url)
             # Preflight-resolved identity (Sprint 3 W7); empty when the
             # identity-reuse flag is off or preflight didn't resolve.
             specter_company_id = str(item.get("specter_company_id") or "").strip()

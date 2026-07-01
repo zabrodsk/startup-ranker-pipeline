@@ -302,6 +302,23 @@ def test_company_display_name_allows_verified_specter_domain_brand() -> None:
     assert aki.value == "AKI.IO"
 
 
+def test_specter_preflight_expected_name_ignores_domain_only_lead_name(guardrail_modules) -> None:
+    web_app = guardrail_modules.app
+
+    assert web_app._specter_expected_name_for_item(
+        {"url": "https://www.syvain.com", "name": "syvain.com"}
+    ) is None
+    assert web_app._specter_expected_name_for_item(
+        {"url": "https://www.getmendra.com", "name": "getmendra.com"}
+    ) is None
+    assert (
+        web_app._specter_expected_name_for_item(
+            {"url": "https://anthropic.com", "name": "Anthropic"}
+        )
+        == "Anthropic"
+    )
+
+
 def test_company_display_name_preserves_dotted_brand_casing() -> None:
     normalized = normalize_company_display_name("f.nous-pitch-deck.pdf")
 

@@ -142,6 +142,25 @@ def test_normalize_specter_urls_carries_and_tolerates_missing_id():
     assert [t["specter_company_id"] for t in tasks] == [KNOWN_ID, "", ""]
 
 
+def test_normalize_specter_urls_ignores_domain_only_expected_names():
+    run_config = {
+        "specter_urls": [
+            {"url": "https://www.syvain.com", "name": "syvain.com"},
+            {"url": "https://www.getmendra.com", "name": "getmendra.com"},
+            {"url": "https://anthropic.com", "name": "Anthropic"},
+        ]
+    }
+
+    tasks = _normalize_specter_urls(run_config)
+
+    assert [t["expected_name"] for t in tasks] == ["", "", "Anthropic"]
+    assert [t["name"] for t in tasks] == [
+        "syvain.com",
+        "getmendra.com",
+        "Anthropic",
+    ]
+
+
 def test_build_company_tasks_keeps_specter_company_id_on_url_tasks():
     run_config = {
         "specter_urls": [

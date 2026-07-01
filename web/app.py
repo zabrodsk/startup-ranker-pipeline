@@ -5646,6 +5646,19 @@ def _url_value_for_intake_item(item: Any) -> str:
     return str(item or "").strip()
 
 
+def _specter_expected_name_for_item(item: Any) -> str | None:
+    if not isinstance(item, dict):
+        return None
+    raw_name = str(item.get("name") or item.get("expected_name") or "").strip()
+    if not raw_name:
+        return None
+    identifier_domain = _leadgen_domain_from_url(_url_value_for_intake_item(item))
+    name_domain = _leadgen_domain_from_url(raw_name)
+    if identifier_domain and name_domain and identifier_domain == name_domain:
+        return None
+    return raw_name
+
+
 def _normalize_url_item_for_intake(raw: Any) -> tuple[Any, str] | None:
     if isinstance(raw, dict):
         raw_url = raw.get("url") or raw.get("website") or raw.get("domain")
@@ -6643,7 +6656,7 @@ async def _resolve_specter_url_for_preflight(item: Any) -> tuple[Any | None, str
     identifier = _url_value_for_intake_item(item)
     if not identifier:
         return None, "URL is empty."
-    expected_name = item.get("name") if isinstance(item, dict) else None
+    expected_name = _specter_expected_name_for_item(item)
     try:
         fetch_specter_company = _lazy_import_fetch_specter_company()
         company, _store = await asyncio.to_thread(
