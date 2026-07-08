@@ -96,6 +96,10 @@ class _SpecterCredentials:
 
 
 _REFRESH_TOKEN_SECRET_KEY = "specter_mcp_refresh_token"
+_REFRESH_LOCK_SECRET_KEY = "specter_mcp_refresh_lock"
+_REFRESH_LOCK_TTL_SECONDS = 60.0
+_REFRESH_LOCK_WAIT_SECONDS = 45.0
+_REFRESH_LOCK_POLL_SECONDS = 0.5
 
 
 def _load_persisted_refresh_token() -> str | None:
@@ -112,6 +116,93 @@ def _load_persisted_refresh_token() -> str | None:
         return _db.get_mcp_secret(_REFRESH_TOKEN_SECRET_KEY)
     except Exception:
         return None
+
+
+def _mcp_secret_store_configured() -> bool:
+    """Return True when Supabase-backed token coordination should be used."""
+    return bool(
+        os.environ.get("SUPABASE_URL")
+        and os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    )
+
+
+def _load_mcp_secret_value(key: str) -> str | None:
+    try:
+        from web import db as _db
+    except Exception:
+        return None
+    try:
+        return _db.get_mcp_secret(key)
+    except Exception:
+        return None
+
+
+def _cas_mcp_secret_value(key: str, new_value: str, prev_value: str | None) -> bool:
+    try:
+        from web import db as _db
+    except Exception:
+        return False
+    try:
+        return bool(_db.compare_and_swap_mcp_secret(key, new_value, prev_value))
+    except Exception:
+        return False
+
+
+def _refresh_lock_payload(owner: str, expires_at: float) -> str:
+    return json.dumps(
+        {"owner": owner, "expires_at": expires_at},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _refresh_lock_expired(value: str | None, now: float | None = None) -> bool:
+    if not value:
+        return True
+    try:
+        payload = json.loads(value)
+        expires_at = float(payload.get("expires_at") or 0)
+    except Exception:
+        return True
+    return expires_at <= (time.time() if now is None else now)
+
+
+def _refresh_lock_owner(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        payload = json.loads(value)
+    except Exception:
+        return None
+    owner = payload.get("owner")
+    return str(owner) if owner else None
+
+
+def _acquire_refresh_lock(owner: str) -> bool:
+    """Best-effort distributed lease guarding single-use refresh tokens.
+
+    The in-process lock protects threads inside one container. This lease protects
+    the refresh-token exchange across web, worker, and Railway one-off probes.
+    """
+    deadline = time.time() + _REFRESH_LOCK_WAIT_SECONDS
+    while True:
+        now = time.time()
+        current = _load_mcp_secret_value(_REFRESH_LOCK_SECRET_KEY)
+        if _refresh_lock_expired(current, now):
+            next_value = _refresh_lock_payload(owner, now + _REFRESH_LOCK_TTL_SECONDS)
+            if _cas_mcp_secret_value(_REFRESH_LOCK_SECRET_KEY, next_value, current):
+                return True
+        if now >= deadline:
+            return False
+        time.sleep(min(_REFRESH_LOCK_POLL_SECONDS, max(0.0, deadline - now)))
+
+
+def _release_refresh_lock(owner: str) -> None:
+    current = _load_mcp_secret_value(_REFRESH_LOCK_SECRET_KEY)
+    if _refresh_lock_owner(current) != owner:
+        return
+    released = _refresh_lock_payload(owner, 0.0)
+    _cas_mcp_secret_value(_REFRESH_LOCK_SECRET_KEY, released, current)
 
 
 def _persist_refresh_token(value: str) -> None:
@@ -145,7 +236,7 @@ def _persist_rotated_refresh_token(new_value: str, prev_value: str | None) -> bo
             _db.compare_and_swap_mcp_secret(_REFRESH_TOKEN_SECRET_KEY, new_value, prev_value)
         )
     except Exception:
-        return True
+        return not _mcp_secret_store_configured()
 
 
 class _TokenManager:
@@ -241,6 +332,20 @@ class _TokenManager:
         return candidates
 
     def _refresh_locked(self) -> None:
+        if _mcp_secret_store_configured():
+            owner = f"{os.uname().nodename}:{os.getpid()}:{uuid.uuid4()}"
+            if not _acquire_refresh_lock(owner):
+                raise SpecterMCPError(
+                    "Specter token refresh blocked: could not acquire shared refresh lock"
+                )
+            try:
+                self._refresh_locked_once()
+            finally:
+                _release_refresh_lock(owner)
+            return
+        self._refresh_locked_once()
+
+    def _refresh_locked_once(self) -> None:
         last_exc: SpecterMCPError | None = None
         used_refresh: str | None = None
         expected_current: str | None = None

@@ -714,6 +714,7 @@ def test_live_fetch_anthropic():
 # ---------------------------------------------------------------------------
 
 from agent.ingest.specter_mcp_client import (  # noqa: E402
+    _REFRESH_LOCK_SECRET_KEY,
     _REFRESH_TOKEN_SECRET_KEY,
     _SpecterCredentials,
     _AuthExpired,
@@ -892,6 +893,48 @@ def test_env_bootstrap_without_persisted_row_seeds_chain(secret_store):
     mgr._request_token = lambda rt: _token_payload("at", "FIRST")
     mgr.get_access_token()
     assert secret_store.values[_REFRESH_TOKEN_SECRET_KEY] == "FIRST"
+
+
+def test_refresh_lock_blocks_second_process_from_burning_single_use_token(
+    secret_store,
+    monkeypatch,
+):
+    """If another process is refreshing, fail closed instead of spending the
+    same single-use refresh token and orphaning the chain."""
+    from agent.ingest import specter_mcp_client as mcp_mod
+
+    monkeypatch.setenv("SUPABASE_URL", "https://supabase.example")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-role")
+    monkeypatch.setattr(mcp_mod, "_REFRESH_LOCK_WAIT_SECONDS", 0.01)
+    monkeypatch.setattr(mcp_mod, "_REFRESH_LOCK_POLL_SECONDS", 0.001)
+    secret_store.values[_REFRESH_LOCK_SECRET_KEY] = mcp_mod._refresh_lock_payload(
+        "other-process",
+        mcp_mod.time.time() + 60,
+    )
+
+    mgr = _TokenManager(_creds("env0"))
+    requested: list[str] = []
+    mgr._request_token = lambda rt: requested.append(rt) or _token_payload("at", "NEXT")
+
+    with pytest.raises(SpecterMCPError, match="refresh lock"):
+        mgr.get_access_token()
+
+    assert requested == []
+    assert _REFRESH_TOKEN_SECRET_KEY not in secret_store.values
+
+
+def test_refresh_lock_releases_after_success(secret_store, monkeypatch):
+    from agent.ingest import specter_mcp_client as mcp_mod
+
+    monkeypatch.setenv("SUPABASE_URL", "https://supabase.example")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-role")
+
+    mgr = _TokenManager(_creds("env0"))
+    mgr._request_token = lambda rt: _token_payload("at", "NEXT")
+
+    assert mgr.get_access_token() == "at"
+    assert secret_store.values[_REFRESH_TOKEN_SECRET_KEY] == "NEXT"
+    assert mcp_mod._refresh_lock_expired(secret_store.values[_REFRESH_LOCK_SECRET_KEY])
 
 
 def test_boot_prefers_persisted_token_over_env(secret_store):
