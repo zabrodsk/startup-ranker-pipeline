@@ -87,8 +87,9 @@ def test_get_job_control_missing_row_returns_false(monkeypatch):
 # _process_job stop loop
 # ---------------------------------------------------------------------------
 class _FakeWorkerDb:
-    def __init__(self, stop_after=None):
+    def __init__(self, stop_after=None, load_job_results_payload=None):
         self.stop_after = stop_after
+        self.load_job_results_payload = load_job_results_payload
         self.poll_count = 0
         self.events = []
         self.snapshots = []
@@ -111,7 +112,7 @@ class _FakeWorkerDb:
 
     def load_job_results(self, _job_id, preferred_mode=None):
         self.load_job_results_calls += 1
-        return {"results": {"companies": []}}
+        return self.load_job_results_payload
 
     def load_run_costs(self, _job_id):
         return {}
@@ -124,8 +125,20 @@ class _FakeWorkerDb:
         self.finished = kw
 
 
-def _drive_process_job(monkeypatch, *, n_companies, stop_after=None):
-    fake_db = _FakeWorkerDb(stop_after=stop_after)
+def _drive_process_job(
+    monkeypatch,
+    *,
+    n_companies,
+    stop_after=None,
+    subprocess_status="done",
+    load_job_results_payload=None,
+):
+    if load_job_results_payload is None and subprocess_status == "done":
+        load_job_results_payload = {"results": {"companies": []}}
+    fake_db = _FakeWorkerDb(
+        stop_after=stop_after,
+        load_job_results_payload=load_job_results_payload,
+    )
     monkeypatch.setattr(scw, "db", fake_db)
     monkeypatch.setattr(scw, "_download_worker_inputs", lambda _job_id, _rc: (None, None, None))
     tasks = [{"name": f"co{i}", "slug": f"co{i}", "mode": "url"} for i in range(1, n_companies + 1)]
@@ -137,6 +150,17 @@ def _drive_process_job(monkeypatch, *, n_companies, stop_after=None):
 
     async def _fake_subprocess(*, company_descriptor, completed_companies, failed_companies, **_kw):
         processed.append(company_descriptor["name"])
+        if subprocess_status == "quota":
+            raise scw._SpecterWorkerQuotaExhausted(
+                attempted_company_index=len(processed),
+                total_companies=n_companies,
+                completed_companies=completed_companies,
+                failed_companies=failed_companies + 1,
+                reset_hint="00:00 UTC",
+                error_message="Daily MCP limit reached (250 tool calls/day). Resets at 00:00 UTC.",
+            )
+        if subprocess_status == "error":
+            return (completed_companies, failed_companies + 1)
         return (completed_companies + 1, failed_companies)
 
     monkeypatch.setattr(scw, "_run_company_subprocess", _fake_subprocess)
@@ -160,3 +184,45 @@ def test_no_stop_processes_all_and_marks_done(monkeypatch):
     assert processed == ["co1", "co2", "co3", "co4"]
     assert fake_db.finished["status"] == "done"
     assert not any(e.get("event_type") == "worker_stopped" for e in fake_db.events)
+
+
+def test_all_failed_without_company_runs_persists_clear_error_snapshot(monkeypatch):
+    fake_db, processed = _drive_process_job(
+        monkeypatch,
+        n_companies=2,
+        subprocess_status="error",
+        load_job_results_payload=None,
+    )
+
+    assert processed == ["co1", "co2"]
+    assert fake_db.finished["status"] == "error"
+    assert fake_db.finished["completed_companies"] == 0
+    assert fake_db.finished["failed_companies"] == 2
+    assert fake_db.snapshots
+    payload = fake_db.snapshots[-1]["results_payload"]
+    assert payload["job_status"] == "error"
+    assert payload["job_message"] == "No companies were successfully evaluated. 2/2 failed."
+    assert any(e.get("event_type") == "worker_error" for e in fake_db.events)
+
+
+def test_quota_exhaustion_stops_remaining_companies_and_persists_error_code(monkeypatch):
+    fake_db, processed = _drive_process_job(
+        monkeypatch,
+        n_companies=3,
+        subprocess_status="quota",
+        load_job_results_payload=None,
+    )
+
+    assert processed == ["co1"]
+    assert fake_db.finished["status"] == "error"
+    assert fake_db.finished["completed_companies"] == 0
+    assert fake_db.finished["failed_companies"] == 1
+    payload = fake_db.snapshots[-1]["results_payload"]
+    assert payload["error_code"] == "specter_mcp_quota_exhausted"
+    assert payload["quota_remaining"] == "unknown"
+    assert payload["reset_hint"] == "00:00 UTC"
+    assert payload["job_message"] == (
+        "Specter MCP quota exhausted after 1/3 attempts; 2 companies were not started. Reset: 00:00 UTC."
+    )
+    worker_state = fake_db.snapshots[-1]["worker_state"]
+    assert worker_state["error_code"] == "specter_mcp_quota_exhausted"

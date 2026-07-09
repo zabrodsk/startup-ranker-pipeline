@@ -42,6 +42,21 @@ from agent.ingest.store import Chunk, EvidenceStore
 logger = logging.getLogger(__name__)
 
 SPECTER_PROFILE_BASE_URL = "https://app.tryspecter.com/signals/company/feed/"
+SPECTER_MCP_QUOTA_ERROR_CODE = "specter_mcp_quota_exhausted"
+
+_QUOTA_LIMIT_RE = re.compile(r"\b(?:daily\s+)?mcp\s+limit\s+reached\b", re.IGNORECASE)
+_QUOTA_RESET_RE = re.compile(r"\bresets?\s+at\s+([^.;\n]+)", re.IGNORECASE)
+
+
+def is_specter_quota_limit_message(message: str | None) -> bool:
+    return bool(_QUOTA_LIMIT_RE.search(str(message or "")))
+
+
+def specter_quota_reset_hint(message: str | None) -> str | None:
+    match = _QUOTA_RESET_RE.search(str(message or ""))
+    if not match:
+        return None
+    return match.group(1).strip()
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -64,6 +79,14 @@ class SpecterCompanyNotFoundError(SpecterMCPError):
     callers like ``augment_with_specter`` can log it as informational
     ("company is not in Specter's database") rather than as an outage.
     """
+
+
+class SpecterQuotaLimitError(SpecterMCPError):
+    """Specter reported an exhausted MCP quota; retrying burns time only."""
+
+    def __init__(self, message: str = "Daily MCP limit reached") -> None:
+        super().__init__(message)
+        self.reset_hint = specter_quota_reset_hint(message)
 
 
 # ---------------------------------------------------------------------------
@@ -490,6 +513,9 @@ class SpecterMCPClient:
                 # Definitive 'no match' — Specter searched and found nothing.
                 # Retrying won't change the answer, so don't burn the budget.
                 raise
+            except SpecterQuotaLimitError:
+                # Account/day quota is definitive until Specter's reset window.
+                raise
             except (urllib.error.URLError, TimeoutError, SpecterMCPError) as exc:
                 last_exc = exc
                 if attempt + 1 == _MAX_ATTEMPTS:
@@ -518,8 +544,11 @@ class SpecterMCPClient:
             # "No company found" is Specter's definitive 'no match' answer —
             # not a transient outage. Raise a distinct exception so the retry
             # loop fast-fails and callers can log it informatively.
-            if "no company found" in error_text.lower():
+            normalized_error = error_text.lower()
+            if "no company found" in normalized_error:
                 raise SpecterCompanyNotFoundError(error_text or "No company found")
+            if is_specter_quota_limit_message(normalized_error):
+                raise SpecterQuotaLimitError(error_text or "Daily MCP limit reached")
             raise SpecterMCPError(f"Specter MCP returned tool error: {result!r}")
         # MCP tool calls return a content array. We expect a single text item
         # whose payload is JSON.
@@ -564,6 +593,8 @@ class SpecterMCPClient:
             if exc.code == 401:
                 raise _AuthExpired() from exc
             detail = exc.read().decode("utf-8", errors="replace")
+            if is_specter_quota_limit_message(detail):
+                raise SpecterQuotaLimitError(detail) from exc
             raise SpecterMCPError(
                 f"Specter MCP {method} HTTP {exc.code}: {detail}"
             ) from exc
@@ -601,6 +632,13 @@ class SpecterMCPClient:
 
         if isinstance(payload, dict) and "error" in payload:
             err = payload["error"]
+            err_text = (
+                err.get("message")
+                if isinstance(err, dict)
+                else str(err)
+            )
+            if is_specter_quota_limit_message(err_text):
+                raise SpecterQuotaLimitError(err_text)
             raise SpecterMCPError(f"Specter MCP {method} JSON-RPC error: {err!r}")
         if isinstance(payload, dict) and "result" in payload:
             return payload["result"]
@@ -1177,6 +1215,8 @@ def fetch_specter_company(
         profile = cli.get_company_profile(company_id)
         intelligence = cli.get_company_intelligence(company_id)
         financials = cli.get_company_financials(company_id)
+    except SpecterQuotaLimitError:
+        raise
     except SpecterMCPError:
         if not known_company_id:
             raise
@@ -1218,6 +1258,8 @@ def fetch_specter_company(
                 deeper.name = f.get("full_name") or deeper.name
                 deeper.title = f.get("title") or deeper.title
                 person = deeper
+            except SpecterQuotaLimitError:
+                raise
             except SpecterMCPError:
                 # Per-person failure must not block the company-level result.
                 pass

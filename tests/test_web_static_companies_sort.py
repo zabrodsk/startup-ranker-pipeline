@@ -66,6 +66,19 @@ def test_leadgen_intake_screen_uses_human_approval_api() -> None:
     assert '<th>Source</th>' in html
     assert '<option value="source" ${leadgenSortMode === \'source\' ? \'selected\' : \'\'}>Source</option>' in html
     assert '<th>Score</th><th>Bucket</th>' not in html
+    assert "function estimateSpecterMcpMinimumCalls(companyCount)" in html
+    assert "Specter quota remaining: unknown. Selected minimum:" in html
+    assert "Approve-all minimum:" in html
+
+
+def test_specter_url_intake_shows_quota_unknown_warning() -> None:
+    html = (Path(__file__).resolve().parents[1] / "web" / "static" / "index.html").read_text()
+
+    assert "specter-quota-warning" in html
+    assert "This run requires at least ${minimumCalls} MCP calls, including one preflight call." in html
+    assert "error.status = res.status;" in html
+    assert "if (err?.status) throw err;" in html
+    assert "if (err?.status) {" in html
 
 
 def test_startup_navigation_does_not_override_companies_click() -> None:

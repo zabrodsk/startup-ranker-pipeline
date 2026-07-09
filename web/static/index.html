@@ -655,6 +655,12 @@
       color: var(--green);
       font-weight: 600;
     }
+    .specter-quota-warning {
+      margin-top: 6px;
+      color: var(--text-gray);
+      font-weight: 500;
+      line-height: 1.45;
+    }
     .input-mode-callout {
       display: none;
       align-items: flex-start;
@@ -8760,6 +8766,11 @@ function leadgenSelectedDetail() {
   return leadgenSelectedIntakeId ? leadgenDetailCache[leadgenSelectedIntakeId] || null : null;
 }
 
+function estimateSpecterMcpMinimumCalls(companyCount) {
+  const count = Math.max(0, Number(companyCount || 0));
+  return count > 0 ? 1 + (count * 4) : 0;
+}
+
 function sortLeadgenLeads(leads) {
   const list = [...(leads || [])];
   const value = (lead) => {
@@ -8822,9 +8833,14 @@ function renderLeadgenPage() {
     const identityMissing = isSupabaseAuthRequired() && !getSupabaseAccessToken();
     const pendingEligible = leads.filter((lead) => lead.eligible && String(lead.approval_status || '').toLowerCase() === 'pending');
     const selectedCount = [...leadgenSelectedLeadIds].filter((id) => pendingEligible.some((lead) => String(lead.lead_id || lead.id) === id)).length;
-    const warning = identityMissing
-      ? `<div class="leadgen-alert">Supabase sign-in is required before approval.</div>`
+    const selectedEstimate = estimateSpecterMcpMinimumCalls(selectedCount);
+    const allEstimate = estimateSpecterMcpMinimumCalls(pendingEligible.length);
+    const quotaWarning = !hasJob && pendingEligible.length
+      ? `<div class="leadgen-alert">Specter quota remaining: unknown. Selected minimum: ${selectedCount > 0 ? selectedEstimate : 'select companies to estimate'} MCP calls. Approve-all minimum: ${allEstimate} MCP calls. Deep team profiles add more.</div>`
       : '';
+    const warning = `${identityMissing
+      ? `<div class="leadgen-alert">Supabase sign-in is required before approval.</div>`
+      : ''}${quotaWarning}`;
     const rows = leads.map((lead) => {
       const leadId = String(lead.lead_id || lead.id || '');
       const status = String(lead.approval_status || 'pending').toLowerCase();
@@ -9119,10 +9135,18 @@ async function api(path, opts = {}) {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: 'Request failed' }));
-        throw new Error(err.detail || 'Request failed');
+        const detail = typeof err.detail === 'string'
+          ? err.detail
+          : (err.detail?.detail || err.message || 'Request failed');
+        const error = new Error(detail);
+        error.status = res.status;
+        error.payload = err;
+        error.code = err.code || err.detail?.code || null;
+        throw error;
       }
       return res.json();
     } catch (err) {
+      if (err?.status) throw err;
       if (attempt === retries) {
         if (err?.name === 'AbortError') {
           throw new Error('Request timed out. Please try again.');
@@ -10604,9 +10628,10 @@ function updateSpecterUrlsCounter() {
   const counter = $('#specter-urls-counter');
   if (!counter) return;
   if (specterUrls.length === 0) {
-    counter.textContent = '';
+    counter.innerHTML = '';
   } else {
-    counter.textContent = `${specterUrls.length} URL${specterUrls.length === 1 ? '' : 's'} ready · CSVs above will be ignored when URLs are present.`;
+    const minimumCalls = estimateSpecterMcpMinimumCalls(specterUrls.length);
+    counter.innerHTML = `${specterUrls.length} URL${specterUrls.length === 1 ? '' : 's'} ready · CSVs above will be ignored when URLs are present.<div class="specter-quota-warning">Specter quota remaining: unknown. This run requires at least ${minimumCalls} MCP calls, including one preflight call. Deep team profiles add more.</div>`;
   }
 }
 const _specterUrlsInput = $('#specter-urls-input');
@@ -10743,6 +10768,24 @@ $('#analyze-btn').addEventListener('click', async () => {
         retries: 4,
       });
     } catch (err) {
+      if (err?.status) {
+        upsertRecentRun({
+          jobId: uploadRes.job_id,
+          status: 'error',
+          progress: err.message || 'Analysis start was blocked.',
+          input_mode: effectiveInputMode,
+          runName: requestedRunName,
+          started_by_user_id: supabaseIdentity?.user_id || null,
+          started_by_email: supabaseIdentity?.email || null,
+          started_by_display_name: supabaseIdentity?.display_name || null,
+          started_by_label: supabaseIdentity?.label || null,
+          llm: analysisSelection.llmLabel || null,
+        });
+        persistActiveJob(null);
+        window.alert(`Failed to start analysis: ${err.message || 'Request failed'}`);
+        fetchSavedJobs({ silent: false });
+        return;
+      }
       // The backend may still have accepted the job even if this request timed out.
       // Continue from the Analysis overview instead of failing hard.
       upsertRecentRun({

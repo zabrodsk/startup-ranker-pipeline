@@ -18,7 +18,10 @@ from agent.batch import evaluate_from_specter
 from agent.dataclasses.company import Company
 from agent.ingest.specter_ingest import _company_slug, ingest_specter_company
 from agent.ingest.specter_mcp_client import (
+    SPECTER_MCP_QUOTA_ERROR_CODE,
+    SpecterQuotaLimitError,
     fetch_specter_company,
+    specter_quota_reset_hint,
 )
 from agent.ingest.store import EvidenceStore
 from agent.llm_catalog import serialize_selection
@@ -128,6 +131,8 @@ def _handle_fetch_failure(
     company = Company(name=name)
     store = EvidenceStore(startup_slug=slug, chunks=[])
     status = "error"
+    quota_exhausted = isinstance(exc, SpecterQuotaLimitError)
+    reset_hint = getattr(exc, "reset_hint", None) or specter_quota_reset_hint(error_message)
     try:
         db.insert_analysis_error(
             job_id,
@@ -144,23 +149,32 @@ def _handle_fetch_failure(
             status=status,
             error_message=error_message,
         )
+        result_row = {
+            "slug": slug,
+            "company": company,
+            "company_name": company.name,
+            "evidence_store": store,
+            "final_state": {
+                "final_arguments": [],
+                "final_decision": status,
+                "ranking_result": None,
+                "all_qa_pairs": [],
+            },
+            "analysis_status": status,
+            "error": error_message,
+            "skipped": False,
+        }
+        if quota_exhausted:
+            failure_payload["error_code"] = SPECTER_MCP_QUOTA_ERROR_CODE
+            failure_payload["quota_remaining"] = "unknown"
+            result_row["error_code"] = SPECTER_MCP_QUOTA_ERROR_CODE
+            result_row["quota_remaining"] = "unknown"
+            if reset_hint:
+                failure_payload["reset_hint"] = reset_hint
+                result_row["reset_hint"] = reset_hint
         db.persist_company_failure_result(
             job_id_legacy=job_id,
-            result_row={
-                "slug": slug,
-                "company": company,
-                "company_name": company.name,
-                "evidence_store": store,
-                "final_state": {
-                    "final_arguments": [],
-                    "final_decision": status,
-                    "ranking_result": None,
-                    "all_qa_pairs": [],
-                },
-                "analysis_status": status,
-                "error": error_message,
-                "skipped": False,
-            },
+            result_row=result_row,
             company_payload=failure_payload,
             run_config=run_config,
             versions=versions,
@@ -169,15 +183,21 @@ def _handle_fetch_failure(
         # Persistence is best-effort; the structured event below still reaches
         # the parent so the failure is counted and surfaced.
         traceback.print_exc()
-    _emit_event(
-        {
-            "type": "company_complete",
-            "company_name": name,
-            "absolute_index": args.absolute_index,
-            "status": status,
-            "error": error_message[:500],
-        }
-    )
+    event = {
+        "type": "company_complete",
+        "company_name": name,
+        "absolute_index": args.absolute_index,
+        "status": status,
+        "error": error_message[:500],
+        "error_type": type(exc).__name__,
+    }
+    if quota_exhausted:
+        event["quota_exhausted"] = True
+        event["error_code"] = SPECTER_MCP_QUOTA_ERROR_CODE
+        event["quota_remaining"] = "unknown"
+        if reset_hint:
+            event["reset_hint"] = reset_hint
+    _emit_event(event)
     return 0
 
 

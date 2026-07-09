@@ -16,6 +16,7 @@ from agent.ingest.specter_mcp_client import (
     SpecterDisambiguationError,
     SpecterMCPClient,
     SpecterMCPError,
+    SpecterQuotaLimitError,
     _brand_stem,
     _build_funding_chunk,
     _build_growth_chunk,
@@ -27,6 +28,8 @@ from agent.ingest.specter_mcp_client import (
     _summarize_headcount_growth,
     _verify_match,
     fetch_specter_company,
+    is_specter_quota_limit_message,
+    specter_quota_reset_hint,
 )
 from agent.ingest.store import EvidenceStore
 
@@ -61,10 +64,41 @@ def test_unwrap_tool_result_raises_generic_for_other_errors():
     assert not isinstance(exc_info.value, SpecterCompanyNotFoundError)
 
 
+def test_unwrap_tool_result_raises_quota_limit_for_daily_mcp_limit():
+    payload = {
+        "isError": True,
+        "content": [
+            {"type": "text", "text": "Daily MCP limit reached (250 tool calls/day). Resets at 00:00 UTC."}
+        ],
+    }
+    with pytest.raises(SpecterQuotaLimitError) as exc_info:
+        SpecterMCPClient._unwrap_tool_result(payload)
+    assert exc_info.value.reset_hint == "00:00 UTC"
+
+
+def test_quota_message_helpers_detect_daily_limit_and_reset_hint():
+    message = "Daily MCP limit reached (250 tool calls/day). Resets at 00:00 UTC."
+
+    assert is_specter_quota_limit_message(message) is True
+    assert specter_quota_reset_hint(message) == "00:00 UTC"
+
+
+def test_parse_response_raises_quota_limit_for_json_rpc_error():
+    raw = '{"jsonrpc":"2.0","error":{"code":429,"message":"Daily MCP limit reached (250 tool calls/day). Resets at 00:00 UTC."}}'
+
+    with pytest.raises(SpecterQuotaLimitError) as exc_info:
+        SpecterMCPClient._parse_response("tools/call", raw, "application/json")
+    assert exc_info.value.reset_hint == "00:00 UTC"
+
+
 def test_company_not_found_is_subclass_of_mcp_error():
     """Callers that catch SpecterMCPError still see SpecterCompanyNotFoundError
     (subclass relationship preserved for backward compat)."""
     assert issubclass(SpecterCompanyNotFoundError, SpecterMCPError)
+
+
+def test_quota_limit_is_subclass_of_mcp_error():
+    assert issubclass(SpecterQuotaLimitError, SpecterMCPError)
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +149,63 @@ class _FakeFindCompanyClient:
 
     def get_company_financials(self, _id: str) -> dict[str, Any]:
         return {}
+
+
+class _QuotaProfileClient(_FakeFindCompanyClient):
+    def __init__(self) -> None:
+        super().__init__({})
+        self.find_calls = 0
+
+    def find_company(self, identifier: str) -> dict[str, Any]:
+        self.find_calls += 1
+        return super().find_company(identifier)
+
+    def get_company_profile(self, _id: str) -> dict[str, Any]:
+        raise SpecterQuotaLimitError("Daily MCP limit reached (250 tool calls/day). Resets at 00:00 UTC.")
+
+
+class _QuotaFounderClient(_FakeFindCompanyClient):
+    def get_company_intelligence(self, _id: str) -> dict[str, Any]:
+        return {
+            "founders": [
+                {
+                    "full_name": "Ada Founder",
+                    "title": "CEO",
+                    "external_person_id": "person-1",
+                }
+            ]
+        }
+
+    def get_person_profile(self, _id: str) -> dict[str, Any]:
+        raise SpecterQuotaLimitError("Daily MCP limit reached (250 tool calls/day). Resets at 00:00 UTC.")
+
+
+def test_fetch_with_known_company_id_does_not_fallback_on_quota_limit():
+    client = _QuotaProfileClient()
+
+    with pytest.raises(SpecterQuotaLimitError):
+        fetch_specter_company(
+            "adspawn.com",
+            fetch_full_team=False,
+            client=client,
+            known_company_id="known-id",
+        )
+    assert client.find_calls == 0
+
+
+def test_fetch_full_team_propagates_quota_limit_from_person_profile():
+    client = _QuotaFounderClient(
+        {
+            "adspawn.io": {
+                "external_company_id": "abc123",
+                "name": "AdSpawn",
+                "domain": "adspawn.io",
+            }
+        }
+    )
+
+    with pytest.raises(SpecterQuotaLimitError):
+        fetch_specter_company("adspawn.io", fetch_full_team=True, client=client)
 
 
 def test_fetch_falls_back_to_brand_stem_when_domain_lookup_fails():

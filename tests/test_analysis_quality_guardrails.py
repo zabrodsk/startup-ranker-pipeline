@@ -215,7 +215,27 @@ def _install_lightweight_agent_stubs() -> None:
     specter_ingest.ingest_specter = lambda *_args, **_kwargs: []
     specter_ingest.ingest_specter_company = lambda *_args, **_kwargs: (None, EvidenceStore("startup"))
     specter_mcp = types.ModuleType("agent.ingest.specter_mcp_client")
+    class SpecterMCPError(RuntimeError):
+        pass
+
+    class SpecterCompanyNotFoundError(SpecterMCPError):
+        pass
+
+    class SpecterQuotaLimitError(SpecterMCPError):
+        def __init__(self, message="Daily MCP limit reached"):
+            super().__init__(message)
+            self.reset_hint = "00:00 UTC" if "00:00 UTC" in message else None
+
+    class DummySpecterMCPClient:
+        def find_company(self, _identifier):
+            return {"external_company_id": "company-1"}
+
     specter_mcp.fetch_specter_company = lambda *_args, **_kwargs: (None, None)
+    specter_mcp.SpecterMCPError = SpecterMCPError
+    specter_mcp.SpecterCompanyNotFoundError = SpecterCompanyNotFoundError
+    specter_mcp.SpecterQuotaLimitError = SpecterQuotaLimitError
+    specter_mcp.get_default_client = lambda: DummySpecterMCPClient()
+    specter_mcp.specter_quota_reset_hint = lambda message: "00:00 UTC" if "00:00 UTC" in str(message) else None
     sys.modules.setdefault("agent.ingest", ingest_module)
     sys.modules.setdefault("agent.ingest.store", ingest_store)
     sys.modules.setdefault("agent.ingest.chunking", chunking_module)
@@ -379,6 +399,11 @@ def test_preflight_blocks_unresolved_specter_url_before_worker_queue(
         "specter_urls": ["variene.ai"],
     }
     monkeypatch.setattr(web_app, "ENABLE_SPECTER_WORKER_SERVICE", True)
+
+    async def allow_specter_mcp_preflight(**_kwargs):
+        return None
+
+    monkeypatch.setattr(web_app, "_run_specter_mcp_start_preflight", allow_specter_mcp_preflight)
     monkeypatch.setattr(
         web_app,
         "_resolve_specter_url_for_preflight",
@@ -408,6 +433,135 @@ def test_preflight_blocks_unresolved_specter_url_before_worker_queue(
         "Specter company worker exited with code 1" in message
         for message in web_app._jobs[job_id].progress_log
     )
+
+
+def test_specter_mcp_quota_preflight_blocks_before_quality_preflight(
+    monkeypatch,
+    tmp_path: Path,
+    guardrail_modules,
+) -> None:
+    web_app = guardrail_modules.app
+    _reset_app_state(monkeypatch, web_app)
+    job_id = "quota1"
+    upload_dir = tmp_path / job_id
+    upload_dir.mkdir()
+    web_app._jobs[job_id] = web_app.AnalysisStatus(job_id=job_id, status="pending")
+    web_app._results_cache[job_id] = {
+        "upload_dir": str(upload_dir),
+        "files": [],
+        "specter": {},
+        "specter_urls": ["variene.ai"],
+    }
+
+    class SpecterMCPError(RuntimeError):
+        pass
+
+    class SpecterCompanyNotFoundError(SpecterMCPError):
+        pass
+
+    class SpecterQuotaLimitError(SpecterMCPError):
+        reset_hint = "00:00 UTC"
+
+    class Client:
+        def find_company(self, _identifier):
+            raise SpecterQuotaLimitError("Daily MCP limit reached (250 tool calls/day). Resets at 00:00 UTC.")
+
+    monkeypatch.setattr(
+        web_app,
+        "_lazy_import_specter_mcp_preflight_symbols",
+        lambda: (
+            SpecterCompanyNotFoundError,
+            SpecterMCPError,
+            SpecterQuotaLimitError,
+            lambda: Client(),
+            lambda _message: "00:00 UTC",
+        ),
+    )
+    monkeypatch.setattr(
+        web_app,
+        "_run_analysis_quality_preflight",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("quality preflight must not run")),
+    )
+    monkeypatch.setattr(
+        web_app,
+        "_queue_worker_backed_specter_job",
+        lambda current_job_id: (_ for _ in ()).throw(AssertionError("worker queue must not be called")),
+    )
+
+    response = asyncio.run(
+        web_app._start_analysis_job(
+            job_id,
+            web_app.AnalyzeRequest(input_mode="specter"),
+            started_by={},
+            require_identity=False,
+        )
+    )
+
+    body = _json_response_body(response)
+    assert response.status_code == 429
+    assert body["code"] == "specter_mcp_quota_exhausted"
+    assert body["quota_remaining"] == "unknown"
+    assert body["reset_hint"] == "00:00 UTC"
+    assert web_app._jobs[job_id].status == "pending"
+
+
+def test_specter_mcp_unavailable_preflight_blocks_with_503(
+    monkeypatch,
+    tmp_path: Path,
+    guardrail_modules,
+) -> None:
+    web_app = guardrail_modules.app
+    _reset_app_state(monkeypatch, web_app)
+    job_id = "mcpdown1"
+    upload_dir = tmp_path / job_id
+    upload_dir.mkdir()
+    web_app._jobs[job_id] = web_app.AnalysisStatus(job_id=job_id, status="pending")
+    web_app._results_cache[job_id] = {
+        "upload_dir": str(upload_dir),
+        "files": [],
+        "specter": {},
+        "specter_urls": ["variene.ai"],
+    }
+
+    class SpecterMCPError(RuntimeError):
+        pass
+
+    class SpecterCompanyNotFoundError(SpecterMCPError):
+        pass
+
+    class SpecterQuotaLimitError(SpecterMCPError):
+        pass
+
+    class Client:
+        def find_company(self, _identifier):
+            raise SpecterMCPError("auth unavailable")
+
+    monkeypatch.setattr(
+        web_app,
+        "_lazy_import_specter_mcp_preflight_symbols",
+        lambda: (
+            SpecterCompanyNotFoundError,
+            SpecterMCPError,
+            SpecterQuotaLimitError,
+            lambda: Client(),
+            lambda _message: None,
+        ),
+    )
+
+    response = asyncio.run(
+        web_app._start_analysis_job(
+            job_id,
+            web_app.AnalyzeRequest(input_mode="specter"),
+            started_by={},
+            require_identity=False,
+        )
+    )
+
+    body = _json_response_body(response)
+    assert response.status_code == 503
+    assert body["code"] == "specter_mcp_unavailable"
+    assert body["quota_remaining"] == "unknown"
+    assert "auth unavailable" in body["detail"]
 
 
 def test_persisted_preflight_status_is_added_to_progress_log(
@@ -464,6 +618,11 @@ def test_preflight_allows_resolved_specter_url_and_queues_worker(
         "specter_urls": ["https://variene.ai"],
     }
     monkeypatch.setattr(web_app, "ENABLE_SPECTER_WORKER_SERVICE", True)
+
+    async def allow_specter_mcp_preflight(**_kwargs):
+        return None
+
+    monkeypatch.setattr(web_app, "_run_specter_mcp_start_preflight", allow_specter_mcp_preflight)
     monkeypatch.setattr(
         web_app,
         "_resolve_specter_url_for_preflight",

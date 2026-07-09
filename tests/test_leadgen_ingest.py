@@ -39,6 +39,11 @@ def leadgen_runtime(monkeypatch):
     monkeypatch.setattr(web_app, "build_phase_policy_display_label", lambda choices: "GPT-5")
     monkeypatch.setattr(web_app, "_runtime_versions", lambda: {"app_version": "test"})
 
+    async def allow_specter_mcp_preflight(**_kwargs):
+        return None
+
+    monkeypatch.setattr(web_app, "_run_specter_mcp_start_preflight", allow_specter_mcp_preflight)
+
     state = {
         "statuses": {},
         "queued": [],
@@ -382,6 +387,44 @@ def test_approval_requires_selection_and_does_not_queue(leadgen_runtime) -> None
 
     assert response.status_code == 400
     assert leadgen_runtime["queued"] == []
+
+
+def test_approval_blocks_on_specter_mcp_quota_without_queue_or_approval(monkeypatch, leadgen_runtime) -> None:
+    async def block_specter_mcp_preflight(**_kwargs):
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=429,
+            content={
+                "code": "specter_mcp_quota_exhausted",
+                "detail": "Specter MCP quota is exhausted; the run was not started. Remaining quota is unknown. Reset: 00:00 UTC.",
+                "quota_remaining": "unknown",
+                "reset_hint": "00:00 UTC",
+            },
+        )
+
+    monkeypatch.setattr(web_app, "_run_specter_mcp_start_preflight", block_specter_mcp_preflight)
+
+    with TestClient(app) as client:
+        intake = client.post(
+            "/api/leadgen/ingest",
+            headers={"X-API-Key": "leadgen-secret"},
+            json=_batch_payload(),
+        ).json()
+        detail = client.get(f"/api/leadgen/intakes/{intake['intake_id']}").json()
+        selected_id = detail["leads"][1]["lead_id"]
+        response = client.post(
+            f"/api/leadgen/intakes/{intake['intake_id']}/approve",
+            json={"lead_ids": [selected_id]},
+        )
+
+    assert response.status_code == 429
+    assert response.json()["code"] == "specter_mcp_quota_exhausted"
+    assert leadgen_runtime["queued"] == []
+    batch = leadgen_runtime["batches"][intake["intake_id"]]
+    assert not batch.get("job_id_legacy")
+    stored = next(lead for lead in leadgen_runtime["leads"][intake["intake_id"]] if lead["lead_id"] == selected_id)
+    assert stored["approval_status"] == "pending"
 
 
 def test_approval_rechecks_stored_source_platform_domain(leadgen_runtime) -> None:

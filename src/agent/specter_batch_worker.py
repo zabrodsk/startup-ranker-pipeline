@@ -34,6 +34,7 @@ from web import app as web_app
 import web.db as db
 
 EVENT_PREFIX = "__SPECTER_COMPANY_EVENT__"
+SPECTER_MCP_QUOTA_ERROR_CODE = "specter_mcp_quota_exhausted"
 POLL_SECONDS = max(1, int(os.getenv("SPECTER_WORKER_POLL_SECONDS", "5")))
 HEARTBEAT_SECONDS = max(10, int(os.getenv("SPECTER_WORKER_HEARTBEAT_SECONDS", "20")))
 
@@ -44,6 +45,26 @@ def _log(message: str) -> None:
 
 def _worker_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}"
+
+
+class _SpecterWorkerQuotaExhausted(RuntimeError):
+    def __init__(
+        self,
+        *,
+        attempted_company_index: int,
+        total_companies: int,
+        completed_companies: int,
+        failed_companies: int,
+        reset_hint: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        self.attempted_company_index = attempted_company_index
+        self.total_companies = total_companies
+        self.completed_companies = completed_companies
+        self.failed_companies = failed_companies
+        self.reset_hint = reset_hint
+        self.error_message = error_message or "Specter MCP quota exhausted."
+        super().__init__(self.error_message)
 
 
 def _normalize_company_key(name: str | None, slug: str | None) -> str:
@@ -188,6 +209,18 @@ def _final_job_outcome(
         "done",
         f"Analysis complete — {completed_companies}/{total_companies} companies ranked",
     )
+
+
+def _quota_exhausted_final_message(info: _SpecterWorkerQuotaExhausted) -> str:
+    remaining = max(0, info.total_companies - info.attempted_company_index)
+    message = (
+        "Specter MCP quota exhausted after "
+        f"{info.attempted_company_index}/{info.total_companies} attempts; "
+        f"{remaining} companies were not started."
+    )
+    if info.reset_hint:
+        message = f"{message} Reset: {info.reset_hint}."
+    return message
 
 
 def _write_worker_config(
@@ -520,6 +553,9 @@ async def _run_company_subprocess(
                 elif event_type == "company_complete":
                     saw_completion_event = True
                     status = str(event.get("status") or "done").strip().lower()
+                    quota_exhausted = bool(event.get("quota_exhausted")) or (
+                        str(event.get("error_code") or "") == SPECTER_MCP_QUOTA_ERROR_CODE
+                    )
                     if status in {"error", "timeout"}:
                         company_failed = True
                         failed_companies += 1
@@ -547,6 +583,17 @@ async def _run_company_subprocess(
                         total_companies=total_companies,
                         worker_id=worker_id,
                     )
+                    if quota_exhausted:
+                        with contextlib.suppress(Exception):
+                            await asyncio.wait_for(process.wait(), timeout=5)
+                        raise _SpecterWorkerQuotaExhausted(
+                            attempted_company_index=absolute_index,
+                            total_companies=total_companies,
+                            completed_companies=completed_companies,
+                            failed_companies=failed_companies,
+                            reset_hint=str(event.get("reset_hint") or "").strip() or None,
+                            error_message=str(event.get("error") or "").strip() or None,
+                        )
                 continue
             last_stdout_lines.append(text)
             db.insert_analysis_event(job_id, message=text, event_type="worker_stdout", stage="company")
@@ -650,6 +697,7 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
             )
 
         stopped = False
+        quota_exhausted: _SpecterWorkerQuotaExhausted | None = None
         for absolute_index, task in enumerate(tasks, start=1):
             # Poll the persisted stop signal once per company (companies are the
             # atomic unit; an in-flight company finishes and persists before the
@@ -662,23 +710,30 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
             if company_key in completed_keys:
                 _log(f"{job_id}: skipping already persisted company {absolute_index}/{total_companies}")
                 continue
-            completed_companies, failed_companies = await _run_company_subprocess(
-                job_id=job_id,
-                work_dir=work_dir,
-                companies_csv=companies_csv,
-                people_csv=people_csv,
-                company_descriptor=task,
-                absolute_index=absolute_index,
-                total_companies=total_companies,
-                run_config=run_config,
-                versions=versions,
-                use_web_search=use_web_search,
-                fetch_full_team=fetch_full_team,
-                vc_investment_strategy=vc_investment_strategy,
-                worker_id=worker_id,
-                completed_companies=completed_companies,
-                failed_companies=failed_companies,
-            )
+            try:
+                completed_companies, failed_companies = await _run_company_subprocess(
+                    job_id=job_id,
+                    work_dir=work_dir,
+                    companies_csv=companies_csv,
+                    people_csv=people_csv,
+                    company_descriptor=task,
+                    absolute_index=absolute_index,
+                    total_companies=total_companies,
+                    run_config=run_config,
+                    versions=versions,
+                    use_web_search=use_web_search,
+                    fetch_full_team=fetch_full_team,
+                    vc_investment_strategy=vc_investment_strategy,
+                    worker_id=worker_id,
+                    completed_companies=completed_companies,
+                    failed_companies=failed_companies,
+                )
+            except _SpecterWorkerQuotaExhausted as exc:
+                quota_exhausted = exc
+                completed_companies = exc.completed_companies
+                failed_companies = exc.failed_companies
+                _log(f"{job_id}: Specter MCP quota exhausted — finalizing without starting remaining companies")
+                break
             completed_keys.add(company_key)
             gc.collect()
 
@@ -695,8 +750,10 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
         )
         loaded = db.load_job_results(job_id, preferred_mode="specter")
         if not loaded or not isinstance(loaded.get("results"), dict):
-            if stopped:
-                # Stopped before any company persisted — still mark the job stopped.
+            if stopped or quota_exhausted or (completed_companies <= 0 and failed_companies > 0):
+                # No company_runs exist when every company failed before a
+                # trustworthy company result could be persisted. Still write a
+                # terminal snapshot so the UI surfaces the real failure.
                 results = {}
             else:
                 raise RuntimeError("Could not reconstruct final Specter results from persisted state.")
@@ -705,6 +762,9 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
         if stopped:
             final_status = "stopped"
             final_message = f"Stopped by user — {completed_companies}/{total_companies} companies ranked"
+        elif quota_exhausted:
+            final_status = "error"
+            final_message = _quota_exhausted_final_message(quota_exhausted)
         else:
             final_status, final_message = _final_job_outcome(
                 completed_companies=completed_companies,
@@ -713,24 +773,36 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
             )
         results["job_status"] = final_status
         results["job_message"] = final_message
+        if quota_exhausted:
+            results["error_code"] = SPECTER_MCP_QUOTA_ERROR_CODE
+            results["quota_remaining"] = "unknown"
+            if quota_exhausted.reset_hint:
+                results["reset_hint"] = quota_exhausted.reset_hint
         if "run_costs" not in results:
             run_costs = db.load_run_costs(job_id)
             if isinstance(run_costs, dict):
                 results["run_costs"] = run_costs
+
+        worker_state = {
+            "status": final_status,
+            "progress": final_message,
+            "completed_companies": completed_companies,
+            "failed_companies": failed_companies,
+            "total_companies": total_companies,
+            "worker_service_enabled": True,
+        }
+        if quota_exhausted:
+            worker_state["error_code"] = SPECTER_MCP_QUOTA_ERROR_CODE
+            worker_state["quota_remaining"] = "unknown"
+            if quota_exhausted.reset_hint:
+                worker_state["reset_hint"] = quota_exhausted.reset_hint
 
         if not db.persist_analysis_snapshot(
             job_id,
             results_payload=results,
             run_config=run_config,
             versions=versions,
-            worker_state={
-                "status": final_status,
-                "progress": final_message,
-                "completed_companies": completed_companies,
-                "failed_companies": failed_companies,
-                "total_companies": total_companies,
-                "worker_service_enabled": True,
-            },
+            worker_state=worker_state,
         ):
             raise RuntimeError("Could not persist final worker-backed analysis snapshot.")
 

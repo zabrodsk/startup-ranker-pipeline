@@ -340,6 +340,24 @@ def _lazy_import_fetch_specter_company():
     return fetch_specter_company
 
 
+def _lazy_import_specter_mcp_preflight_symbols():
+    from agent.ingest.specter_mcp_client import (
+        SpecterCompanyNotFoundError,
+        SpecterMCPError,
+        SpecterQuotaLimitError,
+        get_default_client,
+        specter_quota_reset_hint,
+    )
+
+    return (
+        SpecterCompanyNotFoundError,
+        SpecterMCPError,
+        SpecterQuotaLimitError,
+        get_default_client,
+        specter_quota_reset_hint,
+    )
+
+
 def build_argument_rows(results_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return _lazy_import_batch().build_argument_rows(results_list)
 
@@ -6292,6 +6310,13 @@ async def approve_leadgen_intake(
             "approved_urls": approved_urls,
         }
 
+    preflight_block = await _run_specter_mcp_start_preflight(
+        job_id=job_id,
+        identifiers=approved_url_items,
+    )
+    if preflight_block is not None:
+        return preflight_block
+
     _create_url_intake_job(
         approved_url_items,
         job_id=job_id,
@@ -6310,6 +6335,7 @@ async def approve_leadgen_intake(
         started_by=actor,
         require_identity=False,
         skip_quality_preflight=True,
+        skip_specter_mcp_preflight=True,
     )
 
     mark_queued = getattr(db, "mark_leadgen_intake_queued", None)
@@ -6418,6 +6444,144 @@ def _quality_failure_response(report: dict[str, Any]) -> JSONResponse | None:
     if not report["invalid_inputs"]:
         return None
     return JSONResponse(status_code=409, content=report)
+
+
+SPECTER_MCP_QUOTA_EXHAUSTED_CODE = "specter_mcp_quota_exhausted"
+SPECTER_MCP_UNAVAILABLE_CODE = "specter_mcp_unavailable"
+SPECTER_MCP_PREFLIGHT_IDENTIFIER_ENV = "SPECTER_MCP_PREFLIGHT_IDENTIFIER"
+SPECTER_MCP_PREFLIGHT_DEFAULT_IDENTIFIER = "openai.com"
+
+
+def _specter_mcp_preflight_identifier(identifiers: list[Any] | None = None) -> str:
+    for item in identifiers or []:
+        value = _url_value_for_intake_item(item)
+        if value:
+            return value
+    return (
+        os.getenv(SPECTER_MCP_PREFLIGHT_IDENTIFIER_ENV)
+        or SPECTER_MCP_PREFLIGHT_DEFAULT_IDENTIFIER
+    ).strip()
+
+
+def _specter_mcp_blocked_payload(
+    *,
+    code: str,
+    detail: str,
+    reset_hint: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "code": code,
+        "detail": detail,
+        "quota_remaining": "unknown",
+    }
+    if reset_hint:
+        payload["reset_hint"] = reset_hint
+    return payload
+
+
+def _record_specter_mcp_preflight_block(
+    job_id: str | None,
+    payload: dict[str, Any],
+) -> None:
+    if not job_id or job_id not in _jobs:
+        return
+    detail = str(payload.get("detail") or "Specter MCP preflight blocked this run.")
+    _append_progress(job_id, detail)
+    _set_job_status(job_id, "pending", detail, source="specter_mcp_preflight")
+    if db and db.is_configured():
+        try:
+            db.insert_analysis_error(
+                job_id,
+                message=detail[:1000],
+                stage="specter_mcp_start_preflight",
+                error_type=str(payload.get("code") or "SpecterMCPPreflightBlocked"),
+            )
+        except Exception:
+            pass
+
+
+async def _run_specter_mcp_start_preflight(
+    *,
+    job_id: str | None,
+    identifiers: list[Any] | None = None,
+) -> JSONResponse | None:
+    identifier = _specter_mcp_preflight_identifier(identifiers)
+    try:
+        (
+            SpecterCompanyNotFoundError,
+            SpecterMCPError,
+            SpecterQuotaLimitError,
+            get_default_client,
+            specter_quota_reset_hint,
+        ) = _lazy_import_specter_mcp_preflight_symbols()
+    except Exception as exc:
+        detail = (
+            "Specter MCP preflight failed; the run was not started. "
+            f"Remaining quota is unknown. {type(exc).__name__}: {str(exc)[:700]}"
+        )
+        payload = _specter_mcp_blocked_payload(
+            code=SPECTER_MCP_UNAVAILABLE_CODE,
+            detail=detail,
+        )
+        _record_specter_mcp_preflight_block(job_id, payload)
+        return JSONResponse(status_code=503, content=payload)
+
+    try:
+        client = get_default_client()
+        await asyncio.to_thread(client.find_company, identifier)
+        return None
+    except SpecterCompanyNotFoundError:
+        return None
+    except SpecterQuotaLimitError as exc:
+        reset_hint = getattr(exc, "reset_hint", None) or specter_quota_reset_hint(str(exc))
+        detail = (
+            "Specter MCP quota is exhausted; the run was not started. "
+            "Remaining quota is unknown."
+        )
+        if reset_hint:
+            detail = f"{detail} Reset: {reset_hint}."
+        payload = _specter_mcp_blocked_payload(
+            code=SPECTER_MCP_QUOTA_EXHAUSTED_CODE,
+            detail=detail,
+            reset_hint=reset_hint,
+        )
+        _record_specter_mcp_preflight_block(job_id, payload)
+        return JSONResponse(status_code=429, content=payload)
+    except SpecterMCPError as exc:
+        detail = (
+            "Specter MCP is unavailable; the run was not started. "
+            f"Remaining quota is unknown. {type(exc).__name__}: {str(exc)[:700]}"
+        )
+        payload = _specter_mcp_blocked_payload(
+            code=SPECTER_MCP_UNAVAILABLE_CODE,
+            detail=detail,
+        )
+        _record_specter_mcp_preflight_block(job_id, payload)
+        return JSONResponse(status_code=503, content=payload)
+    except Exception as exc:
+        detail = (
+            "Specter MCP preflight failed; the run was not started. "
+            f"Remaining quota is unknown. {type(exc).__name__}: {str(exc)[:700]}"
+        )
+        payload = _specter_mcp_blocked_payload(
+            code=SPECTER_MCP_UNAVAILABLE_CODE,
+            detail=detail,
+        )
+        _record_specter_mcp_preflight_block(job_id, payload)
+        return JSONResponse(status_code=503, content=payload)
+
+
+def _analysis_requires_specter_mcp_start_preflight(job_id: str, req: AnalyzeRequest) -> bool:
+    cache = _results_cache.get(job_id, {})
+    specter_urls = list(cache.get("specter_urls") or [])
+    if req.input_mode == "specter" and specter_urls:
+        return True
+    return req.input_mode == "pitchdeck" and bool(req.use_specter_mcp)
+
+
+def _specter_mcp_start_preflight_identifiers_for_job(job_id: str) -> list[Any]:
+    cache = _results_cache.get(job_id, {})
+    return list(cache.get("specter_urls") or [])
 
 
 def _extract_preflight_store_for_file(path: Path, *, startup_slug: str) -> tuple[Any | None, str | None]:
@@ -6972,6 +7136,7 @@ async def _start_analysis_job(
     started_by: dict[str, str | None] | None = None,
     require_identity: bool = True,
     skip_quality_preflight: bool = False,
+    skip_specter_mcp_preflight: bool = False,
 ):
     if job_id not in _jobs:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -6983,6 +7148,17 @@ async def _start_analysis_job(
     # Duplicate-run gate (Sprint 3): remember the bypass request so gate
     # checks deep in the analysis paths can honor it.
     _results_cache.setdefault(job_id, {})["force_reanalyze"] = bool(req.force_reanalyze)
+
+    if (
+        not skip_specter_mcp_preflight
+        and _analysis_requires_specter_mcp_start_preflight(job_id, req)
+    ):
+        preflight_block = await _run_specter_mcp_start_preflight(
+            job_id=job_id,
+            identifiers=_specter_mcp_start_preflight_identifiers_for_job(job_id),
+        )
+        if preflight_block is not None:
+            return preflight_block
 
     if not skip_quality_preflight:
         preflight_response = await _run_analysis_quality_preflight(job_id, req)
