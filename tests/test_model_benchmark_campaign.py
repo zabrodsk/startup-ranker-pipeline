@@ -104,6 +104,14 @@ def test_prepare_staging_corpus_selects_ten_base_plus_pitchdeck_and_specter(tmp_
     ]
     rows = [
         {
+            "company_id": "fixture-alpha",
+            "company_name": "Alpha",
+            "job_id_legacy": "job-original-specter",
+            "status": "done",
+            "created_at": "2026-07-22T13:00:00Z",
+            "run_config": {"input_mode": "pitchdeck"},
+        },
+        {
             "company_id": "pitch-1",
             "company_name": "Pitch One",
             "job_id_legacy": "pitch-job",

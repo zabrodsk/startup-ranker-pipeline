@@ -234,13 +234,18 @@ def prepare_staging_corpus(
         for row in recent:
             run_config = row.get("run_config") or {}
             company_id = str(row.get("company_id") or "").strip()
+            legacy_job_id = str(row.get("job_id_legacy") or "").strip()
             input_mode = str(run_config.get("input_mode") or "").strip().lower()
             if (
                 input_mode == mode
                 and str(row.get("status") or "").lower() == "done"
                 and company_id
                 and company_id not in selected_company_ids
-                and row.get("job_id_legacy") != base_job_id
+                and legacy_job_id != base_job_id
+                # Test fixtures use human-readable job-* identifiers. They can
+                # persist in staging when integration tests exercise the DB and
+                # must never displace the latest real benchmark candidate.
+                and not legacy_job_id.lower().startswith(("job-", "test-"))
             ):
                 extras[mode] = row
                 selected_rows.append(row)
