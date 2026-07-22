@@ -1,5 +1,13 @@
 {
+  "scripts": {
+    "test:ui": "playwright test",
+    "test:ui:chromium": "playwright test --project=chromium",
+    "test:ui:update": "playwright test --project=chromium --update-snapshots"
+  },
   "devDependencies": {
+    "@axe-core/playwright": "4.12.1",
+    "@playwright/test": "1.60.0",
+    "playwright-core": "1.60.0",
     "pptxgenjs": "^4.0.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

@@ -176,6 +176,7 @@ results.xlsx
 output/
 exports/
 test-results/
+playwright-report/
 node_modules/
 supabase/.temp/
 

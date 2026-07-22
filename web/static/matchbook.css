@@ -1,0 +1,1143 @@
+/*
+ * Matchbook presentation layer.
+ *
+ * Visual source: Deal Intelligence redesign.zip (2026-07-07).
+ * Behavioral source: the current index.html and its embedded JavaScript.
+ * This file intentionally contains presentation only.
+ */
+
+:root {
+  --bg-deep: #faf9f2;
+  --bg-dark: #f0eedf;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f5f4ed;
+  --bg-surface: rgba(46, 64, 56, 0.04);
+  --bg-panel: rgba(240, 238, 223, 0.92);
+  --bg-input: #ffffff;
+  --border: #dddcc8;
+  --border-subtle: #e8e6d8;
+  --border-card: rgba(46, 64, 56, 0.1);
+  --border-hover: rgba(46, 64, 56, 0.18);
+  --green: #2e4038;
+  --green-hover: #253630;
+  --green-bg: #e4eddf;
+  --green-border: rgba(46, 64, 56, 0.2);
+  --green-border-strong: rgba(46, 64, 56, 0.25);
+  --green-surface-subtle: rgba(46, 64, 56, 0.08);
+  --green-surface-muted: rgba(46, 64, 56, 0.12);
+  --text-white: #1a2b22;
+  --text-light: #2e4038;
+  --text-mid: #4d6e58;
+  --text-gray: #667a6b;
+  --text-dim: #758579;
+  --text-dark: #aab4aa;
+  --strategy: #66886f;
+  --strategy-bg: rgba(122, 158, 130, 0.14);
+  --team: #b86f00;
+  --team-bg: rgba(245, 158, 11, 0.14);
+  --potential: #71865f;
+  --potential-bg: rgba(181, 201, 164, 0.2);
+  --red: #a93429;
+  --red-bg: #fde8e8;
+  --red-border: rgba(192, 57, 43, 0.2);
+  --color-warn: #866700;
+  --color-warn-bg: rgba(181, 134, 10, 0.1);
+  --color-warn-border: rgba(181, 134, 10, 0.3);
+  --blue-accent: #4d6e58;
+  --blue-border-accent: rgba(77, 110, 88, 0.24);
+  --blue-surface-subtle: rgba(77, 110, 88, 0.08);
+  --amber: #9a6100;
+  --muted: #667a6b;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'DM Serif Display', Georgia, 'Times New Roman', serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --shadow-sm: 0 1px 3px rgba(46, 64, 56, 0.06);
+  --shadow-md: 0 2px 8px rgba(46, 64, 56, 0.08);
+  --shadow-lg: 0 4px 16px rgba(46, 64, 56, 0.1);
+  --shadow-glow: 0 4px 20px rgba(46, 64, 56, 0.12);
+}
+
+html {
+  background: var(--bg-dark);
+}
+
+body.matchbook {
+  background: linear-gradient(180deg, var(--bg-deep) 0%, var(--bg-dark) 100%);
+  color: var(--text-white);
+  text-rendering: optimizeLegibility;
+}
+
+.matchbook ::selection {
+  background: var(--green-surface-muted);
+  color: var(--text-white);
+}
+
+.matchbook .screen {
+  background: linear-gradient(180deg, var(--bg-deep) 0%, var(--bg-dark) 100%);
+}
+
+/* Shared chrome and controls */
+.matchbook .header {
+  background: rgba(250, 249, 242, 0.94);
+  border-bottom-color: var(--border);
+  box-shadow: 0 1px 0 rgba(46, 64, 56, 0.03);
+  backdrop-filter: blur(14px);
+}
+
+.matchbook .logo-icon {
+  background: var(--green);
+  box-shadow: var(--shadow-sm);
+}
+
+.matchbook .logo-icon svg {
+  fill: var(--bg-dark);
+}
+
+.matchbook .logo-name,
+.matchbook .logo-subtitle {
+  color: var(--text-white);
+}
+
+.matchbook .btn-ghost,
+.matchbook .audit-modal-close,
+.matchbook .btn-process-control,
+.matchbook .recent-run-open,
+.matchbook .recent-run-view-log,
+.matchbook .recent-run-stop,
+.matchbook .btn-audit-log,
+.matchbook .company-chat-btn,
+.matchbook .person-intel-refresh {
+  background: rgba(255, 255, 255, 0.5);
+  border-color: var(--border);
+  color: var(--text-mid);
+  box-shadow: none;
+}
+
+.matchbook .btn-ghost:hover,
+.matchbook .btn-ghost:focus-visible,
+.matchbook .audit-modal-close:hover,
+.matchbook .audit-modal-close:focus-visible,
+.matchbook .btn-process-control:hover,
+.matchbook .btn-process-control:focus-visible,
+.matchbook .recent-run-open:hover,
+.matchbook .recent-run-view-log:hover,
+.matchbook .recent-run-stop:hover,
+.matchbook .btn-audit-log:hover,
+.matchbook .btn-audit-log:focus-visible,
+.matchbook .company-chat-btn:hover,
+.matchbook .company-chat-btn:focus-visible,
+.matchbook .person-intel-refresh:hover,
+.matchbook .person-intel-refresh:focus-visible {
+  background: #ffffff;
+  border-color: var(--border-hover);
+  color: var(--text-white);
+}
+
+.matchbook .btn-ghost.is-active {
+  background: var(--green-surface-subtle);
+  border-color: var(--green-border);
+  color: var(--green);
+}
+
+.matchbook .settings-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-gray);
+  cursor: pointer;
+}
+
+.matchbook .settings-trigger:hover,
+.matchbook .settings-trigger:focus-visible {
+  background: #ffffff;
+  border-color: var(--border);
+  color: var(--green);
+}
+
+.matchbook .btn-green,
+.matchbook .company-chat-btn.primary,
+.matchbook .empty-state-cta,
+.matchbook .person-intel-manual button {
+  background: var(--green);
+  color: var(--bg-dark);
+  box-shadow: var(--shadow-sm);
+}
+
+.matchbook .btn-green:hover,
+.matchbook .company-chat-btn.primary:hover,
+.matchbook .empty-state-cta:hover,
+.matchbook .person-intel-manual button:hover {
+  background: var(--green-hover);
+  box-shadow: var(--shadow-lg);
+  opacity: 1;
+}
+
+.matchbook button:focus-visible,
+.matchbook a:focus-visible,
+.matchbook input:focus-visible,
+.matchbook textarea:focus-visible,
+.matchbook select:focus-visible,
+.matchbook summary:focus-visible,
+.matchbook [tabindex]:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 3px;
+}
+
+.matchbook input,
+.matchbook textarea,
+.matchbook select {
+  color-scheme: light;
+}
+
+.matchbook .password-input,
+.matchbook .instructions-input,
+.matchbook .specter-urls-textarea,
+.matchbook .llm-select,
+.matchbook .premium-phase-select,
+.matchbook .phase-advanced-select,
+.matchbook .saved-companies-toolbar select,
+.matchbook .rankings-sort select,
+.matchbook .companies-sidebar-sort-select,
+.matchbook .companies-sidebar-search-input,
+.matchbook .company-chat-model-select,
+.matchbook .company-chat-textarea,
+.matchbook .person-intel-manual input,
+.matchbook .leadgen-filter-select,
+.matchbook .leadgen-sort-select,
+.matchbook .feedback-dialog-panel select,
+.matchbook .feedback-dialog-panel textarea,
+.matchbook .audit-search-input {
+  background: #ffffff;
+  border-color: var(--border);
+  color: var(--text-light);
+  box-shadow: inset 0 1px 0 rgba(46, 64, 56, 0.02);
+}
+
+.matchbook .password-input:focus,
+.matchbook .instructions-input:focus,
+.matchbook .specter-urls-textarea:focus,
+.matchbook .llm-select:focus,
+.matchbook .premium-phase-select:focus,
+.matchbook .phase-advanced-select:focus,
+.matchbook .companies-sidebar-search-input:focus,
+.matchbook .company-chat-model-select:focus,
+.matchbook .company-chat-textarea:focus,
+.matchbook .feedback-dialog-panel select:focus,
+.matchbook .feedback-dialog-panel textarea:focus,
+.matchbook .audit-search-input:focus {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(46, 64, 56, 0.1);
+}
+
+.matchbook input::placeholder,
+.matchbook textarea::placeholder {
+  color: var(--text-dim);
+}
+
+/* Login */
+.matchbook #password-screen {
+  background: linear-gradient(180deg, #faf9f2 0%, #f0eedf 100%);
+}
+
+.matchbook .login-stage,
+.matchbook .password-card {
+  border: 1px solid var(--border-card);
+  backdrop-filter: none;
+  box-shadow: var(--shadow-lg);
+}
+
+.matchbook .login-stage {
+  background: var(--green);
+  color: var(--bg-dark);
+}
+
+.matchbook .password-card {
+  background: #ffffff;
+}
+
+.matchbook .login-stage::before {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.04), transparent 52%);
+}
+
+.matchbook .password-card::before {
+  background: linear-gradient(135deg, rgba(46, 64, 56, 0.02), transparent 52%);
+}
+
+.matchbook .login-stage .logo-name,
+.matchbook .login-stage h1,
+.matchbook .login-stage .login-signal-value {
+  color: var(--bg-dark);
+}
+
+.matchbook .login-stage h1 {
+  font-family: var(--font-display);
+  font-size: clamp(44px, 5vw, 64px);
+  font-weight: 400;
+  line-height: 1.05;
+  letter-spacing: -0.5px;
+}
+
+.matchbook .login-stage p {
+  color: rgba(240, 238, 223, 0.76);
+}
+
+.matchbook .login-eyebrow {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+  color: rgba(240, 238, 223, 0.9);
+}
+
+.matchbook .login-eyebrow::before {
+  background: #b5c9a4;
+  box-shadow: 0 0 8px rgba(181, 201, 164, 0.4);
+}
+
+.matchbook .login-orbital {
+  filter: blur(40px);
+}
+
+.matchbook .login-orbital.one {
+  background: radial-gradient(circle, rgba(181, 201, 164, 0.2), transparent 68%);
+}
+
+.matchbook .login-orbital.two {
+  background: radial-gradient(circle, rgba(240, 238, 223, 0.1), transparent 70%);
+}
+
+.matchbook .login-signal {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: none;
+}
+
+.matchbook .login-signal:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.matchbook .login-signal-label,
+.matchbook .login-signal-copy {
+  color: rgba(240, 238, 223, 0.66);
+}
+
+.matchbook .password-kicker {
+  color: var(--text-mid);
+}
+
+.matchbook .password-input {
+  letter-spacing: 0;
+}
+
+.matchbook .password-input::placeholder {
+  letter-spacing: 0;
+}
+
+/* Intake */
+.matchbook .hero-text h1 {
+  color: var(--text-white);
+}
+
+.matchbook .hero-text p {
+  color: var(--text-mid);
+}
+
+.matchbook .upload-zone,
+.matchbook .specter-urls-section,
+.matchbook .input-mode-toggle,
+.matchbook .web-intensity-toggle,
+.matchbook .web-search-toggle,
+.matchbook .premium-phase-config,
+.matchbook .advanced-llm-section,
+.matchbook .recent-runs-section,
+.matchbook .onboarding-welcome,
+.matchbook .getting-started-section,
+.matchbook .files-section {
+  background: #ffffff;
+  border-color: var(--border);
+  box-shadow: var(--shadow-sm);
+}
+
+.matchbook .upload-zone {
+  border-color: var(--border);
+}
+
+.matchbook .upload-zone:hover,
+.matchbook .upload-zone.dragover {
+  background: var(--bg-card-hover);
+  border-color: var(--green);
+}
+
+.matchbook .upload-icon,
+.matchbook .getting-started-card-icon,
+.matchbook .empty-state-icon {
+  background: var(--green-surface-subtle);
+  border-color: var(--green-border);
+  color: var(--green);
+}
+
+.matchbook .input-mode-option.active,
+.matchbook .web-intensity-option.active {
+  background: var(--green);
+  border-color: var(--green);
+  color: var(--bg-dark);
+}
+
+.matchbook .input-mode-option:hover,
+.matchbook .web-intensity-option:hover {
+  background: var(--green-surface-subtle);
+  color: var(--green);
+}
+
+.matchbook .specter-urls-sublabel,
+.matchbook .specter-urls-hint,
+.matchbook .specter-quota-warning,
+.matchbook .input-mode-hint,
+.matchbook .web-intensity-hint,
+.matchbook .llm-select-hint,
+.matchbook .phase-advanced-note {
+  color: var(--text-gray);
+}
+
+.matchbook .input-mode-callout {
+  background: var(--blue-surface-subtle);
+  border-color: var(--blue-border-accent);
+}
+
+.matchbook .llm-model-card,
+.matchbook .premium-phase-field,
+.matchbook .phase-advanced-block,
+.matchbook .file-item,
+.matchbook .recent-run-card,
+.matchbook .getting-started-card,
+.matchbook .onboarding-step {
+  background: #ffffff;
+  border-color: var(--border-subtle);
+  box-shadow: var(--shadow-sm);
+}
+
+.matchbook .llm-model-card::before,
+.matchbook .llm-model-card.is-selected::before {
+  background: linear-gradient(135deg, rgba(46, 64, 56, 0.05), transparent 48%);
+}
+
+.matchbook .llm-model-card.is-selected {
+  background: var(--green-surface-subtle);
+  border-color: var(--green-border);
+  box-shadow: var(--shadow-md);
+}
+
+.matchbook .llm-model-card:hover:not(:disabled),
+.matchbook .llm-model-card:focus-visible,
+.matchbook .recent-run-card:hover,
+.matchbook .getting-started-card:hover,
+.matchbook .getting-started-card:focus-visible {
+  background: #ffffff;
+  border-color: var(--border-hover);
+  box-shadow: var(--shadow-lg);
+}
+
+.matchbook .llm-model-provider,
+.matchbook .llm-model-state,
+.matchbook .phase-advanced-badge,
+.matchbook .recent-run-status,
+.matchbook .coverage-badge,
+.matchbook .bucket-badge,
+.matchbook .decision-badge {
+  background: var(--green-surface-subtle);
+  border-color: var(--green-border);
+  color: var(--green);
+}
+
+.matchbook .phase-temperature-slider::-webkit-slider-runnable-track {
+  background: linear-gradient(90deg, var(--green) var(--phase-slider-pct), var(--border) var(--phase-slider-pct));
+}
+
+.matchbook .toggle-slider {
+  background: var(--text-dark);
+}
+
+.matchbook .toggle-switch input:checked + .toggle-slider {
+  background: var(--green);
+}
+
+.matchbook .onboarding-welcome,
+.matchbook .getting-started-section {
+  border-color: var(--green-border);
+}
+
+.matchbook .onboarding-step-num,
+.matchbook .info-kicker,
+.matchbook .info-step-number,
+.matchbook .rankings-label,
+.matchbook .audit-section-title,
+.matchbook .premium-phase-label,
+.matchbook .instructions-label,
+.matchbook .input-mode-label {
+  color: var(--text-mid);
+}
+
+/* Information and history */
+.matchbook .analysis-history-section,
+.matchbook .info-sidebar,
+.matchbook .info-panel,
+.matchbook .info-card,
+.matchbook .info-step,
+.matchbook .saved-jobs-empty,
+.matchbook .empty-state-enhanced {
+  background: #ffffff;
+  border-color: var(--border-subtle);
+  box-shadow: var(--shadow-sm);
+}
+
+.matchbook .info-nav-btn {
+  color: var(--text-mid);
+}
+
+.matchbook .info-nav-btn:hover,
+.matchbook .info-nav-btn.active {
+  background: var(--green-surface-subtle);
+  color: var(--green);
+}
+
+.matchbook .info-inline-code,
+.matchbook .audit-chunk-tag {
+  background: var(--green-surface-subtle);
+  border-color: var(--green-border);
+  color: var(--green);
+  font-family: var(--font-mono);
+}
+
+/* Companies */
+.matchbook .companies-screen-content,
+.matchbook .leadgen-screen-content {
+  background: linear-gradient(180deg, var(--bg-deep) 0%, var(--bg-dark) 100%);
+}
+
+.matchbook .companies-page,
+.matchbook .leadgen-page {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+.matchbook .companies-page-sidebar,
+.matchbook .leadgen-sidebar {
+  background: #f8f7f0;
+  border-color: var(--border);
+}
+
+.matchbook .companies-sidebar-head,
+.matchbook .leadgen-sidebar-head,
+.matchbook .companies-page-detail-topbar {
+  background: rgba(250, 249, 242, 0.9);
+  border-color: var(--border);
+}
+
+.matchbook .companies-page-sidebar .saved-company-card,
+.matchbook .leadgen-batch-card,
+.matchbook .saved-company-run {
+  background: #ffffff;
+  border-color: var(--border-subtle);
+  box-shadow: var(--shadow-sm);
+}
+
+.matchbook .companies-page-sidebar .saved-company-card:hover,
+.matchbook .companies-page-sidebar .saved-company-card.selected,
+.matchbook .leadgen-batch-card:hover,
+.matchbook .leadgen-batch-card.selected,
+.matchbook .saved-company-run:hover,
+.matchbook .saved-company-run.selected {
+  background: var(--green-surface-subtle);
+  border-color: var(--green-border);
+  box-shadow: var(--shadow-md);
+}
+
+.matchbook .companies-sidebar-toggle,
+.matchbook .companies-page-detail-toggle,
+.matchbook .companies-sidebar-search-clear {
+  color: var(--text-mid);
+}
+
+.matchbook .companies-sidebar-toggle:hover,
+.matchbook .companies-page-detail-toggle:hover,
+.matchbook .companies-sidebar-search-clear:hover {
+  background: var(--green-surface-subtle);
+  color: var(--green);
+}
+
+.matchbook .saved-company-score,
+.matchbook .saved-company-run-score,
+.matchbook .company-chat-metric {
+  background: var(--green-surface-subtle);
+  border-color: var(--green-border);
+  color: var(--green);
+}
+
+/* LeadGen */
+.matchbook .leadgen-detail {
+  background: #ffffff;
+}
+
+.matchbook .leadgen-table-wrap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.matchbook .leadgen-table {
+  background: #ffffff;
+}
+
+.matchbook .leadgen-table th {
+  background: #f8f7f0;
+  color: var(--text-mid);
+}
+
+.matchbook .leadgen-table th,
+.matchbook .leadgen-table td {
+  border-color: var(--border-subtle);
+}
+
+.matchbook .leadgen-table tbody tr:hover {
+  background: var(--green-surface-subtle);
+}
+
+.matchbook .leadgen-badge,
+.matchbook .leadgen-badge.pending,
+.matchbook .leadgen-badge.approved,
+.matchbook .leadgen-badge.queued {
+  background: var(--green-surface-subtle);
+  border-color: var(--green-border);
+  color: var(--green);
+}
+
+.matchbook .leadgen-badge.rejected,
+.matchbook .leadgen-badge.invalid,
+.matchbook .leadgen-badge.ineligible,
+.matchbook .leadgen-badge.duplicate {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  color: var(--red);
+}
+
+.matchbook .leadgen-alert {
+  background: var(--color-warn-bg);
+  border-color: var(--color-warn-border);
+  color: var(--color-warn);
+}
+
+.matchbook .leadgen-empty {
+  background: var(--bg-surface);
+  border-color: var(--border);
+  color: var(--text-gray);
+}
+
+.matchbook .leadgen-table input[type='checkbox'] {
+  accent-color: var(--green);
+}
+
+/* Processing */
+.matchbook #processing-screen {
+  background: linear-gradient(180deg, var(--bg-deep) 0%, var(--bg-dark) 100%);
+}
+
+.matchbook .processing-card {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: 36px;
+  border-color: var(--border);
+  box-shadow: var(--shadow-lg);
+}
+
+.matchbook .processing-card .status.status-live {
+  color: var(--green);
+}
+
+.matchbook .progress-bar-track,
+.matchbook .processing-stage-indicator {
+  background: var(--bg-surface);
+  border-color: var(--border);
+}
+
+.matchbook .progress-bar-fill {
+  background: var(--green);
+}
+
+.matchbook .processing-stage-list {
+  background: #ffffff;
+  border-color: var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.matchbook .processing-stage-row {
+  background: #ffffff;
+  border-color: var(--border-subtle);
+  color: var(--text-dim);
+}
+
+.matchbook .processing-stage-row.is-done {
+  color: var(--text-light);
+}
+
+.matchbook .processing-stage-row.is-done .processing-stage-indicator {
+  background: var(--green);
+  border-color: var(--green);
+}
+
+.matchbook .processing-stage-row.is-done .processing-stage-check {
+  border-color: var(--bg-dark);
+}
+
+.matchbook .processing-stage-row.is-active {
+  background: var(--green-surface-subtle);
+  color: var(--green);
+}
+
+.matchbook .processing-stage-row.is-active .processing-stage-indicator {
+  background: var(--green-bg);
+  border-color: var(--green-border-strong);
+  box-shadow: 0 0 0 4px var(--green-surface-subtle);
+}
+
+.matchbook .processing-stage-spinner {
+  border-color: var(--green-border);
+  border-right-color: var(--green);
+  border-top-color: var(--green);
+}
+
+/* Results and analysis detail */
+.matchbook .results-body {
+  background: transparent;
+}
+
+.matchbook .run-cost-card,
+.matchbook .stat-card,
+.matchbook .rank-card,
+.matchbook .score-item,
+.matchbook .arg-item,
+.matchbook .executive-summary-container,
+.matchbook .ranking-evidence-section,
+.matchbook .person-intel-section,
+.matchbook .person-intel-card,
+.matchbook .person-report,
+.matchbook .person-report-section,
+.matchbook .company-chat-card {
+  background: #ffffff;
+  border-color: var(--border-subtle);
+  box-shadow: var(--shadow-sm);
+}
+
+.matchbook .run-cost-card:hover,
+.matchbook .stat-card:hover,
+.matchbook .rank-card:hover,
+.matchbook .person-intel-card:hover {
+  border-color: var(--border-hover);
+  box-shadow: var(--shadow-lg);
+}
+
+.matchbook .run-cost-card::before,
+.matchbook .run-cost-card.is-total::after,
+.matchbook .company-chat-card::before {
+  background: linear-gradient(135deg, rgba(46, 64, 56, 0.04), transparent 55%);
+}
+
+.matchbook .run-cost-card-glow {
+  background: radial-gradient(circle, rgba(122, 158, 130, 0.13), transparent 70%);
+}
+
+.matchbook .run-cost-card-label {
+  color: var(--text-mid);
+}
+
+.matchbook .run-cost-card-value {
+  color: var(--text-white);
+}
+
+.matchbook .run-cost-card-sub {
+  color: var(--text-gray);
+}
+
+.matchbook .run-cost-card-note {
+  color: var(--text-mid);
+}
+
+.matchbook .rank-badge.first {
+  background: var(--green);
+  color: var(--bg-dark);
+}
+
+.matchbook .rank-badge.other,
+.matchbook .rank-company-link,
+.matchbook .team-member-pill,
+.matchbook .person-intel-status,
+.matchbook .company-chat-turn-pill,
+.matchbook .company-chat-web-badge,
+.matchbook .company-chat-citation,
+.matchbook .company-chat-followup {
+  background: var(--green-surface-subtle);
+  border-color: var(--green-border);
+  color: var(--green);
+}
+
+.matchbook .rank-company-link:hover,
+.matchbook .team-member-pill:hover,
+.matchbook .company-chat-citation:hover,
+.matchbook .company-chat-followup:hover {
+  background: var(--green-surface-muted);
+  border-color: var(--green-border-strong);
+}
+
+.matchbook .rank-company-link.specter {
+  background: #f7f0df;
+  border-color: rgba(181, 134, 10, 0.24);
+  color: var(--color-warn);
+}
+
+.matchbook .args-col {
+  background: #faf9f2;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+}
+
+.matchbook .arg-item {
+  box-shadow: none;
+}
+
+.matchbook .arg-score.pro {
+  background: var(--green-bg);
+  color: var(--green);
+}
+
+.matchbook .arg-score.contra {
+  background: var(--red-bg);
+  color: var(--red);
+}
+
+.matchbook .dim-bar-bg {
+  background: var(--border-subtle);
+}
+
+.matchbook .dim-bar-fill {
+  background: var(--dim-color);
+}
+
+.matchbook .coverage-badge {
+  background: var(--green-surface-subtle);
+  border-color: var(--green-border);
+  color: var(--green);
+}
+
+.matchbook .reused-badge {
+  background: var(--color-warn-bg);
+  border-color: var(--color-warn-border);
+  color: var(--color-warn);
+}
+
+.matchbook .rank-card--failed,
+.matchbook .failed-companies-list {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+}
+
+/* Company chat */
+.matchbook .company-chat-shell,
+.matchbook .company-chat-log,
+.matchbook .company-chat-composer {
+  background: #faf9f2;
+  border-color: var(--border);
+}
+
+.matchbook .company-chat-message.assistant {
+  background: #ffffff;
+  border-color: var(--border);
+  color: var(--text-light);
+  box-shadow: var(--shadow-sm);
+}
+
+.matchbook .company-chat-message.user {
+  background: var(--green);
+  border-color: var(--green);
+  color: var(--bg-dark);
+  box-shadow: var(--shadow-sm);
+}
+
+.matchbook .company-chat-message.user .company-chat-content,
+.matchbook .company-chat-message.user .company-chat-turn-meta {
+  color: var(--bg-dark);
+}
+
+.matchbook .company-chat-message.typing,
+.matchbook .company-chat-shimmer {
+  background: linear-gradient(90deg, #f5f4ed 25%, #ffffff 45%, #f5f4ed 65%);
+  color: var(--text-gray);
+}
+
+.matchbook .company-chat-log::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+
+/* Modals, settings, feedback, and audit */
+.matchbook .audit-modal-overlay {
+  background: rgba(26, 43, 34, 0.42);
+  backdrop-filter: blur(4px);
+}
+
+.matchbook .audit-modal-panel {
+  background: #ffffff;
+  border-color: var(--border);
+  box-shadow: 0 20px 60px rgba(46, 64, 56, 0.18);
+}
+
+.matchbook .audit-modal-header,
+.matchbook .settings-tabs {
+  background: #faf9f2;
+  border-color: var(--border);
+}
+
+.matchbook .audit-section-body,
+.matchbook .audit-qa-block,
+.matchbook .audit-arg-block,
+.matchbook .audit-note,
+.matchbook .audit-empty-state,
+.matchbook .audit-search-shell,
+.matchbook .progress-log-modal-content {
+  background: #faf9f2;
+  border-color: var(--border-subtle);
+  color: var(--text-light);
+}
+
+.matchbook .audit-expand-toggle {
+  color: var(--green);
+}
+
+.matchbook .audit-expand-content {
+  background: #ffffff;
+  border-color: var(--border);
+  color: var(--text-mid);
+  font-family: var(--font-mono);
+}
+
+.matchbook .settings-tab-btn.active {
+  background: var(--green-surface-subtle);
+  border-color: var(--green-border);
+  color: var(--green);
+}
+
+.matchbook .feedback-bubble {
+  background: var(--green);
+  border-color: var(--green);
+  color: var(--bg-dark);
+  box-shadow: var(--shadow-lg);
+}
+
+.matchbook .feedback-bubble:hover,
+.matchbook .feedback-bubble:focus-visible {
+  background: var(--green-hover);
+}
+
+.matchbook .feedback-instruction,
+.matchbook .feedback-toast {
+  background: var(--green);
+  border-color: var(--green);
+  color: var(--bg-dark);
+  box-shadow: var(--shadow-lg);
+}
+
+.matchbook .feedback-toast.is-error {
+  background: var(--red);
+  border-color: var(--red);
+  color: #ffffff;
+}
+
+.matchbook .feedback-hover-box {
+  border-color: var(--green);
+  background: rgba(46, 64, 56, 0.08);
+}
+
+.matchbook .feedback-selected-box {
+  border-color: var(--color-warn);
+  background: rgba(181, 134, 10, 0.08);
+}
+
+/* Inline-generated stage-cost table */
+.matchbook #results-stage-costs details {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  box-shadow: var(--shadow-sm);
+}
+
+.matchbook #results-stage-costs summary {
+  color: var(--text-mid) !important;
+  font-weight: 600;
+}
+
+.matchbook #results-stage-costs thead tr {
+  color: var(--text-mid) !important;
+  border-bottom-color: var(--border) !important;
+}
+
+/* Responsive extensions for omitted prototype states */
+@media (max-width: 1100px) {
+  .matchbook .header {
+    height: auto;
+    min-height: 64px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    gap: 16px;
+  }
+
+  .matchbook .header-right {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .matchbook .btn-ghost {
+    padding: 8px 12px;
+  }
+}
+
+@media (max-width: 768px) {
+  .matchbook .header {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 12px 16px;
+  }
+
+  .matchbook .header-right {
+    width: 100%;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overflow-x: auto;
+    padding-bottom: 3px;
+    scrollbar-width: thin;
+  }
+
+  .matchbook .header-right > * {
+    flex: 0 0 auto;
+  }
+
+  .matchbook .main-content {
+    padding-top: 36px;
+  }
+
+  .matchbook .companies-page,
+  .matchbook .leadgen-page {
+    border-radius: var(--radius-md);
+  }
+
+  .matchbook .leadgen-table-wrap,
+  .matchbook #results-stage-costs {
+    overflow-x: auto;
+  }
+
+  .matchbook .leadgen-table,
+  .matchbook #results-stage-costs table {
+    min-width: 760px;
+  }
+
+  .matchbook .audit-modal-panel {
+    width: min(100%, calc(100vw - 24px));
+    max-height: calc(100dvh - 24px);
+  }
+
+  .matchbook .feedback-dialog-panel {
+    width: min(100%, calc(100vw - 24px));
+  }
+}
+
+@media (max-width: 640px) {
+  .matchbook #password-screen {
+    padding: 12px;
+  }
+
+  .matchbook .login-shell {
+    gap: 14px;
+  }
+
+  .matchbook .login-stage {
+    padding: 24px;
+  }
+
+  .matchbook .login-stage h1 {
+    font-size: clamp(34px, 10vw, 48px);
+  }
+
+  .matchbook .password-card {
+    padding: 24px;
+  }
+
+  .matchbook .processing-card {
+    margin: 16px;
+    padding: 24px 18px;
+  }
+
+  .matchbook .hero-text h1 {
+    font-size: clamp(30px, 9vw, 40px);
+  }
+
+  .matchbook .upload-zone,
+  .matchbook .input-mode-section,
+  .matchbook .specter-urls-section,
+  .matchbook .instructions-section,
+  .matchbook .llm-model-section,
+  .matchbook .files-section,
+  .matchbook .recent-runs-section,
+  .matchbook .onboarding-welcome,
+  .matchbook .getting-started-section {
+    width: 100% !important;
+    max-width: 100%;
+  }
+
+  .matchbook .input-mode-toggle {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .matchbook .input-mode-option {
+    width: 100%;
+  }
+
+  .matchbook .rank-top-actions {
+    width: 100%;
+  }
+
+  .matchbook .btn-audit-log {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .matchbook .feedback-bubble {
+    right: max(14px, env(safe-area-inset-right));
+    bottom: max(14px, env(safe-area-inset-bottom));
+  }
+}
+
+@media (pointer: coarse) {
+  .matchbook button,
+  .matchbook select,
+  .matchbook input[type='checkbox'],
+  .matchbook input[type='radio'] {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .matchbook *,
+  .matchbook *::before,
+  .matchbook *::after {
+    scroll-behavior: auto !important;
+  }
+}

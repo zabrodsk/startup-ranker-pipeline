@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Deal Intelligence</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -4867,8 +4867,9 @@
       }
     }
   </style>
+  <link href="/static/matchbook.css" rel="stylesheet">
 </head>
-<body>
+<body class="matchbook">
 
 <!-- ═══════════════════ PASSWORD SCREEN ═══════════════════ -->
 <div id="password-screen" class="screen">
@@ -4959,12 +4960,12 @@
       <button type="button" class="btn-ghost" id="saved-jobs-open-upload" data-nav-section="companies">Companies</button>
       <button type="button" class="btn-ghost" id="leadgen-open-upload" data-nav-section="leadgen">LeadGen</button>
       <button type="button" class="btn-ghost is-active" id="new-analysis-btn-upload" data-nav-section="new-analysis" aria-current="page">New Analysis</button>
-      <span id="settings-open" style="font-size:13px;color:var(--text-gray);cursor:pointer;display:inline-flex;align-items:center" title="Settings">
+      <button type="button" id="settings-open" class="settings-trigger" aria-label="Settings" title="Settings">
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px">
     <circle cx="12" cy="12" r="3"/>
     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
   </svg>
-</span>
+</button>
     </div>
   </div>
   <div class="main-content">
@@ -6333,7 +6334,7 @@ function renderPhaseModelSelector() {
                 <div class="phase-advanced-row">
                   <div class="phase-advanced-label">Reasoning effort</div>
                   <div class="phase-advanced-control">
-                    <select class="phase-advanced-select" data-phase-reasoning="${escapeHtml(phase)}">
+                    <select class="phase-advanced-select" data-phase-reasoning="${escapeHtml(phase)}" aria-label="${escapeHtml(USER_PHASE_LABELS[phase])} reasoning effort">
                       <option value="">${escapeHtml(getAutoReasoningOptionLabel(phase, selectedModel))}</option>
                       ${reasoningOptions.map((option) => `
                         <option value="${escapeHtml(option)}" ${setting.reasoning_effort === option ? 'selected' : ''}>${escapeHtml(option)}</option>
@@ -6388,7 +6389,7 @@ function renderPhaseModelSelector() {
         return `
           <div class="premium-phase-field">
             <span class="premium-phase-label">${escapeHtml(USER_PHASE_LABELS[phase])}</span>
-            <select class="premium-phase-select" data-phase-model="${escapeHtml(phase)}">
+            <select class="premium-phase-select" data-phase-model="${escapeHtml(phase)}" aria-label="${escapeHtml(USER_PHASE_LABELS[phase])} model">
               ${models.map((item) => {
                 const key = `${item.provider}:${item.model}`;
                 return `<option value="${escapeHtml(key)}" ${selected === key ? 'selected' : ''}>${escapeHtml(item.label)}</option>`;
