@@ -6159,7 +6159,13 @@ def admin_get_recent_analyses(limit: int = 40) -> list[dict[str, Any]]:
             if not isinstance(run_config, dict):
                 run_config = {}
 
-            phase_models = run_config.get("phase_models") if isinstance(run_config.get("phase_models"), dict) else None
+            phase_models = (
+                run_config.get("pipeline_models")
+                if isinstance(run_config.get("pipeline_models"), dict)
+                else run_config.get("phase_models")
+                if isinstance(run_config.get("phase_models"), dict)
+                else None
+            )
             started_by = _extract_started_by_fields(run_config)
 
             # Cost summary: prefer the embedded run_costs block; fall back to

@@ -7,10 +7,9 @@ Environment variables:
     MODEL_NAME: Model identifier (default: "gemini-3.1-flash-lite-preview")
     GOOGLE_API_KEY: Required when LLM_PROVIDER=gemini
     OPENAI_API_KEY: Required when LLM_PROVIDER=openai
-    OPENROUTER_API_KEY: Required when LLM_PROVIDER=openrouter (falls back to OPENAI_API_KEY)
+    OPENROUTER_API_KEY: Required when LLM_PROVIDER=openrouter
     ANTHROPIC_API_KEY: Required when LLM_PROVIDER=anthropic
     OPENROUTER_BASE_URL: Optional when LLM_PROVIDER=openrouter (defaults to https://openrouter.ai/api/v1)
-    OPENAI_BASE_URL: Legacy fallback for OpenRouter base URL
 """
 
 import os
@@ -23,7 +22,12 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 import tiktoken
 
-from agent.llm_catalog import normalize_creativity, normalize_provider, supports_selection_creativity_control
+from agent.llm_catalog import (
+    find_model_entry,
+    normalize_creativity,
+    normalize_provider,
+    supports_selection_creativity_control,
+)
 from agent.llm_policy import (
     resolve_openai_phase_sampling,
     resolve_openai_reasoning_fallback_temperature,
@@ -53,6 +57,24 @@ _DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _OPENROUTER_DEFAULT_APP_NAME = "Deal Intelligence"
 _GPT5_TEMPERATURE_MODE_ENV = "OPENAI_GPT5_TEMPERATURE_MODE"
 _DEFAULT_GPT5_TEMPERATURE_MODE = "respect_requested"
+
+
+class _StrictStructuredOutputProxy:
+    """Require OpenRouter's strict JSON Schema path for every structured call."""
+
+    def __init__(self, runnable: Any):
+        self._runnable = runnable
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._runnable, name)
+
+    def with_structured_output(self, schema: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("method", "json_schema")
+        kwargs.setdefault("strict", True)
+        return self._runnable.with_structured_output(schema, **kwargs)
+
+    def bind_tools(self, *args: Any, **kwargs: Any) -> "_StrictStructuredOutputProxy":
+        return _StrictStructuredOutputProxy(self._runnable.bind_tools(*args, **kwargs))
 
 
 def _extract_usage_metadata(payload: Any) -> dict[str, int] | None:
@@ -261,6 +283,112 @@ def _extract_completion_text(payload: Any) -> str:
     return "\n".join(part for part in parts if part).strip()
 
 
+def _extract_openrouter_response_metadata(payload: Any) -> dict[str, Any]:
+    """Extract stable OpenRouter billing/routing fields from LangChain envelopes."""
+    sources: list[dict[str, Any]] = []
+
+    def _append(value: Any) -> None:
+        if isinstance(value, dict):
+            sources.append(value)
+
+    if isinstance(payload, dict):
+        _append(payload)
+        _append(payload.get("llm_output"))
+        _append(payload.get("response_metadata"))
+        generations = payload.get("generations")
+    else:
+        _append(getattr(payload, "llm_output", None))
+        _append(getattr(payload, "response_metadata", None))
+        generations = getattr(payload, "generations", None)
+
+    if isinstance(generations, list):
+        for generation_list in generations:
+            if not generation_list:
+                continue
+            generation = generation_list[0]
+            message = generation.get("message") if isinstance(generation, dict) else getattr(generation, "message", None)
+            if message is None:
+                continue
+            _append(message if isinstance(message, dict) else None)
+            _append(message.get("response_metadata") if isinstance(message, dict) else getattr(message, "response_metadata", None))
+            _append(message.get("usage_metadata") if isinstance(message, dict) else getattr(message, "usage_metadata", None))
+
+    for source in list(sources):
+        _append(source.get("openrouter_metadata"))
+        _append(source.get("headers"))
+
+    result: dict[str, Any] = {}
+    usage_sources: list[dict[str, Any]] = []
+    for source in sources:
+        for key in ("usage", "token_usage", "usage_metadata"):
+            value = source.get(key)
+            if isinstance(value, dict):
+                usage_sources.append(value)
+        if "cost" in source:
+            usage_sources.append(source)
+        if "generation_id" not in result:
+            generation_id = source.get("generation_id") or source.get("id")
+            if isinstance(generation_id, str) and generation_id:
+                result["generation_id"] = generation_id
+            else:
+                header_generation_id = source.get("x-generation-id") or source.get("X-Generation-Id")
+                if isinstance(header_generation_id, str) and header_generation_id:
+                    result["generation_id"] = header_generation_id
+        if "selected_provider" not in result:
+            selected_provider = source.get("provider") or source.get("provider_name")
+            if isinstance(selected_provider, str) and selected_provider:
+                result["selected_provider"] = selected_provider
+        endpoints = source.get("endpoints")
+        if isinstance(endpoints, dict):
+            available = endpoints.get("available")
+            if isinstance(available, list):
+                selected_endpoint = next(
+                    (
+                        endpoint
+                        for endpoint in available
+                        if isinstance(endpoint, dict) and endpoint.get("selected") is True
+                    ),
+                    None,
+                )
+                if isinstance(selected_endpoint, dict):
+                    selected_provider = selected_endpoint.get("provider")
+                    if isinstance(selected_provider, str) and selected_provider:
+                        result["selected_provider"] = selected_provider
+        router_attempt = source.get("attempt")
+        if isinstance(router_attempt, int) and not isinstance(router_attempt, bool):
+            result["openrouter_attempt"] = router_attempt
+            result["provider_retry_count"] = max(0, router_attempt - 1)
+        if "requested" in source and "strategy" in source:
+            result["openrouter_metadata"] = dict(source)
+
+    for usage in usage_sources:
+        cost = usage.get("cost")
+        if "actual_cost_usd" not in result and isinstance(cost, (int, float)) and not isinstance(cost, bool):
+            result["actual_cost_usd"] = float(cost)
+        prompt_details = usage.get("prompt_tokens_details") or usage.get("input_token_details")
+        if isinstance(prompt_details, dict):
+            cached = (
+                prompt_details.get("cached_tokens")
+                if "cached_tokens" in prompt_details
+                else prompt_details.get("cache_read")
+            )
+            if isinstance(cached, (int, float)) and not isinstance(cached, bool):
+                result["cached_tokens"] = int(cached)
+        completion_details = usage.get("completion_tokens_details") or usage.get("output_token_details")
+        if isinstance(completion_details, dict):
+            reasoning = (
+                completion_details.get("reasoning_tokens")
+                if "reasoning_tokens" in completion_details
+                else completion_details.get("reasoning")
+            )
+            if isinstance(reasoning, (int, float)) and not isinstance(reasoning, bool):
+                result["reasoning_tokens"] = int(reasoning)
+        cost_details = usage.get("cost_details")
+        if isinstance(cost_details, dict):
+            result["cost_details"] = dict(cost_details)
+    return result
+
+
 class _TelemetryCallbackHandler(BaseCallbackHandler):
     """Collect token usage from LangChain callback payloads."""
 
@@ -311,6 +439,10 @@ class _TelemetryCallbackHandler(BaseCallbackHandler):
         ):
             if key in request_settings:
                 metadata[key] = request_settings[key]
+        if selection.get("provider") == "openrouter":
+            metadata.update(_extract_openrouter_response_metadata(response))
+            if "openrouter_routing" in request_settings:
+                metadata["openrouter_routing"] = dict(request_settings["openrouter_routing"])
 
         collector.record_llm_usage(
             provider=selection["provider"],
@@ -478,6 +610,23 @@ def create_llm(
                 selected_reasoning_effort=selection_reasoning_effort,
             )
         )
+    elif provider == "openrouter":
+        entry = find_model_entry(provider, model)
+        if entry is not None and not entry.supports_temperature_control:
+            request_settings.update(
+                {
+                    "effective_temperature": None,
+                    "sampling_mode": "provider_fixed",
+                }
+            )
+        if request_settings.get("effective_reasoning_effort") is None and entry is not None:
+            request_settings["effective_reasoning_effort"] = entry.default_reasoning_effort
+        request_settings["openrouter_routing"] = {
+            "require_parameters": True,
+            "data_collection": "deny",
+            "zdr": True,
+            **dict(selection.get("openrouter_routing") or {}),
+        }
     set_current_llm_request_settings(request_settings)
     effective_temperature = request_settings["effective_temperature"]
 
@@ -500,7 +649,16 @@ def create_llm(
             fallback_builder=fallback_builder,
         )
     elif provider == "openrouter":
-        return wrap_llm(_create_openrouter(model, requested_temperature or 0.0, timeout_s, max_retries))
+        return wrap_llm(
+            _create_openrouter(
+                model,
+                request_settings.get("effective_temperature"),
+                timeout_s,
+                max_retries,
+                reasoning_effort=request_settings.get("effective_reasoning_effort"),
+                routing=selection.get("openrouter_routing"),
+            )
+        )
     elif provider == "anthropic":
         return wrap_llm(_create_anthropic(model, requested_temperature or 0.0, timeout_s, max_retries))
     else:
@@ -633,41 +791,74 @@ def _build_openai_reasoning_fallback_builder(
 
 def _create_openrouter(
     model: str,
-    temperature: float,
+    temperature: float | None,
     timeout_s: float,
     max_retries: int,
+    reasoning_effort: str | None = None,
+    routing: dict[str, Any] | None = None,
 ) -> BaseChatModel:
     from langchain_openai import ChatOpenAI
 
-    api_key = os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
-    base_url = (
-        os.getenv("OPENROUTER_BASE_URL")
-        or os.getenv("OPENAI_BASE_URL")
-        or _DEFAULT_OPENROUTER_BASE_URL
-    )
+    class _OpenRouterChatOpenAI(ChatOpenAI):
+        """Preserve OpenRouter router metadata dropped by the OpenAI adapter."""
+
+        def _create_chat_result(self, response: Any, generation_info: Any = None) -> Any:
+            response_dict = response if isinstance(response, dict) else response.model_dump()
+            result = super()._create_chat_result(response, generation_info)
+            router_metadata = response_dict.get("openrouter_metadata")
+            if isinstance(router_metadata, dict):
+                result.llm_output = dict(result.llm_output or {})
+                result.llm_output["openrouter_metadata"] = dict(router_metadata)
+            return result
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    base_url = os.getenv("OPENROUTER_BASE_URL") or _DEFAULT_OPENROUTER_BASE_URL
     if not api_key:
         raise ValueError(
             "OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter"
         )
     referer = os.getenv("OPENROUTER_SITE_URL") or os.getenv("APP_BASE_URL")
     app_name = os.getenv("OPENROUTER_APP_NAME") or _OPENROUTER_DEFAULT_APP_NAME
-    default_headers = {"X-Title": app_name}
+    default_headers = {
+        "X-Title": app_name,
+        "X-OpenRouter-Metadata": "enabled",
+    }
     if referer:
         default_headers["HTTP-Referer"] = referer
 
-    if model.startswith("openai/gpt-5") or model.startswith("gpt-5"):
-        temperature = 1
+    provider_preferences: dict[str, Any] = {
+        "require_parameters": True,
+        "data_collection": "deny",
+        "zdr": True,
+    }
+    if isinstance(routing, dict):
+        for key in ("only", "order", "allow_fallbacks", "sort", "quantizations"):
+            if key in routing:
+                provider_preferences[key] = routing[key]
 
-    return ChatOpenAI(
-        model=model,
-        api_key=api_key,
-        base_url=base_url,
-        temperature=temperature,
-        request_timeout=timeout_s,
-        max_retries=max_retries,
-        default_headers=default_headers,
-        callbacks=[_TELEMETRY_CALLBACK],
-    )
+    extra_body: dict[str, Any] = {"provider": provider_preferences}
+    if reasoning_effort is not None:
+        # Keep OpenRouter's normalized reasoning control on Chat Completions.
+        # Passing it as a ChatOpenAI model kwarg would switch LangChain to the
+        # OpenAI Responses API instead.
+        extra_body["reasoning"] = {"effort": reasoning_effort}
+
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "api_key": api_key,
+        "base_url": base_url,
+        "request_timeout": timeout_s,
+        "max_retries": max_retries,
+        "default_headers": default_headers,
+        "callbacks": [_TELEMETRY_CALLBACK],
+        "extra_body": extra_body,
+        "include_response_headers": True,
+    }
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    return _StrictStructuredOutputProxy(_OpenRouterChatOpenAI(
+        **kwargs,
+    ))
 
 
 def _create_anthropic(

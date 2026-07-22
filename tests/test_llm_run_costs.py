@@ -148,6 +148,10 @@ def test_available_models_payload_marks_availability(monkeypatch) -> None:
         "openai/gpt-5",
         "openai/gpt-4.1-mini",
         "openrouter/hunter-alpha",
+        "moonshotai/kimi-k2.6",
+        "z-ai/glm-5.2",
+        "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v4-pro",
     }
 
     assert gemini["available"] is True
@@ -512,7 +516,14 @@ def test_create_llm_uses_openrouter_selection_and_key(monkeypatch) -> None:
 
     called = {}
 
-    def fake_openrouter(model, temperature, timeout_s, max_retries):
+    def fake_openrouter(
+        model,
+        temperature,
+        timeout_s,
+        max_retries,
+        reasoning_effort=None,
+        routing=None,
+    ):
         called["provider"] = "openrouter"
         called["model"] = model
 

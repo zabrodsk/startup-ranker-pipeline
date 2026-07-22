@@ -19,6 +19,7 @@ from agent.batch import evaluate_from_specter
 from agent.ingest.specter_ingest import ingest_specter
 from agent.llm_catalog import serialize_selection
 from agent.llm_policy import (
+    build_explicit_pipeline_model_policy,
     build_phase_model_policy,
     build_pipeline_policy,
     normalize_phase_models,
@@ -41,6 +42,9 @@ def _read_json(path: str) -> dict[str, Any]:
 
 
 def _pipeline_policy_from_run_config(run_config: dict[str, Any]) -> Any | None:
+    pipeline_models = run_config.get("pipeline_models")
+    if isinstance(pipeline_models, dict):
+        return build_explicit_pipeline_model_policy(pipeline_models)
     phase_models = normalize_phase_models(run_config.get("phase_models"))
     if run_config.get("phase_models"):
         return build_phase_model_policy(phase_models)
@@ -72,6 +76,8 @@ def _init_worker_cache(job_id: str, run_config: dict[str, Any], versions: dict[s
         "instructions": run_config.get("instructions"),
         "use_web_search": run_config.get("use_web_search", False),
         "llm_selection": llm_selection,
+        "model_profile_id": run_config.get("model_profile_id"),
+        "pipeline_models": run_config.get("pipeline_models"),
         "phase_models": run_config.get("phase_models"),
         "quality_tier": run_config.get("quality_tier"),
         "premium_phase_models": run_config.get("premium_phase_models"),

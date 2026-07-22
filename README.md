@@ -286,6 +286,7 @@ Copy `.env.example` to `.env` and set:
 | `OPENAI_API_KEY` | if OpenAI | For `LLM_PROVIDER=openai` |
 | `OPENROUTER_API_KEY` | if OpenRouter | For `LLM_PROVIDER=openrouter` |
 | `OPENROUTER_BASE_URL` | optional | Defaults to `https://openrouter.ai/api/v1` |
+| `ENABLE_OPENROUTER_MODEL_EXPERIMENT` | optional | Enables Kimi/GLM/DeepSeek profiles only when `APP_ENV=staging`; defaults to `false` |
 | `ANTHROPIC_API_KEY` | if Anthropic | For `LLM_PROVIDER=anthropic` |
 | `APP_ENV` | optional | `development` (default), `staging`, or `production` |
 | `APP_PASSWORD` | optional locally, required in production web | Web app login |

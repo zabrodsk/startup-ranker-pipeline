@@ -87,7 +87,7 @@ from fastapi import BackgroundTasks, Body, Cookie, FastAPI, File, Form, Header, 
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 import sys
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -111,11 +111,13 @@ from agent.llm_policy import (
     PHASE_LABELS,
     PHASE_SHORT_LABELS,
     build_default_phase_model_policy,
+    build_explicit_pipeline_model_policy,
     build_phase_model_policy,
     build_phase_policy_display_label,
     build_pipeline_policy,
     build_tier_display_label,
     coerce_phase_models_payload,
+    coerce_pipeline_models_payload,
     default_phase_model_selections,
     normalize_phase_models,
     normalize_premium_phase_models,
@@ -126,6 +128,7 @@ from agent.llm_policy import (
     resolve_effective_phase_choices,
     resolve_effective_phase_models,
 )
+from agent.model_profiles import model_profiles_payload, resolve_model_profile
 from agent.company_chat import answer_company_question, build_company_chat_store
 from agent.pipeline.scoring_signals import build_scoring_signals
 from agent.run_context import (
@@ -418,6 +421,20 @@ def _get_llm_display() -> str:
 def _pipeline_meta_from_payload(payload: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         return None
+    pipeline_models = payload.get("pipeline_models")
+    model_profile_id = str(payload.get("model_profile_id") or "").strip() or None
+    if model_profile_id and isinstance(pipeline_models, dict):
+        effective_phase_models = payload.get("effective_phase_models")
+        if not isinstance(effective_phase_models, dict):
+            effective_phase_models = pipeline_models
+        return {
+            "model_profile_id": model_profile_id,
+            "pipeline_models": pipeline_models,
+            "phase_models": None,
+            "quality_tier": None,
+            "premium_phase_models": None,
+            "effective_phase_models": effective_phase_models,
+        }
     phase_models = payload.get("phase_models")
     if isinstance(phase_models, dict):
         effective_phase_models = payload.get("effective_phase_models")
@@ -468,6 +485,10 @@ def _selection_from_payload(payload: dict[str, Any] | None) -> dict[str, Any] | 
 def _llm_label_from_payload(payload: dict[str, Any] | None) -> str | None:
     pipeline_meta = _pipeline_meta_from_payload(payload)
     if pipeline_meta:
+        if pipeline_meta.get("model_profile_id") and isinstance(payload, dict):
+            explicit = str(payload.get("llm") or "").strip()
+            if explicit:
+                return explicit
         if pipeline_meta.get("phase_models"):
             return build_phase_policy_display_label(
                 pipeline_meta.get("effective_phase_models") or pipeline_meta["phase_models"]
@@ -576,6 +597,8 @@ def _promote_results_metadata(job_id: str, results: dict[str, Any] | None) -> No
     pipeline_meta = _pipeline_meta_from_payload(results)
     if pipeline_meta:
         run_config = dict(cache.get("run_config") or {})
+        run_config["model_profile_id"] = pipeline_meta.get("model_profile_id")
+        run_config["pipeline_models"] = pipeline_meta.get("pipeline_models")
         run_config["phase_models"] = pipeline_meta.get("phase_models")
         run_config["quality_tier"] = pipeline_meta.get("quality_tier")
         run_config["premium_phase_models"] = pipeline_meta.get("premium_phase_models")
@@ -991,6 +1014,7 @@ class AnalyzeRequest(BaseModel):
     input_mode: Literal["pitchdeck", "specter", "original"] = "pitchdeck"
     run_name: str | None = None
     vc_investment_strategy: str | None = None
+    model_profile_id: str | None = None
     phase_models: dict[str, dict[str, Any]] | None = None
     quality_tier: Literal["cheap", "premium"] | None = None
     premium_phase_models: dict[str, Literal["claude", "gpt5"]] | None = None
@@ -1001,6 +1025,7 @@ class AnalyzeRequest(BaseModel):
         "instructions",
         "run_name",
         "vc_investment_strategy",
+        "model_profile_id",
         "llm_provider",
         "llm_model",
         mode="before",
@@ -1047,6 +1072,23 @@ class AnalyzeRequest(BaseModel):
         if invalid_keys:
             raise ValueError("premium_phase_models contains unsupported phases.")
         return normalized
+
+    @model_validator(mode="after")
+    def _validate_model_selection_mode(self) -> "AnalyzeRequest":
+        if self.model_profile_id and any(
+            value is not None
+            for value in (
+                self.phase_models,
+                self.quality_tier,
+                self.premium_phase_models,
+                self.llm_provider,
+                self.llm_model,
+            )
+        ):
+            raise ValueError(
+                "model_profile_id cannot be combined with phase, tier, or raw model selection."
+            )
+        return self
 
 
 class AnalysisStatus(BaseModel):
@@ -3718,17 +3760,20 @@ async def admin_get_pipeline_models(
     except Exception:
         stored = None
     try:
-        factory = default_phase_model_selections()
+        factory = build_default_phase_model_policy().as_dict()
     except Exception:
         factory = {}
 
     if isinstance(stored, dict):
         try:
-            phase_models = coerce_phase_models_payload(stored, require_all=True)
+            if "critique" in stored or "refinement" in stored:
+                phase_models = build_explicit_pipeline_model_policy(stored).as_dict()
+            else:
+                phase_models = build_phase_model_policy(stored).as_dict()
         except Exception:
-            phase_models = coerce_phase_models_payload(factory, require_all=True)
+            phase_models = build_explicit_pipeline_model_policy(factory).as_dict()
     else:
-        phase_models = coerce_phase_models_payload(factory, require_all=True)
+        phase_models = build_explicit_pipeline_model_policy(factory).as_dict()
 
     catalog_list = available_models_payload()
     # Only offer models that are selectable (credentials present + supports
@@ -3737,7 +3782,7 @@ async def admin_get_pipeline_models(
     selectable = [m for m in catalog_list if m.get("selectable", False)]
     return {
         "phase_models": phase_models,
-        "factory_defaults": coerce_phase_models_payload(factory, require_all=True),
+        "factory_defaults": build_explicit_pipeline_model_policy(factory).as_dict(),
         "catalog": {"entries": selectable},
         "labels": PHASE_LABELS,
         "short_labels": PHASE_SHORT_LABELS,
@@ -3749,7 +3794,7 @@ async def admin_put_pipeline_models(
     payload: dict[str, Any] = Body(default_factory=dict),
     user: CurrentUser = Depends(_require_admin),
 ) -> dict[str, Any]:
-    """Persist new admin pipeline model defaults. Validates all 5 stages."""
+    """Persist explicit seven-stage admin pipeline model defaults."""
     raw = payload.get("phase_models") if isinstance(payload, dict) else None
     if not isinstance(raw, dict):
         raise HTTPException(
@@ -3757,7 +3802,9 @@ async def admin_put_pipeline_models(
             detail="phase_models (dict) is required.",
         )
     try:
-        phase_models = coerce_phase_models_payload(raw, require_all=True)
+        phase_models = build_explicit_pipeline_model_policy(
+            coerce_pipeline_models_payload(raw, require_all=True)
+        ).as_dict()
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -4867,25 +4914,24 @@ async def _run_re_evaluation(
         _logger.warning("Re-evaluation: failed to load admin pipeline defaults: %s", exc)
         stored_defaults = None
     try:
-        factory_defaults = default_phase_model_selections()
+        factory_defaults = build_default_phase_model_policy().as_dict()
     except Exception:
         factory_defaults = {}
 
     phase_models_raw = stored_defaults if isinstance(stored_defaults, dict) else factory_defaults
     try:
-        phase_models = coerce_phase_models_payload(phase_models_raw, require_all=True)
+        if "critique" in phase_models_raw or "refinement" in phase_models_raw:
+            pipeline_policy = build_explicit_pipeline_model_policy(phase_models_raw)
+        else:
+            pipeline_policy = build_phase_model_policy(phase_models_raw)
+        pipeline_models = pipeline_policy.as_dict()
     except Exception as exc:
         _logger.warning(
             "Re-evaluation: stored phase_models invalid (%s); falling back to factory defaults",
             exc,
         )
-        phase_models = coerce_phase_models_payload(factory_defaults, require_all=True)
-
-    try:
-        pipeline_policy = build_phase_model_policy(phase_models)
-    except Exception as exc:
-        _logger.warning("Re-evaluation: failed to build pipeline policy: %s", exc)
-        pipeline_policy = None
+        pipeline_policy = build_explicit_pipeline_model_policy(factory_defaults)
+        pipeline_models = pipeline_policy.as_dict()
 
     # NB: RunTelemetryCollector only takes `selected_llm`; company slug and job
     # id are propagated through contextvars by `use_company_context` and the
@@ -5156,7 +5202,7 @@ async def _run_re_evaluation(
                     run_config={
                         "source": "portal_re_evaluate",
                         "company_id": company_id,
-                        "phase_models": phase_models,
+                        "pipeline_models": pipeline_models,
                     },
                 )
             except Exception as exc:
@@ -5198,7 +5244,7 @@ async def _run_re_evaluation(
         run_config = {
             "source": "portal_re_evaluate",
             "use_web_search": use_web_search,
-            "phase_models": phase_models,
+            "pipeline_models": pipeline_models,
             "started_by_user_id": started_by_user_id,
             "started_by_email": started_by_email,
             "started_by_display_name": started_by_display_name,
@@ -7167,9 +7213,23 @@ async def _start_analysis_job(
 
     quality_tier = normalize_quality_tier(req.quality_tier)
     pipeline_policy = None
+    model_profile = None
+    pipeline_models = None
     phase_models = normalize_phase_models(req.phase_models) if req.phase_models is not None else None
     premium_phase_models = normalize_premium_phase_models(req.premium_phase_models)
-    if req.phase_models:
+    if req.model_profile_id:
+        try:
+            model_profile = resolve_model_profile(req.model_profile_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        pipeline_policy = model_profile.policy
+        pipeline_models = model_profile.phase_models
+        llm_selection = dict(pipeline_policy.answering)
+        effective_phase_models = dict(pipeline_models)
+        llm_display = model_profile.label
+        quality_tier = None
+        premium_phase_models = None
+    elif req.phase_models:
         try:
             pipeline_policy = build_phase_model_policy(phase_models)
         except ValueError as exc:
@@ -7238,6 +7298,8 @@ async def _start_analysis_job(
     cache["fetch_full_team"] = req.fetch_full_team
     cache["instructions"] = req.instructions
     cache["llm_selection"] = llm_selection
+    cache["model_profile_id"] = model_profile.id if model_profile else None
+    cache["pipeline_models"] = pipeline_models
     cache["phase_models"] = phase_models if (req.phase_models or pipeline_policy is not None and quality_tier is None) else None
     cache["quality_tier"] = quality_tier
     cache["premium_phase_models"] = (
@@ -7256,6 +7318,10 @@ async def _start_analysis_job(
         "web_search_mode": web_search_mode,
         "use_specter_mcp": req.use_specter_mcp,
         "fetch_full_team": req.fetch_full_team,
+        "model_profile_id": model_profile.id if model_profile else None,
+        "model_profile_arm": model_profile.arm if model_profile else None,
+        "pipeline_models": pipeline_models,
+        "openrouter_routing": model_profile.openrouter_routing if model_profile else {},
         "phase_models": phase_models if (req.phase_models or pipeline_policy is not None and quality_tier is None) else None,
         "quality_tier": quality_tier,
         "premium_phase_models": premium_phase_models if quality_tier == "premium" else None,
@@ -7665,6 +7731,8 @@ def _run_config_from_cache(job_id: str) -> dict[str, Any]:
         "vc_investment_strategy": cache.get("vc_investment_strategy"),
         "instructions": cache.get("instructions"),
         "use_web_search": cache.get("use_web_search", False),
+        "model_profile_id": cache.get("model_profile_id"),
+        "pipeline_models": cache.get("pipeline_models"),
         "phase_models": cache.get("phase_models"),
         "quality_tier": cache.get("quality_tier"),
         "premium_phase_models": cache.get("premium_phase_models"),
@@ -9333,6 +9401,7 @@ async def get_config(session_id: str | None = Cookie(default=None)):
         "llm": default_llm["label"],
         "default_llm": default_llm,
         "available_models": available_models_payload(),
+        "model_profiles": model_profiles_payload(),
         "pricing_catalog": pricing_catalog_payload(),
         "phase_model_defaults": phase_model_defaults_payload(),
         "quality_tiers": quality_tiers_payload(),

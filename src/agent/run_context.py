@@ -199,6 +199,8 @@ class RunTelemetryCollector:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
         )
+        resolved_metadata = dict(metadata or {})
+        resolved_metadata["catalog_estimated_cost_usd"] = estimated_cost_usd
         self.model_executions.append(
             {
                 "service": "llm",
@@ -212,7 +214,7 @@ class RunTelemetryCollector:
                 "total_tokens": total_tokens,
                 "estimated_cost_usd": estimated_cost_usd,
                 "request_count": 1,
-                "metadata": metadata or {},
+                "metadata": resolved_metadata,
             }
         )
 
@@ -346,15 +348,22 @@ def build_run_costs_from_model_executions(
                 llm_total_tokens += total_tokens
                 grouped[key]["total_tokens"] += total_tokens
             estimated_cost_usd = row.get("estimated_cost_usd")
-            if estimated_cost_usd is None:
+            metadata = row.get("metadata") or {}
+            actual_cost_usd = metadata.get("actual_cost_usd")
+            effective_cost_usd = (
+                actual_cost_usd
+                if isinstance(actual_cost_usd, (int, float)) and not isinstance(actual_cost_usd, bool)
+                else estimated_cost_usd
+            )
+            if effective_cost_usd is None:
                 llm_cost_known = False
                 grouped[key]["pricing_available"] = False
                 grouped[key]["partial"] = True
             else:
-                llm_cost += float(estimated_cost_usd)
+                llm_cost += float(effective_cost_usd)
                 llm_cost_rows_seen = True
                 grouped[key]["has_known_cost"] = True
-                grouped[key]["usd"] += float(estimated_cost_usd)
+                grouped[key]["usd"] += float(effective_cost_usd)
         elif service == "perplexity_search":
             request_count = int(row.get("request_count") or 1)
             perplexity_requests += request_count
@@ -449,11 +458,18 @@ def build_stage_costs_from_model_executions(
                 if isinstance(value, int):
                     stage[target_key] += value
             estimated_cost_usd = row.get("estimated_cost_usd")
-            if estimated_cost_usd is None:
+            metadata = row.get("metadata") or {}
+            actual_cost_usd = metadata.get("actual_cost_usd")
+            effective_cost_usd = (
+                actual_cost_usd
+                if isinstance(actual_cost_usd, (int, float)) and not isinstance(actual_cost_usd, bool)
+                else estimated_cost_usd
+            )
+            if effective_cost_usd is None:
                 stage["pricing_available"] = False
                 stage["partial"] = True
             else:
-                stage["usd"] += float(estimated_cost_usd)
+                stage["usd"] += float(effective_cost_usd)
                 stage["has_known_cost"] = True
         elif service == "perplexity_search":
             stage["search_requests"] += int(row.get("request_count") or 1)

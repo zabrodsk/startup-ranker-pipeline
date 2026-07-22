@@ -60,6 +60,15 @@ _USER_SELECTABLE_PHASES: tuple[UserSelectablePhase, ...] = (
     "evaluation",
     "ranking",
 )
+_ALL_PIPELINE_PHASES: tuple[PipelinePhase, ...] = (
+    "decomposition",
+    "answering",
+    "generation",
+    "critique",
+    "evaluation",
+    "refinement",
+    "ranking",
+)
 _PREMIUM_FAMILY_TO_TIER: dict[PremiumPhaseChoice, Literal["balanced", "premium"]] = {
     "claude": "balanced",
     "gpt5": "premium",
@@ -67,18 +76,22 @@ _PREMIUM_FAMILY_TO_TIER: dict[PremiumPhaseChoice, Literal["balanced", "premium"]
 DEFAULT_PREMIUM_PHASE_MODELS: dict[CriticalPipelinePhase, PremiumPhaseChoice] = {
     phase: "gpt5" for phase in _CRITICAL_PHASES
 }
-PHASE_LABELS: dict[UserSelectablePhase, str] = {
+PHASE_LABELS: dict[PipelinePhase, str] = {
     "decomposition": "Decomposition",
     "answering": "Q&A",
     "generation": "Generation",
+    "critique": "Critique",
     "evaluation": "Evaluation",
+    "refinement": "Refinement",
     "ranking": "Ranking",
 }
-PHASE_SHORT_LABELS: dict[UserSelectablePhase, str] = {
+PHASE_SHORT_LABELS: dict[PipelinePhase, str] = {
     "decomposition": "D",
     "answering": "A",
     "generation": "G",
+    "critique": "C",
     "evaluation": "E",
+    "refinement": "F",
     "ranking": "R",
 }
 
@@ -313,6 +326,65 @@ def coerce_phase_models_payload(
     return defaults
 
 
+def coerce_pipeline_models_payload(
+    payload: dict[str, Any] | None,
+    *,
+    require_all: bool = True,
+) -> dict[PipelinePhase, dict[str, Any]]:
+    """Validate an explicit seven-stage policy used by profiles and admins."""
+    if not isinstance(payload, dict):
+        raise ValueError("phase_models must be an object.")
+
+    invalid_keys = [key for key in payload.keys() if key not in _ALL_PIPELINE_PHASES]
+    if invalid_keys:
+        raise ValueError("phase_models contains unsupported phases.")
+
+    normalized: dict[PipelinePhase, dict[str, Any]] = {}
+    missing: list[str] = []
+    for phase in _ALL_PIPELINE_PHASES:
+        raw = payload.get(phase)
+        if not isinstance(raw, dict):
+            if require_all:
+                missing.append(phase)
+            continue
+        provider = str(raw.get("provider") or "").strip()
+        model = str(raw.get("model") or "").strip()
+        if not provider or not model:
+            raise ValueError(f"phase_models.{phase} must include provider and model.")
+        entry = find_model_entry(provider, model)
+        if entry is None:
+            raise ValueError("Unknown LLM model selection.")
+
+        creativity = normalize_creativity(raw.get("creativity"))
+        temperature = _normalize_temperature_value(raw.get("temperature"))
+        reasoning_effort = _normalize_reasoning_effort_value(entry, raw.get("reasoning_effort"))
+        if temperature is not None and not entry.supports_temperature_control:
+            raise ValueError(f"{entry.label} does not support temperature overrides.")
+        if (
+            entry.temperature_requires_reasoning_none
+            and temperature is not None
+            and reasoning_effort not in {None, "none"}
+        ):
+            raise ValueError(
+                f"{entry.label} only supports temperature when reasoning_effort is 'none'."
+            )
+
+        selection: dict[str, Any] = {
+            "provider": provider,
+            "model": model,
+            **({"creativity": creativity} if creativity is not None else {}),
+            **({"temperature": temperature} if temperature is not None else {}),
+            **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
+        }
+        normalized[phase] = selection
+
+    if require_all and missing:
+        raise ValueError(
+            f"phase_models is missing required phases: {', '.join(missing)}."
+        )
+    return normalized
+
+
 def _resolve_premium_choice(choice: PremiumPhaseChoice) -> ModelCatalogEntry | None:
     preferred = _default_claude_entry() if choice == "claude" else _default_gpt5_family_entry()
     if preferred:
@@ -447,6 +519,18 @@ def build_phase_model_policy(
         refinement=_strip_sampling_overrides(answering_selection),
         ranking=dict(resolved["ranking"]),
     )
+
+
+def build_explicit_pipeline_model_policy(
+    phase_models: dict[str, Any],
+) -> PipelineModelPolicy:
+    selections = coerce_pipeline_models_payload(phase_models, require_all=True)
+    resolved: dict[PipelinePhase, dict[str, Any]] = {}
+    for phase in _ALL_PIPELINE_PHASES:
+        selection = selections[phase]
+        entry = _required_model_entry(selection["provider"], selection["model"])
+        resolved[phase] = _phase_selection_with_overrides(entry, selection)
+    return PipelineModelPolicy(**resolved)
 
 
 def build_default_phase_model_policy() -> PipelineModelPolicy:

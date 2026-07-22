@@ -5526,6 +5526,7 @@ let startupNavigationClaimedByUser = false;
 let renderedTeamMembersBySlug = {};
 let analysisConfig = null;
 let selectedLlmKey = null;
+let selectedModelProfileId = null;
 const USER_PHASES = ['decomposition', 'answering', 'generation', 'evaluation', 'ranking'];
 const USER_PHASE_LABELS = {
   decomposition: 'Decomposition',
@@ -6255,6 +6256,24 @@ function getPhaseSelectionSummaryLabel() {
 }
 
 function getAnalysisSelectionPayload() {
+  const profiles = (analysisConfig?.model_profiles || []);
+  if (profiles.length) {
+    const selected = profiles.find((profile) => profile.id === selectedModelProfileId && profile.available)
+      || profiles.find((profile) => profile.id === 'gpt_current' && profile.available)
+      || profiles.find((profile) => profile.available);
+    if (selected) {
+      selectedModelProfileId = selected.id;
+      return {
+        model_profile_id: selected.id,
+        phase_models: undefined,
+        quality_tier: undefined,
+        premium_phase_models: undefined,
+        llm_provider: undefined,
+        llm_model: undefined,
+        llmLabel: selected.label || selected.id,
+      };
+    }
+  }
   const advancedSelection = getAdvancedLlmSelection();
   if (!advancedSelection) {
     ensurePhaseModelSelections();
@@ -6272,6 +6291,7 @@ function getAnalysisSelectionPayload() {
       };
     });
     return {
+      model_profile_id: undefined,
       phase_models: phaseModels,
       quality_tier: undefined,
       premium_phase_models: undefined,
@@ -6282,6 +6302,7 @@ function getAnalysisSelectionPayload() {
   }
 
   return {
+    model_profile_id: undefined,
     phase_models: undefined,
     quality_tier: undefined,
     premium_phase_models: undefined,
@@ -6306,6 +6327,57 @@ function renderPhaseModelSelector() {
     hint.textContent = 'Could not load the model catalog. You can still use Advanced mode if models load.';
     return;
   }
+
+  const modelProfiles = (analysisConfig?.model_profiles || []);
+  const advancedSection = $('#advanced-llm-section');
+  if (modelProfiles.length) {
+    if (advancedSection) advancedSection.hidden = true;
+    const selected = modelProfiles.find((profile) => profile.id === selectedModelProfileId && profile.available)
+      || modelProfiles.find((profile) => profile.id === 'gpt_current' && profile.available)
+      || modelProfiles.find((profile) => profile.available);
+    if (selected) selectedModelProfileId = selected.id;
+    config.innerHTML = `
+      <div class="premium-phase-grid">
+        ${modelProfiles.map((profile) => {
+          const selectedClass = profile.id === selectedModelProfileId ? ' is-selected' : '';
+          const unavailableClass = profile.available ? '' : ' is-unavailable';
+          const phaseModels = profile.phase_models || {};
+          const routing = ['decomposition', 'answering', 'generation', 'critique', 'evaluation', 'refinement', 'ranking']
+            .map((phase) => phaseModels[phase]?.label || phaseModels[phase]?.model)
+            .filter(Boolean);
+          const uniqueModels = [...new Set(routing)];
+          return `
+            <button type="button" class="llm-model-card${selectedClass}${unavailableClass}"
+              data-model-profile-id="${escapeHtml(profile.id)}" role="radio"
+              aria-checked="${profile.id === selectedModelProfileId ? 'true' : 'false'}"
+              ${profile.available ? '' : 'disabled'}>
+              <div class="llm-model-card-top">
+                <div class="llm-model-pill-row"><span class="llm-model-provider">Arm ${escapeHtml(profile.arm || '')}</span></div>
+                <span class="llm-model-check" aria-hidden="true">✓</span>
+              </div>
+              <div class="llm-model-card-main">
+                <div class="llm-model-name">${escapeHtml(profile.label || profile.id)}</div>
+                <div class="llm-model-summary">${escapeHtml(profile.description || '')}</div>
+              </div>
+              <div class="llm-model-card-bottom">
+                <div class="llm-model-pricing">${escapeHtml(uniqueModels.join(' + ') || profile.unavailable_reason || 'Unavailable')}</div>
+              </div>
+            </button>`;
+        }).join('')}
+      </div>`;
+    config.querySelectorAll('[data-model-profile-id]').forEach((button) => {
+      button.addEventListener('click', () => {
+        selectedModelProfileId = button.getAttribute('data-model-profile-id') || null;
+        selectedLlmKey = null;
+        renderPhaseModelSelector();
+      });
+    });
+    hint.textContent = selected
+      ? `${selected.label} will be used with its locked seven-stage routing policy.`
+      : 'No experiment profile is currently available.';
+    return;
+  }
+  if (advancedSection) advancedSection.hidden = false;
 
   const models = getPipelineSelectableModels();
   if (!models.length) {
@@ -10758,6 +10830,7 @@ $('#analyze-btn').addEventListener('click', async () => {
           input_mode: effectiveInputMode,
           run_name: requestedRunName || undefined,
           vc_investment_strategy: vcInvestmentStrategy || undefined,
+          model_profile_id: analysisSelection.model_profile_id,
           phase_models: analysisSelection.phase_models,
           quality_tier: analysisSelection.quality_tier,
           premium_phase_models: analysisSelection.premium_phase_models,

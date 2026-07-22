@@ -3783,8 +3783,11 @@ function AdminPortal({ user, onSignOut }) {
     );
   }
 
-  const PHASE_SHORT = { decomposition: "D", answering: "A", generation: "G", evaluation: "E", ranking: "R" };
-  const PHASE_ORDER = ["decomposition", "answering", "generation", "evaluation", "ranking"];
+  const PHASE_SHORT = {
+    decomposition: "D", answering: "A", generation: "G", critique: "C",
+    evaluation: "E", refinement: "F", ranking: "R"
+  };
+  const PHASE_ORDER = ["decomposition", "answering", "generation", "critique", "evaluation", "refinement", "ranking"];
 
   function renderModelPills(phase_models) {
     if (!phase_models || typeof phase_models !== "object") {
@@ -4116,7 +4119,9 @@ function AdminPortal({ user, onSignOut }) {
       decomposition: "Decomposition",
       answering: "Q&A",
       generation: "Generation",
+      critique: "Critique",
       evaluation: "Evaluation",
+      refinement: "Refinement",
       ranking: "Ranking",
     };
 
@@ -4130,8 +4135,7 @@ function AdminPortal({ user, onSignOut }) {
     return (
       <div>
         <p style={{color:"var(--text-muted)",fontSize:".85rem",marginBottom:16}}>
-          Per-stage model defaults used by the portal <strong>Re-evaluation</strong> flow.
-          The Q&amp;A selection also drives the critique and refinement sub-stages.
+          Explicit seven-stage model defaults used by the portal <strong>Re-evaluation</strong> flow.
           Changes take effect on the next re-evaluation.
         </p>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(320px,1fr))",gap:16,marginBottom:20}}>
@@ -4200,7 +4204,7 @@ function AdminPortal({ user, onSignOut }) {
                     border:"1px solid var(--border)",borderRadius:6,fontSize:".82rem",marginBottom:10,
                     opacity: supportsReasoning ? 1 : 0.5}}>
                   <option value="auto">Auto</option>
-                  {["none","minimal","low","medium","high"].filter(o =>
+                  {["none","minimal","low","medium","high","xhigh"].filter(o =>
                     !reasoningOptions.length || reasoningOptions.indexOf(o) >= 0
                   ).map(o => (
                     <option key={o} value={o}>{o.charAt(0).toUpperCase() + o.slice(1)}</option>

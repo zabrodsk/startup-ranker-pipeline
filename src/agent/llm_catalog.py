@@ -6,6 +6,8 @@ import os
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
 
+from agent.runtime_env import get_app_env
+
 
 @dataclass(frozen=True)
 class ModelPricing:
@@ -28,7 +30,9 @@ class ModelCatalogEntry:
     supports_temperature_control: bool = True
     supports_reasoning_effort_control: bool = False
     reasoning_effort_options: tuple[str, ...] = ()
+    default_reasoning_effort: str | None = None
     temperature_requires_reasoning_none: bool = False
+    experiment_only: bool = False
 
 
 MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
@@ -234,6 +238,71 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         pricing=None,
         required_env=("OPENROUTER_API_KEY",),
     ),
+    ModelCatalogEntry(
+        provider="openrouter",
+        model="moonshotai/kimi-k2.6",
+        label="Kimi K2.6",
+        summary="Thinking model via OpenRouter",
+        tier="balanced",
+        pricing=ModelPricing(
+            input_per_million_tokens_usd=0.66,
+            output_per_million_tokens_usd=3.41,
+        ),
+        required_env=("OPENROUTER_API_KEY",),
+        supports_temperature_control=False,
+        supports_reasoning_effort_control=True,
+        reasoning_effort_options=("high",),
+        default_reasoning_effort="high",
+        experiment_only=True,
+    ),
+    ModelCatalogEntry(
+        provider="openrouter",
+        model="z-ai/glm-5.2",
+        label="GLM 5.2",
+        summary="Deep reasoning via OpenRouter",
+        tier="balanced",
+        pricing=ModelPricing(
+            input_per_million_tokens_usd=0.8106,
+            output_per_million_tokens_usd=2.548,
+        ),
+        required_env=("OPENROUTER_API_KEY",),
+        supports_reasoning_effort_control=True,
+        reasoning_effort_options=("high", "xhigh"),
+        default_reasoning_effort="high",
+        experiment_only=True,
+    ),
+    ModelCatalogEntry(
+        provider="openrouter",
+        model="deepseek/deepseek-v4-flash",
+        label="DeepSeek V4 Flash",
+        summary="Low-cost reasoning via OpenRouter",
+        tier="budget",
+        pricing=ModelPricing(
+            input_per_million_tokens_usd=0.09,
+            output_per_million_tokens_usd=0.18,
+        ),
+        required_env=("OPENROUTER_API_KEY",),
+        supports_reasoning_effort_control=True,
+        reasoning_effort_options=("high", "xhigh"),
+        default_reasoning_effort="high",
+        experiment_only=True,
+    ),
+    ModelCatalogEntry(
+        provider="openrouter",
+        model="deepseek/deepseek-v4-pro",
+        label="DeepSeek V4 Pro",
+        summary="Higher-quality DeepSeek via OpenRouter",
+        tier="balanced",
+        pricing=ModelPricing(
+            input_per_million_tokens_usd=0.435,
+            output_per_million_tokens_usd=0.87,
+        ),
+        required_env=("OPENROUTER_API_KEY",),
+        supports_reasoning_effort_control=True,
+        reasoning_effort_options=("high", "xhigh"),
+        default_reasoning_effort="high",
+        experiment_only=True,
+    ),
 )
 
 _DEFAULT_PROVIDER = "gemini"
@@ -283,9 +352,19 @@ def normalize_provider(provider: str | None) -> str:
     return _PROVIDER_ALIASES.get(raw, raw)
 
 
+def openrouter_model_experiment_enabled() -> bool:
+    enabled = os.getenv("ENABLE_OPENROUTER_MODEL_EXPERIMENT", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    return enabled and get_app_env() == "staging"
+
+
 def _has_required_env(entry: ModelCatalogEntry) -> bool:
-    if entry.provider == "openrouter":
-        return bool(os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY"))
+    if entry.experiment_only and not openrouter_model_experiment_enabled():
+        return False
     return all(bool(os.getenv(name)) for name in entry.required_env)
 
 
@@ -388,7 +467,10 @@ def available_models_payload() -> list[dict[str, Any]]:
         env_available = _has_required_env(entry)
         selectable = is_selectable_for_analysis(entry)
         if not env_available:
-            unavailable_reason = "Missing provider credentials."
+            if entry.experiment_only and not openrouter_model_experiment_enabled():
+                unavailable_reason = "OpenRouter model experiment is disabled."
+            else:
+                unavailable_reason = "Missing provider credentials."
         elif not entry.supports_structured_output:
             unavailable_reason = "Not supported for structured-output analysis runs yet."
         else:
@@ -409,7 +491,9 @@ def available_models_payload() -> list[dict[str, Any]]:
                 "supports_temperature_control": entry.supports_temperature_control,
                 "supports_reasoning_effort_control": entry.supports_reasoning_effort_control,
                 "reasoning_effort_options": list(entry.reasoning_effort_options),
+                "default_reasoning_effort": entry.default_reasoning_effort,
                 "temperature_requires_reasoning_none": entry.temperature_requires_reasoning_none,
+                "experiment_only": entry.experiment_only,
                 "unavailable_reason": unavailable_reason,
             }
         )
