@@ -566,6 +566,8 @@ for (const viewport of [
 }
 
 test.describe('Matchbook visual baselines', () => {
+  test.skip(process.platform !== 'linux', 'Visual baselines are authoritative in Linux Chromium CI.');
+
   test('login, intake, processing, results, companies, and LeadGen', async ({ page }) => {
     const state = await openAuthenticatedApp(page);
 

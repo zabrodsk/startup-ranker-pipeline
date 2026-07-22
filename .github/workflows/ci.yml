@@ -2,6 +2,12 @@ name: CI
 
 on:
   workflow_dispatch:
+    inputs:
+      update_visual_baselines:
+        description: Generate reviewable Linux Chromium visual baselines
+        required: false
+        type: boolean
+        default: false
   pull_request:
   push:
     branches: [main, testing]
@@ -75,7 +81,21 @@ jobs:
         run: uv run python -m pytest tests/test_web_static_ui_contract.py -q
 
       - name: Browser, visual, responsive, and accessibility suite
-        run: npm run test:ui
+        run: |
+          if [[ "${{ inputs.update_visual_baselines }}" == "true" ]]; then
+            npm run test:ui:update
+            npx playwright test --project=webkit-smoke
+          else
+            npm run test:ui
+          fi
+
+      - name: Upload generated Linux visual baselines
+        if: ${{ inputs.update_visual_baselines }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-baselines-linux
+          path: tests/ui/__snapshots__/
+          if-no-files-found: error
 
       - name: Upload browser failure artifacts
         if: failure()
