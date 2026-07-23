@@ -530,7 +530,10 @@ def _supports_reasoning_fallback(
 def compute_retry_delay(exc: Exception, attempt: int, retry_policy: RetryPolicy) -> float:
     header_delay = _extract_retry_after_seconds(exc)
     if header_delay is not None:
-        delay = header_delay
+        # Provider hints can request multi-minute waits. Bound them by the same
+        # operational ceiling as exponential backoff so a single retry cannot
+        # stall an otherwise healthy analysis batch indefinitely.
+        delay = min(retry_policy.max_delay_sec, header_delay)
     else:
         delay = min(
             retry_policy.max_delay_sec,

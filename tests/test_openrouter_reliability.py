@@ -77,6 +77,28 @@ def test_openrouter_retry_after_header_controls_backoff() -> None:
     assert delay == 1.75
 
 
+def test_provider_retry_hint_cannot_exceed_configured_backoff_ceiling() -> None:
+    class Response:
+        headers = {"retry-after": "240"}
+
+    class RateLimitError(Exception):
+        status_code = 429
+        response = Response()
+
+    delay = compute_retry_delay(
+        RateLimitError("engine_overloaded"),
+        attempt=0,
+        retry_policy=RetryPolicy(
+            max_retries=1,
+            base_delay_sec=2.0,
+            max_delay_sec=45.0,
+            jitter_sec=0.0,
+        ),
+    )
+
+    assert delay == 45.0
+
+
 def test_openrouter_uses_a_longer_configurable_request_timeout(monkeypatch) -> None:
     monkeypatch.delenv("LLM_REQUEST_TIMEOUT_SECONDS", raising=False)
     monkeypatch.delenv("OPENROUTER_REQUEST_TIMEOUT_SECONDS", raising=False)
