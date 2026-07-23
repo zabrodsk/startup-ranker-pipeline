@@ -62,11 +62,29 @@ _PROFILE_DEFINITIONS: tuple[_ProfileDefinition, ...] = (
 )
 
 
-def _selection(model: str, *, reasoning_effort: str | None = None) -> dict[str, Any]:
+_UNSET = object()
+
+
+def _selection(
+    model: str,
+    *,
+    temperature: float | None | object = _UNSET,
+    reasoning_effort: str | None = None,
+    reasoning_enabled: bool | None = None,
+    stage_settings: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     provider = "openrouter" if "/" in model else "openai"
     value: dict[str, Any] = {"provider": provider, "model": model}
     if reasoning_effort is not None:
         value["reasoning_effort"] = reasoning_effort
+    if reasoning_enabled is not None:
+        value["reasoning_enabled"] = reasoning_enabled
+    if temperature is not _UNSET:
+        value["temperature"] = temperature
+    if stage_settings:
+        value["stage_settings"] = {
+            stage: dict(settings) for stage, settings in stage_settings.items()
+        }
     return value
 
 
@@ -83,35 +101,49 @@ def _profile_phase_models(profile_id: str) -> dict[str, dict[str, Any]]:
         }
     if profile_id == "kimi_k26":
         return {
-            phase: _selection("moonshotai/kimi-k2.6", reasoning_effort="high")
-            for phase in (
-                "decomposition",
-                "answering",
-                "generation",
-                "critique",
-                "evaluation",
-                "refinement",
-                "ranking",
-            )
+            "decomposition": _selection("moonshotai/kimi-k2.6", reasoning_enabled=True),
+            "answering": _selection("moonshotai/kimi-k2.6", reasoning_enabled=False),
+            "generation": _selection("moonshotai/kimi-k2.6", reasoning_enabled=False),
+            "critique": _selection("moonshotai/kimi-k2.6", reasoning_enabled=True),
+            "evaluation": _selection("moonshotai/kimi-k2.6", reasoning_enabled=True),
+            "refinement": _selection("moonshotai/kimi-k2.6", reasoning_enabled=True),
+            "ranking": _selection(
+                "moonshotai/kimi-k2.6",
+                stage_settings={
+                    "ranking_dimension_score": {"reasoning_enabled": True},
+                    "ranking_upside_score": {"reasoning_enabled": False},
+                    "ranking_executive_summary": {"reasoning_enabled": True},
+                },
+            ),
         }
     if profile_id == "glm_deepseek_flash":
-        def glm() -> dict[str, Any]:
-            return _selection("z-ai/glm-5.2", reasoning_effort="high")
-
-        def deepseek() -> dict[str, Any]:
-            return _selection(
-                "deepseek/deepseek-v4-flash",
-                reasoning_effort="high",
-            )
-
         return {
-            "decomposition": glm(),
-            "answering": deepseek(),
-            "generation": deepseek(),
-            "critique": glm(),
-            "evaluation": glm(),
-            "refinement": deepseek(),
-            "ranking": glm(),
+            "decomposition": _selection("z-ai/glm-5.2", temperature=0.5, reasoning_effort="high"),
+            "answering": _selection(
+                "deepseek/deepseek-v4-flash",
+                temperature=0.2,
+                reasoning_enabled=False,
+            ),
+            "generation": _selection(
+                "deepseek/deepseek-v4-flash",
+                temperature=0.5,
+                reasoning_enabled=False,
+            ),
+            "critique": _selection("z-ai/glm-5.2", temperature=0.5, reasoning_effort="high"),
+            "evaluation": _selection("z-ai/glm-5.2", temperature=0.1, reasoning_effort="high"),
+            "refinement": _selection(
+                "deepseek/deepseek-v4-flash",
+                temperature=None,
+                reasoning_effort="high",
+            ),
+            "ranking": _selection(
+                "z-ai/glm-5.2",
+                stage_settings={
+                    "ranking_dimension_score": {"temperature": 0.1, "reasoning_effort": "high"},
+                    "ranking_upside_score": {"temperature": 0.7, "reasoning_enabled": False},
+                    "ranking_executive_summary": {"temperature": 0.3, "reasoning_effort": "high"},
+                },
+            ),
         }
     raise ValueError("Unknown model profile.")
 

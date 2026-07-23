@@ -169,6 +169,7 @@ class RunTelemetryCollector:
         total_tokens: int | None,
         metadata: dict[str, Any] | None = None,
         stage: str | None = None,
+        latency_ms: int | None = None,
     ) -> None:
         provider_norm = (provider or "").strip().lower()
         model_norm = (model or "").strip()
@@ -188,6 +189,7 @@ class RunTelemetryCollector:
                     "total_tokens": None,
                     "estimated_cost_usd": None,
                     "request_count": 1,
+                    "latency_ms": latency_ms,
                     "metadata": metadata or {},
                 }
             )
@@ -214,6 +216,7 @@ class RunTelemetryCollector:
                 "total_tokens": total_tokens,
                 "estimated_cost_usd": estimated_cost_usd,
                 "request_count": 1,
+                "latency_ms": latency_ms,
                 "metadata": resolved_metadata,
             }
         )

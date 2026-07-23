@@ -30,12 +30,14 @@ OPENROUTER_PREFLIGHT_MODELS: tuple[str, ...] = (
     "deepseek/deepseek-v4-flash",
     "deepseek/deepseek-v4-pro",
 )
+OPENROUTER_APPROVED_PROVIDER_SLUGS: tuple[str, ...] = ("deepinfra",)
+SPECTER_TEAM_CAPTURE_VERSION = 2
 
 
 def build_run_schedule(
     company_ids: Sequence[str],
     *,
-    repeats: int = 2,
+    repeats: int = 1,
     seed: int = DEFAULT_CAMPAIGN_SEED,
     profile_ids: Sequence[str] = PRIMARY_PROFILE_IDS,
 ) -> list[dict[str, Any]]:
@@ -89,8 +91,8 @@ def freeze_corpus(
     companies: Sequence[dict[str, Any]],
     *,
     seed: int = DEFAULT_CAMPAIGN_SEED,
-    repeats: int = 2,
-    expected_company_count: int = 12,
+    repeats: int = 1,
+    expected_company_count: int = 6,
 ) -> dict[str, Any]:
     """Freeze approved-candidate evidence without writing application records."""
     root = Path(campaign_dir)
@@ -198,6 +200,306 @@ def freeze_corpus(
     return manifest
 
 
+class _RecordingSpecterClient:
+    """Record the raw result of every MCP data call without changing its behavior."""
+
+    _RECORDED_METHODS = {
+        "find_company",
+        "get_company_profile",
+        "get_company_intelligence",
+        "get_company_financials",
+        "get_person_profile",
+        "search_people",
+    }
+
+    def __init__(self, client: Any):
+        self._client = client
+        self.calls: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _serializable(value: Any) -> Any:
+        return json.loads(json.dumps(value, default=str, ensure_ascii=True))
+
+    def __getattr__(self, name: str) -> Any:
+        target = getattr(self._client, name)
+        if name not in self._RECORDED_METHODS or not callable(target):
+            return target
+
+        def _recorded(*args: Any, **kwargs: Any) -> Any:
+            event = {
+                "method": name,
+                "arguments": self._serializable({"args": args, "kwargs": kwargs}),
+            }
+            try:
+                response = target(*args, **kwargs)
+            except Exception as exc:
+                event["error"] = f"{type(exc).__name__}: {exc}"
+                self.calls.append(event)
+                raise
+            event["response"] = self._serializable(response)
+            self.calls.append(event)
+            return response
+
+        return _recorded
+
+
+class _CachedSpecterCaptureClient:
+    """Replay frozen Specter calls and delegate only missing calls to a live client."""
+
+    def __init__(self, capture: dict[str, Any], live_client: Any):
+        self._calls = list(capture.get("calls") or [])
+        self._live_client = live_client
+
+    @staticmethod
+    def _arguments_match(
+        event: dict[str, Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> bool:
+        recorded = event.get("arguments") or {}
+        return (
+            recorded.get("args") == json.loads(json.dumps(args, default=str))
+            and recorded.get("kwargs") == json.loads(json.dumps(kwargs, default=str))
+        )
+
+    def _replay_or_call(
+        self,
+        method: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        for event in self._calls:
+            if (
+                event.get("method") == method
+                and not event.get("error")
+                and "response" in event
+                and self._arguments_match(event, args, kwargs)
+            ):
+                return json.loads(json.dumps(event["response"]))
+        return getattr(self._live_client, method)(*args, **kwargs)
+
+    def find_company(self, identifier: str) -> dict[str, Any]:
+        return self._replay_or_call("find_company", identifier)
+
+    def get_company_profile(self, company_id: str) -> dict[str, Any]:
+        return self._replay_or_call("get_company_profile", company_id)
+
+    def get_company_intelligence(self, company_id: str) -> dict[str, Any]:
+        return self._replay_or_call("get_company_intelligence", company_id)
+
+    def get_company_financials(self, company_id: str) -> dict[str, Any]:
+        return self._replay_or_call("get_company_financials", company_id)
+
+    def get_person_profile(self, person_id: str) -> dict[str, Any]:
+        return self._replay_or_call("get_person_profile", person_id)
+
+    def search_people(self, query: str, *, limit: int = 20) -> dict[str, Any]:
+        return self._replay_or_call("search_people", query, limit=limit)
+
+
+def capture_specter_corpus(
+    campaign_dir: str | Path,
+    companies: Sequence[dict[str, Any]],
+    *,
+    client: Any | None = None,
+    seed: int = DEFAULT_CAMPAIGN_SEED,
+    expected_company_count: int = 6,
+) -> dict[str, Any]:
+    """Call Specter once per selected company, including deep leadership profiles.
+
+    Raw MCP responses and their normalized Company/EvidenceStore projections are
+    frozen under the ignored campaign directory. All model arms subsequently
+    consume only the normalized frozen projection; no campaign run calls Specter.
+    """
+    if len(companies) != expected_company_count:
+        raise ValueError(
+            f"Benchmark corpus must contain exactly {expected_company_count} companies."
+        )
+    from dataclasses import asdict
+
+    from agent.ingest.specter_mcp_client import (
+        fetch_specter_company,
+        get_default_client,
+    )
+
+    root = Path(campaign_dir)
+    resolved_client = client
+    frozen_companies: list[dict[str, Any]] = []
+    raw_files: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for item in companies:
+        company_id = str(item.get("company_id") or "").strip()
+        identifier = str(item.get("identifier") or "").strip()
+        if not company_id or not identifier:
+            raise ValueError("Every Specter capture item requires company_id and identifier.")
+        if company_id in seen_ids:
+            raise ValueError("Specter capture company_ids must be unique.")
+        seen_ids.add(company_id)
+        raw_path = root / "raw-specter" / f"{_safe_component(company_id)}.json"
+        capture: dict[str, Any] | None = None
+        reusable_capture: dict[str, Any] | None = None
+        if raw_path.is_file():
+            try:
+                candidate = json.loads(raw_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                candidate = None
+            if (
+                isinstance(candidate, dict)
+                and candidate.get("company_id") == company_id
+                and candidate.get("identifier") == identifier
+                and candidate.get("fetch_full_team") is True
+                and isinstance(candidate.get("company"), dict)
+                and str(candidate["company"].get("name") or "").strip()
+                and isinstance(candidate.get("chunks"), list)
+                and bool(candidate["chunks"])
+                and isinstance(candidate.get("calls"), list)
+                and not any(call.get("error") for call in candidate["calls"])
+            ):
+                reusable_capture = candidate
+                search_calls = [
+                    call
+                    for call in candidate["calls"]
+                    if call.get("method") == "search_people"
+                ]
+                if (
+                    candidate.get("team_capture_version")
+                    == SPECTER_TEAM_CAPTURE_VERSION
+                    and candidate.get("leadership_search_performed") is True
+                    and len(search_calls) == 1
+                ):
+                    capture = candidate
+
+        if capture is None:
+            if resolved_client is None:
+                resolved_client = get_default_client()
+            recorder = _RecordingSpecterClient(resolved_client)
+            capture_client: Any = recorder
+            prior_calls: list[dict[str, Any]] = []
+            if reusable_capture is not None:
+                capture_client = _CachedSpecterCaptureClient(
+                    reusable_capture,
+                    recorder,
+                )
+                prior_calls = list(reusable_capture["calls"])
+            company, store = fetch_specter_company(
+                identifier,
+                expected_name=str(item.get("expected_name") or "").strip() or None,
+                fetch_full_team=True,
+                client=capture_client,
+            )
+            calls = prior_calls + recorder.calls
+            capture = {
+                "company_id": company_id,
+                "identifier": identifier,
+                "fetch_full_team": True,
+                "team_capture_version": SPECTER_TEAM_CAPTURE_VERSION,
+                "leadership_search_performed": any(
+                    call.get("method") == "search_people" and not call.get("error")
+                    for call in calls
+                ),
+                "calls": calls,
+                "company": company.model_dump(),
+                "chunks": [asdict(chunk) for chunk in store.chunks],
+            }
+            _write_json(raw_path, capture)
+
+        calls = capture["calls"]
+        leadership_search_calls = sum(
+            1 for call in calls if call.get("method") == "search_people"
+        )
+        leadership_search_errors = sum(
+            1
+            for call in calls
+            if call.get("method") == "search_people" and call.get("error")
+        )
+        person_profile_errors = sum(
+            1
+            for call in calls
+            if call.get("method") == "get_person_profile" and call.get("error")
+        )
+        person_profile_calls = sum(
+            1 for call in calls if call.get("method") == "get_person_profile"
+        )
+        leadership_members = [
+            {
+                "name": str(person.get("name") or "").strip(),
+                "title": str(person.get("title") or "").strip() or None,
+            }
+            for person in (capture["company"].get("team") or [])
+            if isinstance(person, dict) and str(person.get("name") or "").strip()
+        ]
+        profile_coverage_complete = person_profile_calls >= len(leadership_members)
+        if leadership_search_calls != 1 or leadership_search_errors:
+            raise RuntimeError(
+                f"Specter deep-team capture for {company_id} did not complete "
+                "one successful leadership search."
+            )
+        if person_profile_errors:
+            raise RuntimeError(
+                f"Specter deep-team capture for {company_id} had "
+                f"{person_profile_errors} person-profile error(s)."
+            )
+        raw_files.append(
+            {
+                "company_id": company_id,
+                "identifier": identifier,
+                "path": raw_path.relative_to(root).as_posix(),
+                "size_bytes": raw_path.stat().st_size,
+                "sha256": _sha256(raw_path),
+                "mcp_call_count": len(calls),
+                "leadership_search_calls": leadership_search_calls,
+                "leadership_search_errors": leadership_search_errors,
+                "leadership_member_count": len(leadership_members),
+                "leadership_members": leadership_members,
+                "person_profile_calls": person_profile_calls,
+                "person_profile_errors": person_profile_errors,
+                "profile_coverage_complete": profile_coverage_complete,
+            }
+        )
+        frozen_companies.append(
+            {
+                "company_id": company_id,
+                "source_job_id": None,
+                "input_mode": "specter_frozen",
+                "company": capture["company"],
+                "chunks": capture["chunks"],
+            }
+        )
+
+    manifest = freeze_corpus(
+        root,
+        frozen_companies,
+        seed=seed,
+        repeats=1,
+        expected_company_count=expected_company_count,
+    )
+    manifest["specter_capture_once"] = True
+    manifest["fetch_full_team"] = True
+    manifest["specter_team_capture_version"] = SPECTER_TEAM_CAPTURE_VERSION
+    manifest["leadership_search_complete"] = all(
+        item["leadership_search_calls"] == 1
+        and item["leadership_search_errors"] == 0
+        for item in raw_files
+    )
+    manifest["deep_team_complete"] = all(
+        item["person_profile_errors"] == 0
+        and item["profile_coverage_complete"]
+        for item in raw_files
+    ) and manifest["leadership_search_complete"]
+    manifest["raw_specter_responses"] = raw_files
+    manifest["files"].extend(
+        {
+            "path": item["path"],
+            "size_bytes": item["size_bytes"],
+            "sha256": item["sha256"],
+        }
+        for item in raw_files
+    )
+    manifest["files"] = sorted(manifest["files"], key=lambda item: item["path"])
+    _write_json(root / "manifest.json", manifest)
+    return manifest
+
+
 def prepare_staging_corpus(
     campaign_dir: str | Path,
     *,
@@ -275,7 +577,13 @@ def prepare_staging_corpus(
         )
 
     root = Path(campaign_dir)
-    manifest = freeze_corpus(root, companies, seed=seed)
+    manifest = freeze_corpus(
+        root,
+        companies,
+        seed=seed,
+        repeats=2,
+        expected_company_count=12,
+    )
     selection = {
         "base_job_id": base_job_id,
         "extra_jobs": {
@@ -441,7 +749,193 @@ def evaluate_candidate_gates(
     return {"passed": all(item["passed"] for item in gates), "gates": gates}
 
 
-async def _invoke_openrouter_preflight(model: str, attempt: int) -> dict[str, Any]:
+def _openrouter_smoke_cases() -> list[dict[str, Any]]:
+    """Return one synthetic call for every distinct experiment request mode."""
+    from agent.model_profiles import resolve_model_profile
+
+    kimi = resolve_model_profile("kimi_k26").policy
+    hybrid = resolve_model_profile("glm_deepseek_flash").policy
+    return [
+        {
+            "id": "kimi-thinking-on",
+            "model": kimi.decomposition["model"],
+            "selection": dict(kimi.decomposition),
+            "stage": "decomposition",
+            "temperature": 0.5,
+        },
+        {
+            "id": "kimi-thinking-off",
+            "model": kimi.answering["model"],
+            "selection": dict(kimi.answering),
+            "stage": "answering",
+            "temperature": 0.2,
+        },
+        {
+            "id": "glm-high-evaluation",
+            "model": hybrid.evaluation["model"],
+            "selection": dict(hybrid.evaluation),
+            "stage": "evaluation",
+            "temperature": 0.0,
+        },
+        {
+            "id": "glm-thinking-off-upside",
+            "model": hybrid.ranking["model"],
+            "selection": dict(hybrid.ranking),
+            "stage": "ranking_upside_score",
+            "temperature": 0.7,
+        },
+        {
+            "id": "deepseek-thinking-off-answering",
+            "model": hybrid.answering["model"],
+            "selection": dict(hybrid.answering),
+            "stage": "answering",
+            "temperature": 0.2,
+        },
+        {
+            "id": "deepseek-high-refinement",
+            "model": hybrid.refinement["model"],
+            "selection": dict(hybrid.refinement),
+            "stage": "refinement",
+            "temperature": 0.7,
+        },
+        {
+            "id": "deepseek-pro-high-admin",
+            "model": "deepseek/deepseek-v4-pro",
+            "selection": {
+                "provider": "openrouter",
+                "model": "deepseek/deepseek-v4-pro",
+                "temperature": None,
+                "reasoning_effort": "high",
+            },
+            "stage": "admin_smoke",
+            "temperature": 0.7,
+        },
+    ]
+
+
+async def _invoke_openrouter_smoke_case(
+    case: dict[str, Any],
+    routing: dict[str, Any],
+) -> dict[str, Any]:
+    from pydantic import BaseModel
+
+    from agent.llm import create_llm
+    from agent.run_context import (
+        RunTelemetryCollector,
+        use_phase_llm,
+        use_run_context,
+        use_stage_context,
+    )
+
+    class SmokeResponse(BaseModel):
+        ok: bool
+        marker: str
+
+    collector = RunTelemetryCollector()
+    marker = f"deal-intelligence-smoke-{case['id']}"
+    selection = dict(case["selection"])
+    selection["openrouter_routing"] = dict(routing)
+    with use_run_context(telemetry_collector=collector, web_search_mode="off"):
+        with use_phase_llm(selection), use_stage_context(str(case["stage"])):
+            runnable = create_llm(
+                temperature=case.get("temperature"),
+            ).with_structured_output(SmokeResponse)
+            response = await runnable.ainvoke(
+                f"Return ok=true and marker='{marker}'. Do not add other fields."
+            )
+    rows = [
+        row
+        for row in collector.snapshot_model_executions()
+        if row.get("service") == "llm" and row.get("status") == "done"
+    ]
+    metadata = (rows[-1].get("metadata") or {}) if rows else {}
+    return {
+        "structured_ok": bool(getattr(response, "ok", False))
+        and getattr(response, "marker", None) == marker,
+        "selected_provider": metadata.get("selected_provider"),
+        "generation_id": metadata.get("generation_id"),
+        "actual_cost_usd": metadata.get("actual_cost_usd"),
+        "reasoning_tokens": metadata.get("reasoning_tokens"),
+        "request_parameters": {
+            key: metadata.get(key)
+            for key in (
+                "requested_temperature",
+                "effective_temperature",
+                "requested_reasoning_effort",
+                "effective_reasoning_effort",
+                "requested_reasoning_enabled",
+                "effective_reasoning_enabled",
+            )
+        },
+    }
+
+
+async def run_openrouter_smoke(
+    output_dir: str | Path,
+    *,
+    invoke_case: Any | None = None,
+) -> dict[str, Any]:
+    """Run small synthetic schema calls using the final B/C request settings."""
+    root = Path(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    routing_policy = {
+        "require_parameters": True,
+        "data_collection": "deny",
+        "zdr": True,
+        "only": list(OPENROUTER_APPROVED_PROVIDER_SLUGS),
+        "allow_fallbacks": False,
+    }
+    invoker = invoke_case or _invoke_openrouter_smoke_case
+    reports: list[dict[str, Any]] = []
+    for case in _openrouter_smoke_cases():
+        public_case = {
+            key: value for key, value in case.items() if key != "selection"
+        }
+        try:
+            result = invoker(dict(case), dict(routing_policy))
+            if inspect.isawaitable(result):
+                result = await result
+            if not isinstance(result, dict):
+                raise RuntimeError("Smoke invoker returned an invalid result.")
+            selected_provider = str(result.get("selected_provider") or "").strip()
+            eligible = (
+                result.get("structured_ok") is True
+                and selected_provider.lower() in OPENROUTER_APPROVED_PROVIDER_SLUGS
+            )
+            reports.append(
+                {
+                    **public_case,
+                    **dict(result),
+                    "routing_policy": dict(routing_policy),
+                    "eligible": eligible,
+                    "error": None,
+                }
+            )
+        except Exception as exc:
+            reports.append(
+                {
+                    **public_case,
+                    "routing_policy": dict(routing_policy),
+                    "eligible": False,
+                    "error": str(exc),
+                }
+            )
+    report = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "synthetic_only": True,
+        "eligible": bool(reports) and all(item["eligible"] for item in reports),
+        "routing_policy": routing_policy,
+        "cases": reports,
+    }
+    _write_json(root / "smoke.json", report)
+    return report
+
+
+async def _invoke_openrouter_preflight(
+    model: str,
+    attempt: int,
+    routing: dict[str, Any],
+) -> dict[str, Any]:
     from pydantic import BaseModel
 
     from agent.llm import create_llm
@@ -457,6 +951,7 @@ async def _invoke_openrouter_preflight(model: str, attempt: int) -> dict[str, An
             "provider": "openrouter",
             "model": model,
             "reasoning_effort": "high",
+            "openrouter_routing": dict(routing),
         },
         telemetry_collector=collector,
         web_search_mode="off",
@@ -494,6 +989,8 @@ async def run_openrouter_preflight(
         "require_parameters": True,
         "data_collection": "deny",
         "zdr": True,
+        "only": list(OPENROUTER_APPROVED_PROVIDER_SLUGS),
+        "allow_fallbacks": False,
     }
     model_reports: list[dict[str, Any]] = []
     provider_pins: dict[str, str] = {}
@@ -502,7 +999,7 @@ async def run_openrouter_preflight(
         errors: list[str] = []
         for attempt in range(1, conformance_calls + 1):
             try:
-                result = invoker(model, attempt)
+                result = invoker(model, attempt, dict(routing_policy))
                 if inspect.isawaitable(result):
                     result = await result
                 if not isinstance(result, dict):
@@ -520,9 +1017,14 @@ async def run_openrouter_preflight(
             and len(calls) == conformance_calls
             and all(call.get("structured_ok") is True for call in calls)
             and len(providers) == 1
+            and next(iter(providers)).lower() in OPENROUTER_APPROVED_PROVIDER_SLUGS
         )
         if eligible:
-            provider_pins[model] = next(iter(providers))
+            provider_pins[model] = next(
+                slug
+                for slug in OPENROUTER_APPROVED_PROVIDER_SLUGS
+                if slug == next(iter(providers)).lower()
+            )
         model_reports.append(
             {
                 "model": model,
@@ -655,6 +1157,8 @@ async def _evaluate_frozen_run(
         "wall_clock_seconds": round(time.monotonic() - started, 6),
         "final_decision": final_state.get("final_decision", "unknown"),
         "ranking_result": _jsonable(final_state.get("ranking_result")),
+        "questions_answers": _jsonable(final_state.get("all_qa_pairs") or []),
+        "final_arguments": _jsonable(final_arguments),
         "top_final_arguments": _jsonable(final_arguments[:5]),
         "run_costs": collector.build_run_costs(),
         "model_executions": _jsonable(rows),
@@ -689,7 +1193,7 @@ def _profile_run_summary(profile_id: str, runs: list[dict[str, Any]]) -> dict[st
     stage_latencies: dict[str, list[float]] = {}
     for run in completed:
         for row in run.get("model_executions") or []:
-            if row.get("service") != "pipeline_stage" or row.get("status") != "done":
+            if row.get("status") != "done" or row.get("service") not in {"pipeline_stage", "llm"}:
                 continue
             latency = row.get("latency_ms")
             if isinstance(latency, (int, float)):
@@ -763,6 +1267,8 @@ def _write_blinded_review_bundle(
             "variant": variant,
             "final_decision": run.get("final_decision"),
             "ranking_result": run.get("ranking_result"),
+            "questions_answers": run.get("questions_answers"),
+            "final_arguments": run.get("final_arguments"),
             "top_final_arguments": run.get("top_final_arguments"),
         }
         file_name = (
@@ -802,11 +1308,14 @@ async def run_campaign(
     campaign_dir: str | Path,
     *,
     evaluate_run: Any | None = None,
+    profile_id: str | None = None,
 ) -> dict[str, Any]:
     """Run the frozen schedule sequentially without application persistence."""
     root = Path(campaign_dir)
     manifest = verify_manifest(root, require_approval=True)
     campaign = json.loads((root / "campaign.json").read_text(encoding="utf-8"))
+    if profile_id is not None and profile_id not in PRIMARY_PROFILE_IDS:
+        raise ValueError("Unknown primary benchmark profile.")
     preflight_path = root / "preflight.json"
     if not preflight_path.is_file():
         raise RuntimeError("OpenRouter preflight must complete before the campaign.")
@@ -836,15 +1345,21 @@ async def run_campaign(
     evaluator = evaluate_run or _evaluate_frozen_run
     run_dir = root / "runs"
     run_dir.mkdir(parents=True, exist_ok=True)
-    run_reports: list[dict[str, Any]] = []
-    for item in campaign.get("schedule") or []:
+    schedule = list(campaign.get("schedule") or [])
+    selected_schedule = [
+        item for item in schedule
+        if profile_id is None or item.get("profile_id") == profile_id
+    ]
+    invocation_started_at = datetime.now(timezone.utc).isoformat()
+    invocation_started = time.monotonic()
+    executed_sequences: list[int] = []
+    for item in selected_schedule:
         company_id = str(item["company_id"])
-        profile_id = str(item["profile_id"])
-        run_path = run_dir / f"{int(item['sequence']):03d}-{_safe_component(company_id)}-{profile_id}.json"
+        item_profile_id = str(item["profile_id"])
+        run_path = run_dir / f"{int(item['sequence']):03d}-{_safe_component(company_id)}-{item_profile_id}.json"
         if run_path.is_file():
-            run_reports.append(json.loads(run_path.read_text(encoding="utf-8")))
             continue
-        policy = _pinned_profile_policy(profile_id, provider_pins)
+        policy = _pinned_profile_policy(item_profile_id, provider_pins)
         frozen = companies[company_id]
         try:
             result = evaluator(
@@ -873,7 +1388,33 @@ async def run_campaign(
                 "output_tokens": 0,
             }
         _write_json(run_path, report)
-        run_reports.append(report)
+        executed_sequences.append(int(item["sequence"]))
+
+    invocation_wall_clock_seconds = round(time.monotonic() - invocation_started, 6)
+    invocation_finished_at = datetime.now(timezone.utc).isoformat()
+    invocation_label = profile_id or "all-profiles"
+    profile_batch_path = root / "profile-batches" / f"{_safe_component(invocation_label)}.json"
+    if executed_sequences or not profile_batch_path.is_file():
+        _write_json(
+            profile_batch_path,
+            {
+                "profile_id": profile_id,
+                "started_at": invocation_started_at,
+                "finished_at": invocation_finished_at,
+                "wall_clock_seconds": invocation_wall_clock_seconds,
+                "executed_sequences": executed_sequences,
+                "executed_run_count": len(executed_sequences),
+            },
+        )
+
+    run_reports: list[dict[str, Any]] = []
+    for item in schedule:
+        run_path = run_dir / (
+            f"{int(item['sequence']):03d}-{_safe_component(str(item['company_id']))}-"
+            f"{item['profile_id']}.json"
+        )
+        if run_path.is_file():
+            run_reports.append(json.loads(run_path.read_text(encoding="utf-8")))
 
     profile_summaries = [
         _profile_run_summary(
@@ -882,13 +1423,28 @@ async def run_campaign(
         )
         for profile_id in PRIMARY_PROFILE_IDS
     ]
-    blind_map = _write_blinded_review_bundle(
-        root,
-        run_reports,
-        seed=int(campaign.get("seed") or DEFAULT_CAMPAIGN_SEED),
+    complete_campaign = len(run_reports) == len(schedule)
+    blind_map = (
+        _write_blinded_review_bundle(
+            root,
+            run_reports,
+            seed=int(campaign.get("seed") or DEFAULT_CAMPAIGN_SEED),
+        )
+        if complete_campaign
+        else {}
     )
+    profile_batch_times: dict[str, float] = {}
+    for candidate_profile in PRIMARY_PROFILE_IDS:
+        path = root / "profile-batches" / f"{candidate_profile}.json"
+        if not path.is_file():
+            continue
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        value = payload.get("wall_clock_seconds")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            profile_batch_times[candidate_profile] = float(value)
     summary = {
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "planned_run_count": len(schedule),
         "run_count": len(run_reports),
         "completed_runs": sum(1 for run in run_reports if run.get("status") == "done"),
         "sequential": True,
@@ -896,6 +1452,10 @@ async def run_campaign(
         "live_specter_mcp": False,
         "profiles": profile_summaries,
         "blinded_variants": sorted(blind_map.values()),
+        "profile_batch_wall_clock_seconds": profile_batch_times,
+        "invocation_profile_id": profile_id,
+        "invocation_wall_clock_seconds": invocation_wall_clock_seconds,
+        "invocation_executed_runs": len(executed_sequences),
     }
     _write_json(root / "summary.json", summary)
     _write_summary_csv(root / "summary.csv", profile_summaries)
@@ -1208,12 +1768,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     approve.add_argument("--campaign-dir", required=True)
     approve.add_argument("--approved-by", required=True)
 
+    smoke = subparsers.add_parser(
+        "smoke",
+        help="Run synthetic OpenRouter checks with the final B/C request settings.",
+    )
+    smoke.add_argument("--output-dir", required=True)
+
     preflight = subparsers.add_parser("preflight", help="Verify strict ZDR-capable provider routes.")
     preflight.add_argument("--campaign-dir", required=True)
     preflight.add_argument("--conformance-calls", type=int, default=2)
 
-    run = subparsers.add_parser("run", help="Run or resume the 72-run sequential campaign.")
+    run = subparsers.add_parser("run", help="Run or resume the 18-run sequential campaign.")
     run.add_argument("--campaign-dir", required=True)
+    run.add_argument("--profile", choices=PRIMARY_PROFILE_IDS)
 
     evaluate = subparsers.add_parser("evaluate", help="Adjudicate reviews and apply promotion gates.")
     evaluate.add_argument("--campaign-dir", required=True)
@@ -1227,7 +1794,7 @@ async def async_main(argv: Sequence[str] | None = None) -> dict[str, Any]:
 
     load_dotenv()
     args = parse_args(argv)
-    campaign_dir = Path(args.campaign_dir)
+    campaign_dir = Path(getattr(args, "campaign_dir", "."))
     if args.command == "prepare":
         _require_staging()
         import web.db as db
@@ -1240,6 +1807,9 @@ async def async_main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         )
     if args.command == "approve":
         return approve_manifest(campaign_dir, approved_by=args.approved_by)
+    if args.command == "smoke":
+        _require_staging()
+        return await run_openrouter_smoke(Path(args.output_dir))
     if args.command == "preflight":
         _require_staging()
         return await run_openrouter_preflight(
@@ -1248,7 +1818,7 @@ async def async_main(argv: Sequence[str] | None = None) -> dict[str, Any]:
         )
     if args.command == "run":
         _require_staging()
-        return await run_campaign(campaign_dir)
+        return await run_campaign(campaign_dir, profile_id=args.profile)
     if args.command == "evaluate":
         return evaluate_reviews(
             campaign_dir,

@@ -390,9 +390,9 @@ def main() -> int:
         "--fetch-full-team",
         action="store_true",
         help=(
-            "When set, fan out to get_person_profile per founder/key person "
-            "for full LinkedIn-grade career history. Adds ~60%% more MCP "
-            "calls per company. Only affects URL-based intake."
+            "When set, merge founders/key people, discover exact-company "
+            "C-suite executives, and fetch deep person profiles. Only affects "
+            "URL-based intake."
         ),
     )
     args = parser.parse_args()

@@ -28,6 +28,7 @@ class ModelCatalogEntry:
     supports_creativity_control: bool = False
     default_creativity: float | None = None
     supports_temperature_control: bool = True
+    supports_reasoning_toggle: bool = False
     supports_reasoning_effort_control: bool = False
     reasoning_effort_options: tuple[str, ...] = ()
     default_reasoning_effort: str | None = None
@@ -250,9 +251,7 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         ),
         required_env=("OPENROUTER_API_KEY",),
         supports_temperature_control=False,
-        supports_reasoning_effort_control=True,
-        reasoning_effort_options=("high",),
-        default_reasoning_effort="high",
+        supports_reasoning_toggle=True,
         experiment_only=True,
     ),
     ModelCatalogEntry(
@@ -266,6 +265,7 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
             output_per_million_tokens_usd=2.548,
         ),
         required_env=("OPENROUTER_API_KEY",),
+        supports_reasoning_toggle=True,
         supports_reasoning_effort_control=True,
         reasoning_effort_options=("high", "xhigh"),
         default_reasoning_effort="high",
@@ -282,9 +282,11 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
             output_per_million_tokens_usd=0.18,
         ),
         required_env=("OPENROUTER_API_KEY",),
+        supports_reasoning_toggle=True,
         supports_reasoning_effort_control=True,
         reasoning_effort_options=("high", "xhigh"),
         default_reasoning_effort="high",
+        temperature_requires_reasoning_none=True,
         experiment_only=True,
     ),
     ModelCatalogEntry(
@@ -298,9 +300,11 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
             output_per_million_tokens_usd=0.87,
         ),
         required_env=("OPENROUTER_API_KEY",),
+        supports_reasoning_toggle=True,
         supports_reasoning_effort_control=True,
         reasoning_effort_options=("high", "xhigh"),
         default_reasoning_effort="high",
+        temperature_requires_reasoning_none=True,
         experiment_only=True,
     ),
 )
@@ -489,6 +493,7 @@ def available_models_payload() -> list[dict[str, Any]]:
                 "supports_creativity_control": entry.supports_creativity_control,
                 "default_creativity": entry.default_creativity,
                 "supports_temperature_control": entry.supports_temperature_control,
+                "supports_reasoning_toggle": entry.supports_reasoning_toggle,
                 "supports_reasoning_effort_control": entry.supports_reasoning_effort_control,
                 "reasoning_effort_options": list(entry.reasoning_effort_options),
                 "default_reasoning_effort": entry.default_reasoning_effort,
@@ -518,6 +523,7 @@ def available_chat_models_payload() -> list[dict[str, Any]]:
                 "supports_creativity_control": entry.supports_creativity_control,
                 "default_creativity": entry.default_creativity,
                 "supports_temperature_control": entry.supports_temperature_control,
+                "supports_reasoning_toggle": entry.supports_reasoning_toggle,
                 "supports_reasoning_effort_control": entry.supports_reasoning_effort_control,
                 "reasoning_effort_options": list(entry.reasoning_effort_options),
                 "temperature_requires_reasoning_none": entry.temperature_requires_reasoning_none,

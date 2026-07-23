@@ -46,6 +46,20 @@ SPECTER_MCP_QUOTA_ERROR_CODE = "specter_mcp_quota_exhausted"
 
 _QUOTA_LIMIT_RE = re.compile(r"\b(?:daily\s+)?mcp\s+limit\s+reached\b", re.IGNORECASE)
 _QUOTA_RESET_RE = re.compile(r"\bresets?\s+at\s+([^.;\n]+)", re.IGNORECASE)
+_EXECUTIVE_TITLE_RE = re.compile(
+    r"\b(?:"
+    r"co[- ]?founder|founder|president|managing director|"
+    r"chief (?:executive|technology|technical|financial|operating|commercial|"
+    r"product|revenue|marketing|science|information|security) officer|"
+    r"ceo|cto|cfo|coo|cco|cpo|cro|cmo|cso|cio|ciso"
+    r")\b",
+    re.IGNORECASE,
+)
+_EXCLUDED_EXECUTIVE_TITLE_RE = re.compile(
+    r"\b(?:former|ex[- ]|assistant|advisor|adviser|interim)\b",
+    re.IGNORECASE,
+)
+_MAX_DISCOVERED_EXECUTIVES = 8
 
 
 def is_specter_quota_limit_message(message: str | None) -> bool:
@@ -467,6 +481,17 @@ class SpecterMCPClient:
     def get_person_profile(self, external_person_id: str) -> dict[str, Any]:
         return self._call_tool(
             "get_person_profile", {"external_person_id": external_person_id}
+        )
+
+    def search_people(self, query: str, *, limit: int = 20) -> dict[str, Any]:
+        return self._call_tool(
+            "search",
+            {
+                "query": query,
+                "product": "people",
+                "page": 0,
+                "limit": limit,
+            },
         )
 
     # -- Internals --------------------------------------------------------
@@ -1058,20 +1083,22 @@ def _build_signals_chunk(
 
 def _build_team_overview_chunk(
     team: list[Person],
-    founder_dicts: list[dict[str, Any]],
+    leadership_dicts: list[dict[str, Any]],
     company_name: str,
     idx: int,
 ) -> Chunk:
-    parts = [f"Founding Team Overview for {company_name}:"]
-    parts.append(f"Number of Founders: {len(founder_dicts)}")
+    founder_count = sum(bool(person.get("is_founder")) for person in leadership_dicts)
+    parts = [f"Leadership Team Overview for {company_name}:"]
+    parts.append(f"Number of Founders: {founder_count}")
+    parts.append(f"Leadership Profiles Included: {len(leadership_dicts)}")
     parts.append("")
-    for person, raw in zip(team, founder_dicts):
+    for person, raw in zip(team, leadership_dicts):
         parts.append(person.get_profile_summary())
         title = raw.get("title")
         if title:
             parts.append(f"Title: {title}")
         parts.append("---")
-    return _chunk(idx, _CHUNK_SOURCE_PEOPLE, "Founding Team Overview", "\n".join(parts))
+    return _chunk(idx, _CHUNK_SOURCE_PEOPLE, "Leadership Team Overview", "\n".join(parts))
 
 
 def _build_person_detail_chunk(
@@ -1110,6 +1137,199 @@ def _build_person_detail_chunk(
     if person.profile_url:
         parts.append(f"LinkedIn: {person.profile_url}")
     return _chunk(idx, _CHUNK_SOURCE_PEOPLE, f"Team Member: {name}", "\n".join(parts))
+
+
+def _leadership_identities(person: dict[str, Any]) -> list[tuple[str, str]]:
+    """Return all stable identities used to deduplicate leadership records."""
+    identities: list[tuple[str, str]] = []
+    external_id = str(person.get("external_person_id") or "").strip().lower()
+    if external_id:
+        identities.append(("external_person_id", external_id))
+    linkedin = str(person.get("linkedin_url") or "").strip().lower().rstrip("/")
+    if linkedin:
+        identities.append(("linkedin_url", linkedin))
+    full_name = _normalize_for_match(str(person.get("full_name") or ""))
+    if full_name:
+        identities.append(("full_name", full_name))
+    return identities
+
+
+def _merge_leadership_summaries(
+    founders: Any,
+    key_people: Any,
+    discovered_people: Any = None,
+) -> list[dict[str, Any]]:
+    """Merge leadership sources, preserving source order and founder status."""
+    merged: list[dict[str, Any]] = []
+    by_identity: dict[tuple[str, str], int] = {}
+    for source, is_founder in (
+        (founders, True),
+        (key_people, False),
+        (discovered_people, False),
+    ):
+        for raw in source if isinstance(source, list) else []:
+            if not isinstance(raw, dict):
+                continue
+            person = dict(raw)
+            person["is_founder"] = bool(person.get("is_founder") or is_founder)
+            identities = _leadership_identities(person)
+            if not identities:
+                continue
+            existing_index = next(
+                (
+                    by_identity[identity]
+                    for identity in identities
+                    if identity in by_identity
+                ),
+                None,
+            )
+            if existing_index is None:
+                existing_index = len(merged)
+                merged.append(person)
+            else:
+                existing = merged[existing_index]
+                for key, value in person.items():
+                    if value not in (None, "", [], {}) and existing.get(key) in (
+                        None,
+                        "",
+                        [],
+                        {},
+                    ):
+                        existing[key] = value
+                existing["is_founder"] = bool(
+                    existing.get("is_founder") or person.get("is_founder")
+                )
+            for identity in _leadership_identities(merged[existing_index]):
+                by_identity[identity] = existing_index
+    return merged
+
+
+def _normalize_exact_company_name(value: Any) -> str:
+    tokens = re.findall(r"[a-z0-9]+", str(value or "").lower())
+    legal_suffixes = {
+        "ag",
+        "co",
+        "company",
+        "corp",
+        "corporation",
+        "gmbh",
+        "inc",
+        "incorporated",
+        "limited",
+        "llc",
+        "ltd",
+        "sa",
+        "sro",
+    }
+    while tokens and tokens[-1] in legal_suffixes:
+        tokens.pop()
+    return "".join(tokens)
+
+
+def _executive_role_priority(title: str) -> int:
+    normalized = title.lower()
+    for priority, pattern in enumerate(
+        (
+            r"\b(?:chief executive officer|ceo)\b",
+            r"\b(?:chief technology officer|chief technical officer|cto)\b",
+            r"\b(?:chief financial officer|cfo)\b",
+            r"\b(?:chief operating officer|coo)\b",
+            r"\b(?:chief commercial officer|cco)\b",
+            r"\b(?:chief product officer|cpo)\b",
+            r"\b(?:chief revenue officer|cro)\b",
+            r"\b(?:chief marketing officer|cmo)\b",
+            r"\b(?:chief science officer|cso)\b",
+            r"\b(?:founder|president|managing director)\b",
+        )
+    ):
+        if re.search(pattern, normalized):
+            return priority
+    return 99
+
+
+def _filter_executive_search_results(
+    response: Any,
+    *,
+    company_name: str,
+) -> list[dict[str, Any]]:
+    """Keep current C-suite/founder records for the exact current company only."""
+    items = response.get("items") if isinstance(response, dict) else None
+    if not isinstance(items, list):
+        return []
+    expected_company = _normalize_exact_company_name(company_name)
+    candidates: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        current_company = _normalize_exact_company_name(
+            item.get("current_position_company_name")
+        )
+        title = str(item.get("current_position_title") or "").strip()
+        if (
+            not expected_company
+            or current_company != expected_company
+            or not _EXECUTIVE_TITLE_RE.search(title)
+            or _EXCLUDED_EXECUTIVE_TITLE_RE.search(title)
+        ):
+            continue
+        external_person_id = str(item.get("id") or "").strip()
+        full_name = " ".join(
+            part
+            for part in (
+                str(item.get("first_name") or "").strip(),
+                str(item.get("last_name") or "").strip(),
+            )
+            if part
+        )
+        if not external_person_id or not full_name:
+            continue
+        candidates.append(
+            {
+                "external_person_id": external_person_id,
+                "full_name": full_name,
+                "title": title,
+                "linkedin_url": item.get("linkedin_url"),
+                "seniority": "Executive Level",
+                "departments": ["Senior Leadership"],
+                "is_founder": bool(re.search(r"\bfounder\b", title, re.IGNORECASE)),
+                "_role_priority": _executive_role_priority(title),
+            }
+        )
+    candidates.sort(
+        key=lambda person: (
+            int(person["_role_priority"]),
+            _normalize_for_match(str(person["full_name"])),
+            str(person["external_person_id"]),
+        )
+    )
+    for person in candidates:
+        person.pop("_role_priority", None)
+    return candidates[:_MAX_DISCOVERED_EXECUTIVES]
+
+
+def _discover_executive_summaries(
+    cli: Any,
+    *,
+    company_name: str,
+) -> list[dict[str, Any]]:
+    search_people = getattr(cli, "search_people", None)
+    if not callable(search_people):
+        return []
+    try:
+        response = search_people(
+            f"current founders and C-suite executives at {company_name}",
+            limit=20,
+        )
+    except SpecterQuotaLimitError:
+        raise
+    except SpecterMCPError as exc:
+        logger.warning(
+            "Specter executive discovery failed for %s: %s",
+            company_name,
+            exc,
+        )
+        return []
+    return _filter_executive_search_results(response, company_name=company_name)
 
 
 # ---------------------------------------------------------------------------
@@ -1190,8 +1410,9 @@ def fetch_specter_company(
             external company ID, or company name.
         expected_name: optional company name supplied by the user; used to
             sanity-check Specter's disambiguation. Skipped if not provided.
-        fetch_full_team: when True, fan out to ``get_person_profile`` for each
-            founder. Costs N+3 MCP calls per company.
+        fetch_full_team: when True, merge founders and key people, run one
+            exact-company C-suite discovery search, then fan out to
+            ``get_person_profile`` for each deduplicated leadership member.
         client: inject a pre-built client (used in tests).
         known_company_id: Specter company id resolved by an earlier preflight
             for this same identifier (Sprint 3 W7). Skips find_company and
@@ -1235,11 +1456,21 @@ def fetch_specter_company(
     company_name = profile.get("name") or base.get("name") or identifier
     domain = profile.get("domain") or base.get("domain")
 
-    # Build founders + team
-    founder_dicts = intelligence.get("founders") or []
+    # Build the leadership team from both Specter collections. The same founder
+    # often appears in key_people as well, so merge deterministically.
+    discovered_executives = (
+        _discover_executive_summaries(cli, company_name=company_name)
+        if fetch_full_team
+        else []
+    )
+    leadership_dicts = _merge_leadership_summaries(
+        intelligence.get("founders"),
+        intelligence.get("key_people"),
+        discovered_executives,
+    )
     team_persons: list[Person] = []
     raw_profiles: list[dict[str, Any] | None] = []
-    for f in founder_dicts:
+    for f in leadership_dicts:
         if not isinstance(f, dict):
             continue
         pid = f.get("external_person_id")
@@ -1301,10 +1532,14 @@ def fetch_specter_company(
 
     if team_persons:
         chunks.append(
-            _build_team_overview_chunk(team_persons, founder_dicts, company_name, idx)
+            _build_team_overview_chunk(team_persons, leadership_dicts, company_name, idx)
         )
         idx += 1
-        for person, raw_summary, raw_profile in zip(team_persons, founder_dicts, raw_profiles):
+        for person, raw_summary, raw_profile in zip(
+            team_persons,
+            leadership_dicts,
+            raw_profiles,
+        ):
             chunks.append(
                 _build_person_detail_chunk(person, raw_summary, raw_profile, company_name, idx)
             )

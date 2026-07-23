@@ -13,6 +13,7 @@ Environment variables:
 """
 
 import os
+import time
 from threading import Lock
 from typing import Any
 
@@ -395,16 +396,19 @@ class _TelemetryCallbackHandler(BaseCallbackHandler):
     def __init__(self) -> None:
         self._lock = Lock()
         self._prompt_text_by_run_id: dict[Any, str] = {}
+        self._started_at_by_run_id: dict[Any, float] = {}
 
     def on_llm_start(self, serialized, prompts, *, run_id, **kwargs: Any) -> Any:
         prompt_text = "\n\n".join(str(prompt or "") for prompt in prompts or []).strip()
         with self._lock:
             self._prompt_text_by_run_id[run_id] = prompt_text
+            self._started_at_by_run_id[run_id] = time.monotonic()
         return None
 
     def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs: Any) -> Any:
         with self._lock:
             self._prompt_text_by_run_id[run_id] = _render_message_text(messages or [])
+            self._started_at_by_run_id[run_id] = time.monotonic()
         return None
 
     def on_llm_end(self, response, *, run_id=None, **kwargs: Any) -> Any:
@@ -415,6 +419,10 @@ class _TelemetryCallbackHandler(BaseCallbackHandler):
             return None
         usage = _extract_usage_metadata(response)
         estimated = False
+        started_at = None
+        if run_id is not None:
+            with self._lock:
+                started_at = self._started_at_by_run_id.pop(run_id, None)
         if usage is None and run_id is not None:
             with self._lock:
                 prompt_text = self._prompt_text_by_run_id.pop(run_id, "")
@@ -435,6 +443,8 @@ class _TelemetryCallbackHandler(BaseCallbackHandler):
             "sampling_mode",
             "requested_reasoning_effort",
             "effective_reasoning_effort",
+            "requested_reasoning_enabled",
+            "effective_reasoning_enabled",
             "reasoning_fallback_applied",
         ):
             if key in request_settings:
@@ -451,12 +461,18 @@ class _TelemetryCallbackHandler(BaseCallbackHandler):
             completion_tokens=(usage or {}).get("completion_tokens"),
             total_tokens=(usage or {}).get("total_tokens"),
             metadata=metadata,
+            latency_ms=(
+                max(0, int((time.monotonic() - started_at) * 1000))
+                if started_at is not None
+                else None
+            ),
         )
         return None
 
     def on_llm_error(self, error: BaseException, *, run_id, **kwargs: Any) -> Any:
         with self._lock:
             self._prompt_text_by_run_id.pop(run_id, None)
+            self._started_at_by_run_id.pop(run_id, None)
         return None
 
 
@@ -577,14 +593,37 @@ def create_llm(
     selection_creativity = None
     if supports_selection_creativity_control(provider, model):
         selection_creativity = normalize_creativity(selection.get("creativity"))
-    selection_temperature = selection.get("temperature")
-    selection_reasoning_effort = selection.get("reasoning_effort")
+    stage_settings = selection.get("stage_settings")
+    stage_override = (
+        stage_settings.get(get_current_stage_name())
+        if isinstance(stage_settings, dict)
+        and isinstance(stage_settings.get(get_current_stage_name()), dict)
+        else {}
+    )
+    has_selection_temperature = "temperature" in stage_override or "temperature" in selection
+    selection_temperature = (
+        stage_override.get("temperature")
+        if "temperature" in stage_override
+        else selection.get("temperature")
+    )
+    selection_reasoning_effort = (
+        stage_override.get("reasoning_effort")
+        if "reasoning_effort" in stage_override
+        else selection.get("reasoning_effort")
+    )
+    selection_reasoning_enabled = (
+        stage_override.get("reasoning_enabled")
+        if "reasoning_enabled" in stage_override
+        else selection.get("reasoning_enabled")
+    )
     requested_temperature = selection_creativity if selection_creativity is not None else (
-        selection_temperature if selection_temperature is not None else temperature
+        selection_temperature if has_selection_temperature else temperature
     )
     requested_reasoning_effort = (
         selection_reasoning_effort if selection_reasoning_effort is not None else reasoning_effort
     )
+    if selection_reasoning_enabled is False:
+        requested_reasoning_effort = None
     runtime = get_llm_runtime_settings()
     timeout_s = runtime["request_timeout_seconds"]
     max_retries = runtime["max_retries"]
@@ -595,6 +634,8 @@ def create_llm(
         "sampling_mode": "selection_creativity" if selection_creativity is not None else "requested",
         "requested_reasoning_effort": requested_reasoning_effort,
         "effective_reasoning_effort": requested_reasoning_effort,
+        "requested_reasoning_enabled": selection_reasoning_enabled,
+        "effective_reasoning_enabled": selection_reasoning_enabled,
         "reasoning_fallback_applied": False,
         "provider": provider,
         "model": model,
@@ -619,8 +660,26 @@ def create_llm(
                     "sampling_mode": "provider_fixed",
                 }
             )
-        if request_settings.get("effective_reasoning_effort") is None and entry is not None:
+        if (
+            request_settings.get("effective_reasoning_effort") is None
+            and request_settings.get("effective_reasoning_enabled") is not False
+            and entry is not None
+        ):
             request_settings["effective_reasoning_effort"] = entry.default_reasoning_effort
+        if (
+            entry is not None
+            and entry.temperature_requires_reasoning_none
+            and (
+                request_settings.get("effective_reasoning_effort") not in {None, "none"}
+                or request_settings.get("effective_reasoning_enabled") is True
+            )
+        ):
+            request_settings.update(
+                {
+                    "effective_temperature": None,
+                    "sampling_mode": "reasoning_ignores_temperature",
+                }
+            )
         request_settings["openrouter_routing"] = {
             "require_parameters": True,
             "data_collection": "deny",
@@ -656,6 +715,7 @@ def create_llm(
                 timeout_s,
                 max_retries,
                 reasoning_effort=request_settings.get("effective_reasoning_effort"),
+                reasoning_enabled=request_settings.get("effective_reasoning_enabled"),
                 routing=selection.get("openrouter_routing"),
             )
         )
@@ -795,6 +855,7 @@ def _create_openrouter(
     timeout_s: float,
     max_retries: int,
     reasoning_effort: str | None = None,
+    reasoning_enabled: bool | None = None,
     routing: dict[str, Any] | None = None,
 ) -> BaseChatModel:
     from langchain_openai import ChatOpenAI
@@ -837,11 +898,15 @@ def _create_openrouter(
                 provider_preferences[key] = routing[key]
 
     extra_body: dict[str, Any] = {"provider": provider_preferences}
-    if reasoning_effort is not None:
+    if reasoning_enabled is False:
+        extra_body["reasoning"] = {"enabled": False}
+    elif reasoning_effort is not None:
         # Keep OpenRouter's normalized reasoning control on Chat Completions.
         # Passing it as a ChatOpenAI model kwarg would switch LangChain to the
         # OpenAI Responses API instead.
         extra_body["reasoning"] = {"effort": reasoning_effort}
+    elif reasoning_enabled is True:
+        extra_body["reasoning"] = {"enabled": True}
 
     kwargs: dict[str, Any] = {
         "model": model,

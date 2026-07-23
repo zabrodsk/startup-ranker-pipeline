@@ -69,6 +69,19 @@ _ALL_PIPELINE_PHASES: tuple[PipelinePhase, ...] = (
     "refinement",
     "ranking",
 )
+_STAGE_NAMES_BY_PHASE: dict[PipelinePhase, tuple[str, ...]] = {
+    "decomposition": ("decomposition",),
+    "answering": ("answering",),
+    "generation": ("generation_pro", "generation_contra"),
+    "critique": ("critique",),
+    "evaluation": ("evaluation",),
+    "refinement": ("refinement",),
+    "ranking": (
+        "ranking_dimension_score",
+        "ranking_upside_score",
+        "ranking_executive_summary",
+    ),
+}
 _PREMIUM_FAMILY_TO_TIER: dict[PremiumPhaseChoice, Literal["balanced", "premium"]] = {
     "claude": "balanced",
     "gpt5": "premium",
@@ -148,6 +161,62 @@ def _normalize_reasoning_effort_value(
     return normalized
 
 
+def _normalize_reasoning_enabled_value(
+    entry: ModelCatalogEntry | None,
+    value: Any,
+) -> bool | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, bool):
+        raise ValueError("reasoning_enabled must be true or false.")
+    if entry is None or not entry.supports_reasoning_toggle:
+        raise ValueError("Reasoning on/off control is not supported for this model.")
+    return value
+
+
+def _normalize_stage_settings(
+    entry: ModelCatalogEntry,
+    phase: PipelinePhase,
+    value: Any,
+) -> dict[str, dict[str, Any]]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"phase_models.{phase}.stage_settings must be an object.")
+    allowed_stages = set(_STAGE_NAMES_BY_PHASE[phase])
+    unknown = [str(key) for key in value if key not in allowed_stages]
+    if unknown:
+        raise ValueError(f"phase_models.{phase}.stage_settings contains unsupported stages.")
+    normalized: dict[str, dict[str, Any]] = {}
+    for stage_name, raw in value.items():
+        if not isinstance(raw, dict):
+            raise ValueError(f"phase_models.{phase}.stage_settings.{stage_name} must be an object.")
+        temperature = _normalize_temperature_value(raw.get("temperature"))
+        reasoning_effort = _normalize_reasoning_effort_value(entry, raw.get("reasoning_effort"))
+        reasoning_enabled = _normalize_reasoning_enabled_value(entry, raw.get("reasoning_enabled"))
+        if "temperature" in raw and temperature is not None and not entry.supports_temperature_control:
+            raise ValueError(f"{entry.label} does not support temperature overrides.")
+        if reasoning_enabled is False and reasoning_effort is not None:
+            raise ValueError("reasoning_effort cannot be combined with reasoning_enabled=false.")
+        if (
+            entry.temperature_requires_reasoning_none
+            and temperature is not None
+            and reasoning_effort not in {None, "none"}
+        ):
+            raise ValueError(
+                f"{entry.label} only supports temperature when reasoning is disabled."
+            )
+        settings: dict[str, Any] = {}
+        if "temperature" in raw:
+            settings["temperature"] = temperature
+        if reasoning_effort is not None:
+            settings["reasoning_effort"] = reasoning_effort
+        if reasoning_enabled is not None:
+            settings["reasoning_enabled"] = reasoning_enabled
+        normalized[str(stage_name)] = settings
+    return normalized
+
+
 def _phase_selection_with_overrides(
     entry: ModelCatalogEntry,
     selection: dict[str, Any],
@@ -160,12 +229,22 @@ def _phase_selection_with_overrides(
             resolved_selection["creativity"] = creativity
 
     temperature = _normalize_temperature_value(selection.get("temperature"))
-    if temperature is not None and entry.supports_temperature_control:
+    if "temperature" in selection and entry.supports_temperature_control:
         resolved_selection["temperature"] = temperature
 
     reasoning_effort = _normalize_reasoning_effort_value(entry, selection.get("reasoning_effort"))
     if reasoning_effort is not None:
         resolved_selection["reasoning_effort"] = reasoning_effort
+
+    reasoning_enabled = _normalize_reasoning_enabled_value(entry, selection.get("reasoning_enabled"))
+    if reasoning_enabled is not None:
+        resolved_selection["reasoning_enabled"] = reasoning_enabled
+    if isinstance(selection.get("stage_settings"), dict):
+        resolved_selection["stage_settings"] = {
+            str(stage): dict(settings)
+            for stage, settings in selection["stage_settings"].items()
+            if isinstance(settings, dict)
+        }
 
     return resolved_selection
 
@@ -358,8 +437,12 @@ def coerce_pipeline_models_payload(
         creativity = normalize_creativity(raw.get("creativity"))
         temperature = _normalize_temperature_value(raw.get("temperature"))
         reasoning_effort = _normalize_reasoning_effort_value(entry, raw.get("reasoning_effort"))
+        reasoning_enabled = _normalize_reasoning_enabled_value(entry, raw.get("reasoning_enabled"))
+        stage_settings = _normalize_stage_settings(entry, phase, raw.get("stage_settings"))
         if temperature is not None and not entry.supports_temperature_control:
             raise ValueError(f"{entry.label} does not support temperature overrides.")
+        if reasoning_enabled is False and reasoning_effort is not None:
+            raise ValueError("reasoning_effort cannot be combined with reasoning_enabled=false.")
         if (
             entry.temperature_requires_reasoning_none
             and temperature is not None
@@ -373,8 +456,10 @@ def coerce_pipeline_models_payload(
             "provider": provider,
             "model": model,
             **({"creativity": creativity} if creativity is not None else {}),
-            **({"temperature": temperature} if temperature is not None else {}),
+            **({"temperature": temperature} if "temperature" in raw else {}),
             **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {}),
+            **({"reasoning_enabled": reasoning_enabled} if reasoning_enabled is not None else {}),
+            **({"stage_settings": stage_settings} if stage_settings else {}),
         }
         normalized[phase] = selection
 

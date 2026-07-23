@@ -19,7 +19,12 @@ from agent.model_profiles import (  # noqa: E402
     model_profiles_payload,
     resolve_model_profile,
 )
-from agent.run_context import RunTelemetryCollector, use_run_context  # noqa: E402
+from agent.run_context import (  # noqa: E402
+    RunTelemetryCollector,
+    use_phase_llm,
+    use_run_context,
+    use_stage_context,
+)
 from web import app as web_app_module  # noqa: E402
 
 
@@ -49,6 +54,8 @@ def test_openrouter_experiment_models_require_flag_and_dedicated_key(monkeypatch
 
     enabled = {item["model"]: item for item in available_models_payload()}
     assert enabled["moonshotai/kimi-k2.6"]["supports_temperature_control"] is False
+    assert enabled["moonshotai/kimi-k2.6"]["supports_reasoning_toggle"] is True
+    assert enabled["moonshotai/kimi-k2.6"]["reasoning_effort_options"] == []
     assert enabled["z-ai/glm-5.2"]["reasoning_effort_options"] == ["high", "xhigh"]
     assert enabled["deepseek/deepseek-v4-flash"]["selectable"] is True
     assert enabled["deepseek/deepseek-v4-pro"]["selectable"] is True
@@ -80,7 +87,8 @@ def test_openrouter_adapter_enforces_privacy_reasoning_and_strict_schema(monkeyp
         None,
         90.0,
         0,
-        reasoning_effort="high",
+        reasoning_enabled=True,
+        routing={"only": ["deepinfra"], "allow_fallbacks": False},
     )
 
     init = captured["init"]
@@ -90,8 +98,10 @@ def test_openrouter_adapter_enforces_privacy_reasoning_and_strict_schema(monkeyp
         "require_parameters": True,
         "data_collection": "deny",
         "zdr": True,
+        "only": ["deepinfra"],
+        "allow_fallbacks": False,
     }
-    assert init["extra_body"]["reasoning"] == {"effort": "high"}
+    assert init["extra_body"]["reasoning"] == {"enabled": True}
     assert "reasoning" not in init
     assert init["default_headers"]["X-OpenRouter-Metadata"] == "enabled"
 
@@ -171,17 +181,94 @@ def test_named_profiles_resolve_immutable_seven_stage_policies(monkeypatch) -> N
     assert {selection["model"] for selection in kimi.phase_models.values()} == {
         "moonshotai/kimi-k2.6"
     }
-    assert all(selection["reasoning_effort"] == "high" for selection in kimi.phase_models.values())
+    assert kimi.phase_models["decomposition"]["reasoning_enabled"] is True
+    assert kimi.phase_models["answering"]["reasoning_enabled"] is False
+    assert kimi.phase_models["generation"]["reasoning_enabled"] is False
+    assert kimi.phase_models["critique"]["reasoning_enabled"] is True
+    assert kimi.phase_models["evaluation"]["reasoning_enabled"] is True
+    assert kimi.phase_models["refinement"]["reasoning_enabled"] is True
+    assert kimi.phase_models["ranking"]["stage_settings"] == {
+        "ranking_dimension_score": {"reasoning_enabled": True},
+        "ranking_upside_score": {"reasoning_enabled": False},
+        "ranking_executive_summary": {"reasoning_enabled": True},
+    }
     assert all("temperature" not in selection for selection in kimi.phase_models.values())
 
     hybrid = resolve_model_profile("glm_deepseek_flash")
     assert hybrid.phase_models["critique"]["model"] == "z-ai/glm-5.2"
     assert hybrid.phase_models["refinement"]["model"] == "deepseek/deepseek-v4-flash"
+    assert hybrid.phase_models["evaluation"]["temperature"] == 0.1
+    assert hybrid.phase_models["refinement"]["temperature"] is None
+    assert hybrid.phase_models["ranking"]["stage_settings"] == {
+        "ranking_dimension_score": {"temperature": 0.1, "reasoning_effort": "high"},
+        "ranking_upside_score": {"temperature": 0.7, "reasoning_enabled": False},
+        "ranking_executive_summary": {"temperature": 0.3, "reasoning_effort": "high"},
+    }
     assert hybrid.openrouter_routing == {
         "require_parameters": True,
         "data_collection": "deny",
         "zdr": True,
     }
+
+
+def test_profile_stage_matrix_emits_exact_openrouter_parameters(monkeypatch) -> None:
+    import langchain_openai
+
+    monkeypatch.setenv("ENABLE_OPENROUTER_MODEL_EXPERIMENT", "true")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-key")
+    captured: list[dict[str, object]] = []
+
+    class FakeChatOpenAI:
+        def __init__(self, **kwargs):
+            captured.append(kwargs)
+
+    monkeypatch.setattr(langchain_openai, "ChatOpenAI", FakeChatOpenAI)
+
+    cases = (
+        # Profile B: Kimi fixed sampling, thinking only for analytical judgment.
+        ("kimi_k26", "decomposition", "decomposition", 0.5, None, {"enabled": True}),
+        ("kimi_k26", "answering", "answering", 0.2, None, {"enabled": False}),
+        ("kimi_k26", "generation", "generation_pro", 0.5, None, {"enabled": False}),
+        ("kimi_k26", "generation", "generation_contra", 0.5, None, {"enabled": False}),
+        ("kimi_k26", "critique", "critique", 0.5, None, {"enabled": True}),
+        ("kimi_k26", "evaluation", "evaluation", 0.0, None, {"enabled": True}),
+        ("kimi_k26", "refinement", "refinement", 0.7, None, {"enabled": True}),
+        ("kimi_k26", "ranking", "ranking_dimension_score", 0.0, None, {"enabled": True}),
+        ("kimi_k26", "ranking", "ranking_upside_score", 0.7, None, {"enabled": False}),
+        ("kimi_k26", "ranking", "ranking_executive_summary", 0.3, None, {"enabled": True}),
+        # Profile C: inexpensive non-thinking extraction/generation, reasoning for judgment.
+        ("glm_deepseek_flash", "decomposition", "decomposition", 0.5, 0.5, {"effort": "high"}),
+        ("glm_deepseek_flash", "answering", "answering", 0.2, 0.2, {"enabled": False}),
+        ("glm_deepseek_flash", "generation", "generation_pro", 0.5, 0.5, {"enabled": False}),
+        ("glm_deepseek_flash", "generation", "generation_contra", 0.5, 0.5, {"enabled": False}),
+        ("glm_deepseek_flash", "critique", "critique", 0.5, 0.5, {"effort": "high"}),
+        ("glm_deepseek_flash", "evaluation", "evaluation", 0.0, 0.1, {"effort": "high"}),
+        ("glm_deepseek_flash", "refinement", "refinement", 0.7, None, {"effort": "high"}),
+        ("glm_deepseek_flash", "ranking", "ranking_dimension_score", 0.0, 0.1, {"effort": "high"}),
+        ("glm_deepseek_flash", "ranking", "ranking_upside_score", 0.7, 0.7, {"enabled": False}),
+        ("glm_deepseek_flash", "ranking", "ranking_executive_summary", 0.3, 0.3, {"effort": "high"}),
+    )
+
+    for profile_id, phase, stage, requested_temperature, expected_temperature, expected_reasoning in cases:
+        selection = dict(getattr(resolve_model_profile(profile_id).policy, phase))
+        selection["openrouter_routing"] = {
+            "only": ["deepinfra"],
+            "allow_fallbacks": False,
+        }
+        with use_phase_llm(selection), use_stage_context(stage):
+            llm_module.create_llm(temperature=requested_temperature)
+        outgoing = captured[-1]
+        assert outgoing.get("temperature") == expected_temperature
+        if expected_temperature is None:
+            assert "temperature" not in outgoing
+        assert outgoing["extra_body"]["reasoning"] == expected_reasoning
+        assert outgoing["extra_body"]["provider"] == {
+            "require_parameters": True,
+            "data_collection": "deny",
+            "zdr": True,
+            "only": ["deepinfra"],
+            "allow_fallbacks": False,
+        }
 
 
 def test_analysis_api_exposes_profiles_and_rejects_conflicting_selection(monkeypatch) -> None:
@@ -266,6 +353,32 @@ def test_openrouter_usage_records_actual_cost_and_reasoning_breakdown(monkeypatc
     assert row["metadata"]["cached_tokens"] == 25
     assert row["metadata"]["provider_retry_count"] == 1
     assert collector.build_run_costs()["llm_usd"] == 0.001234
+
+
+def test_llm_telemetry_records_success_latency(monkeypatch) -> None:
+    collector = RunTelemetryCollector()
+    monotonic_values = iter((10.0, 10.25))
+    monkeypatch.setattr(llm_module.time, "monotonic", lambda: next(monotonic_values))
+
+    class FakeResult:
+        generations = []
+        llm_output = {
+            "token_usage": {
+                "prompt_tokens": 5,
+                "completion_tokens": 2,
+                "total_tokens": 7,
+            }
+        }
+        response_metadata = {}
+
+    with use_run_context(
+        llm_selection={"provider": "openrouter", "model": "deepseek/deepseek-v4-flash"},
+        telemetry_collector=collector,
+    ):
+        llm_module._TELEMETRY_CALLBACK.on_llm_start({}, ["prompt"], run_id="latency-run")
+        llm_module._TELEMETRY_CALLBACK.on_llm_end(FakeResult(), run_id="latency-run")
+
+    assert collector.snapshot_model_executions()[0]["latency_ms"] == 250
 
 
 def test_admin_pipeline_editor_accepts_all_seven_stages(monkeypatch) -> None:

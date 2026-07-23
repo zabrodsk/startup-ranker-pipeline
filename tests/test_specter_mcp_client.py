@@ -620,8 +620,177 @@ def test_fetch_specter_company_builds_company_and_chunks():
     assert "Funding & Investors" in sections
     assert "Growth Metrics" in sections
     assert "Investor Interest & Reported Clients" in sections
-    assert "Founding Team Overview" in sections
+    assert "Leadership Team Overview" in sections
     assert any(s.startswith("Team Member: ") for s in sections)
+
+
+def test_fetch_full_team_merges_distinct_key_people_and_deduplicates_founders():
+    fakes = _anthropic_like_fixtures()
+    founder = fakes["intelligence"]["founders"][0]
+    fakes["intelligence"]["key_people"] = [
+        dict(founder),
+        {
+            "external_person_id": "per_daniela",
+            "full_name": "Daniela Amodei",
+            "title": "President",
+            "linkedin_url": "https://www.linkedin.com/in/daniela",
+            "departments": ["Senior Leadership"],
+            "seniority": "Executive Level",
+            "is_founder": False,
+        },
+    ]
+    fakes["person_profiles"]["per_daniela"] = {
+        "linkedin_url": "https://www.linkedin.com/in/daniela",
+        "tagline": "President at Anthropic",
+        "about": "Leads company operations.",
+        "positions": [],
+        "education": [],
+    }
+    client = _FakeClient(fakes)
+
+    company, store = fetch_specter_company(
+        "anthropic.com",
+        expected_name="Anthropic",
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert [person.name for person in company.team or []] == [
+        "Dario Amodei",
+        "Daniela Amodei",
+    ]
+    profile_ids = [
+        arguments["id"]
+        for method, arguments in client.calls
+        if method == "get_person_profile"
+    ]
+    assert profile_ids == ["per_dario", "per_daniela"]
+    team_chunks = [
+        chunk.page_or_slide
+        for chunk in store.chunks
+        if chunk.page_or_slide.startswith("Team Member:")
+    ]
+    assert team_chunks == [
+        "Team Member: Dario Amodei",
+        "Team Member: Daniela Amodei",
+    ]
+
+
+def test_fetch_full_team_discovers_only_current_exact_company_executives():
+    fakes = _anthropic_like_fixtures()
+    fakes["person_profiles"]["per_cto"] = {
+        "linkedin_url": "https://www.linkedin.com/in/cto",
+        "tagline": "CTO at Anthropic",
+        "about": "Leads engineering.",
+        "positions": [],
+        "education": [],
+    }
+
+    class _SearchClient(_FakeClient):
+        def search_people(self, query: str, *, limit: int = 20) -> dict[str, Any]:
+            self.calls.append(("search_people", {"query": query, "limit": limit}))
+            return {
+                "product": "people",
+                "items": [
+                    {
+                        "id": "per_cto",
+                        "first_name": "Alicia",
+                        "last_name": "Chen",
+                        "linkedin_url": "https://www.linkedin.com/in/cto",
+                        "current_position_title": "Chief Technology Officer",
+                        "current_position_company_name": "Anthropic",
+                    },
+                    {
+                        "id": "per_assistant",
+                        "first_name": "Alex",
+                        "last_name": "Assistant",
+                        "current_position_title": "Executive Assistant to CEO",
+                        "current_position_company_name": "Anthropic",
+                    },
+                    {
+                        "id": "per_former",
+                        "first_name": "Frank",
+                        "last_name": "Former",
+                        "current_position_title": "Former Chief Financial Officer",
+                        "current_position_company_name": "Anthropic",
+                    },
+                    {
+                        "id": "per_other_company",
+                        "first_name": "Chris",
+                        "last_name": "Other",
+                        "current_position_title": "CEO",
+                        "current_position_company_name": "Anthropic Labs",
+                    },
+                    {
+                        "id": "per_dario",
+                        "first_name": "Dario",
+                        "last_name": "Amodei",
+                        "linkedin_url": "https://www.linkedin.com/in/dario",
+                        "current_position_title": "CEO",
+                        "current_position_company_name": "Anthropic",
+                    },
+                ],
+            }
+
+    client = _SearchClient(fakes)
+    company, _store = fetch_specter_company(
+        "anthropic.com",
+        expected_name="Anthropic",
+        client=client,  # type: ignore[arg-type]
+    )
+
+    assert [person.name for person in company.team or []] == [
+        "Dario Amodei",
+        "Alicia Chen",
+    ]
+    profile_ids = [
+        arguments["id"]
+        for method, arguments in client.calls
+        if method == "get_person_profile"
+    ]
+    assert profile_ids == ["per_dario", "per_cto"]
+    search_calls = [
+        arguments
+        for method, arguments in client.calls
+        if method == "search_people"
+    ]
+    assert search_calls == [
+        {
+            "query": "current founders and C-suite executives at Anthropic",
+            "limit": 20,
+        }
+    ]
+
+
+def test_fetch_without_full_team_still_merges_summaries_without_search_or_profiles():
+    fakes = _anthropic_like_fixtures()
+    fakes["intelligence"]["key_people"] = [
+        {
+            "external_person_id": "per_daniela",
+            "full_name": "Daniela Amodei",
+            "title": "President",
+            "linkedin_url": "https://www.linkedin.com/in/daniela",
+            "is_founder": False,
+        }
+    ]
+
+    class _NoDeepCalls(_FakeClient):
+        def search_people(self, query: str, *, limit: int = 20) -> dict[str, Any]:
+            raise AssertionError("leadership search must stay disabled")
+
+        def get_person_profile(self, external_person_id: str) -> dict[str, Any]:
+            raise AssertionError("person profiles must stay disabled")
+
+    company, _store = fetch_specter_company(
+        "anthropic.com",
+        expected_name="Anthropic",
+        fetch_full_team=False,
+        client=_NoDeepCalls(fakes),  # type: ignore[arg-type]
+    )
+
+    assert [person.name for person in company.team or []] == [
+        "Dario Amodei",
+        "Daniela Amodei",
+    ]
 
 
 def test_fetch_specter_company_raises_on_disambiguation_failure():

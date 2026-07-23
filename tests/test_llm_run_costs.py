@@ -522,6 +522,7 @@ def test_create_llm_uses_openrouter_selection_and_key(monkeypatch) -> None:
         timeout_s,
         max_retries,
         reasoning_effort=None,
+        reasoning_enabled=None,
         routing=None,
     ):
         called["provider"] = "openrouter"

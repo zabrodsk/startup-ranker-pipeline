@@ -134,14 +134,15 @@ On any failure (no URL, MCP error, disambiguation rejection,
 A second toggle "Fetch deep team profiles (Specter)" (default OFF) flips
 `fetch_full_team`:
 
-- **OFF** — 3 MCP calls per company (find + profile + intelligence +
-  financials). Founders come from the `intelligence.founders` summary
-  list. Recommended for pitch-deck mode (deck usually carries founder
-  bios).
-- **ON** — Same 3 calls + one `get_person_profile` per founder/key
-  person. Adds ~60% more MCP calls but yields full LinkedIn-grade
-  career history, education, and seniority per person. Recommended for
-  URL-list mode where there is no deck context.
+- **OFF** — Base company resolution plus profile, intelligence, and
+  financials. Leadership summaries merge `intelligence.founders` and
+  `intelligence.key_people` with deterministic deduplication. Recommended
+  for pitch-deck mode (the deck usually carries team bios).
+- **ON** — Same company calls plus one bounded people search and one
+  `get_person_profile` per accepted leadership member. Search results must
+  match the exact current company and a C-suite/founder role; assistants,
+  former roles, similarly named companies, and subsidiary teams are
+  rejected. Recommended for URL-list mode where there is no deck context.
 
 ### OAuth + persistent refresh tokens
 

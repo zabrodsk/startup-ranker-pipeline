@@ -285,10 +285,10 @@ def augment_with_specter(
         slug: The company slug to use on the merged store.
         expected_name: Optional name to feed the disambiguation safeguard in the
             MCP client. Typically derived from the upload's filename.
-        fetch_full_team: When ``False`` (default), founders come only from the
-            ``intelligence.founders`` summary list — no per-founder
-            ``get_person_profile`` fan-out. Saves ~60% of MCP calls per company
-            and is appropriate when the deck already carries founder bios.
+        fetch_full_team: When ``False`` (default), leadership comes from the
+            merged ``intelligence.founders`` and ``intelligence.key_people``
+            summaries, without executive discovery or person-profile fan-out.
+            This is appropriate when the deck already carries team bios.
         on_log: Optional callback that receives one-line status messages for
             operators (e.g. wired to ``print`` and the run-progress stream).
 
