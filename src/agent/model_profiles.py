@@ -14,8 +14,19 @@ from agent.llm_policy import (
 
 OPENROUTER_ROUTING_POLICY: dict[str, Any] = {
     "require_parameters": True,
-    "data_collection": "deny",
+    "data_collection": "allow",
     "zdr": True,
+}
+OPENROUTER_MODEL_ROUTES: dict[str, tuple[str, ...]] = {
+    "moonshotai/kimi-k2.6": ("wandb", "modelrun", "novita"),
+    "z-ai/glm-5.2": ("together", "fireworks"),
+    "deepseek/deepseek-v4-flash": (
+        "morph",
+        "atlas-cloud",
+        "parasail",
+        "digitalocean",
+    ),
+    "deepseek/deepseek-v4-pro": ("deepinfra",),
 }
 
 
@@ -148,6 +159,18 @@ def _profile_phase_models(profile_id: str) -> dict[str, dict[str, Any]]:
     raise ValueError("Unknown model profile.")
 
 
+def _qualified_openrouter_routing(model: str) -> dict[str, Any]:
+    providers = OPENROUTER_MODEL_ROUTES.get(model)
+    if not providers:
+        raise ValueError(f"No qualified OpenRouter route is configured for {model}.")
+    return {
+        **OPENROUTER_ROUTING_POLICY,
+        "order": list(providers),
+        "only": list(providers),
+        "allow_fallbacks": True,
+    }
+
+
 def resolve_model_profile(profile_id: str | None) -> ResolvedModelProfile:
     """Resolve a staging profile into an immutable seven-stage policy."""
     normalized = (profile_id or "").strip()
@@ -158,6 +181,14 @@ def resolve_model_profile(profile_id: str | None) -> ResolvedModelProfile:
         raise ValueError("OpenRouter model experiment is disabled.")
 
     policy = build_explicit_pipeline_model_policy(_profile_phase_models(definition.id))
+    routed_phase_models = policy.as_dict()
+    for selection in routed_phase_models.values():
+        if selection.get("provider") != "openrouter":
+            continue
+        selection["openrouter_routing"] = _qualified_openrouter_routing(
+            str(selection.get("model") or ""),
+        )
+    policy = PipelineModelPolicy(**routed_phase_models)
     phase_models = resolve_effective_phase_models(policy)
     uses_openrouter = any(
         selection.get("provider") == "openrouter"

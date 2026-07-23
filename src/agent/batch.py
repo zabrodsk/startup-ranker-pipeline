@@ -10,7 +10,6 @@ import asyncio
 import os
 import sys
 import time
-from contextvars import copy_context
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List
@@ -24,13 +23,16 @@ from agent.dataclasses.argument import Argument
 from agent.dataclasses.company import Company
 from agent.dataclasses.config import Config
 from agent.dataclasses.ranking import CompanyRankingResult
-from agent.evidence_answering import _answer_indicates_no_evidence, answer_all_trees_from_evidence
+from agent.evidence_answering import (
+    _answer_indicates_no_evidence,
+    answer_all_trees_from_evidence,
+)
 from agent.ingest import EvidenceStore, ingest_startup_folder
 from agent.llm import create_llm, get_llm_runtime_settings
-from agent.prompt_library.manager import get_prompt
+from agent.pipeline.scoring_signals import build_scoring_signals
 from agent.pipeline.stages.parallel_decomposition import decompose_all_questions
 from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
-from agent.pipeline.scoring_signals import build_scoring_signals
+from agent.prompt_library.manager import get_prompt
 from agent.run_context import (
     get_current_collector,
     get_current_company_slug,
@@ -94,7 +96,7 @@ def _company_link_metadata(company: Company) -> dict[str, str]:
 
 
 async def _await_with_heartbeat(
-    coro: "asyncio.Future[Any]",
+    coro: Awaitable[Any],
     *,
     timeout_seconds: int,
     heartbeat_seconds: int,
@@ -102,37 +104,47 @@ async def _await_with_heartbeat(
 ) -> Any:
     """Await a coroutine with periodic heartbeats and a hard wall-clock timeout.
 
-    The coroutine is executed in a worker thread (with its own event loop) so
-    timeout/heartbeat checks continue even if downstream libraries block.
+    Keep the provider coroutine on this event loop so cancellation reaches the
+    HTTP request and all nested pipeline tasks. Running it in an executor thread
+    makes ``Future.cancel()`` cancel only the wrapper while paid provider work
+    continues in the background.
     """
     if timeout_seconds <= 0:
         return await coro
 
     interval = max(1, heartbeat_seconds)
-    loop = asyncio.get_running_loop()
-    ctx = copy_context()
-
-    def _run_in_thread() -> Any:
-        return ctx.run(asyncio.run, coro)
-
-    task = loop.run_in_executor(None, _run_in_thread)
+    task = asyncio.ensure_future(coro)
     started = time.monotonic()
+    deadline = started + timeout_seconds
 
-    while True:
-        done, _ = await asyncio.wait({task}, timeout=interval)
-        if done:
-            return done.pop().result()
-
-        elapsed = int(time.monotonic() - started)
-        if on_heartbeat:
-            on_heartbeat(elapsed, timeout_seconds)
-
-        if elapsed >= timeout_seconds:
-            task.cancel()
-            raise TimeoutError(
-                "Scoring wall-clock timeout reached after "
-                f"{timeout_seconds}s; background provider work may still be unwinding",
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            done, _ = await asyncio.wait(
+                {task},
+                timeout=min(interval, remaining),
             )
+            if done:
+                return task.result()
+
+            elapsed = int(time.monotonic() - started)
+            if on_heartbeat:
+                on_heartbeat(elapsed, timeout_seconds)
+
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        raise TimeoutError(
+            "Pipeline wall-clock timeout reached after "
+            f"{timeout_seconds}s; provider work cancelled and drained",
+        )
+    except BaseException:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        raise
 
 
 def _ensure_str(val: Any) -> str:

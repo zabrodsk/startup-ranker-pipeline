@@ -379,10 +379,31 @@ async def gather_with_concurrency(
     semaphore = asyncio.Semaphore(cap)
 
     async def _run(awaitable: Awaitable[Any]) -> Any:
-        async with semaphore:
-            return await awaitable
+        started = False
+        try:
+            async with semaphore:
+                started = True
+                return await awaitable
+        except asyncio.CancelledError:
+            # A coroutine waiting for the semaphore has never been awaited. Close
+            # it explicitly so cancellation does not leave "never awaited"
+            # warnings or deferred provider work behind.
+            if not started and asyncio.iscoroutine(awaitable):
+                awaitable.close()
+            raise
 
-    return await asyncio.gather(*(_run(item) for item in items))
+    tasks = [asyncio.create_task(_run(item)) for item in items]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        # asyncio.gather propagates the first error but intentionally lets sibling
+        # tasks continue. Provider failures must instead stop the whole batch so
+        # a 429/timeout cannot leave other paid requests running in the background.
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 def run_with_sync_retries(callable_: Any, *args: Any, **kwargs: Any) -> Any:

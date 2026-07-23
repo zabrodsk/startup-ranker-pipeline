@@ -17,11 +17,11 @@ import time
 from threading import Lock
 from typing import Any
 
+import tiktoken
 from dotenv import load_dotenv
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
-import tiktoken
 
 from agent.llm_catalog import (
     find_model_entry,
@@ -47,6 +47,7 @@ load_dotenv()
 _DEFAULT_PROVIDER = "gemini"
 _DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 _DEFAULT_TIMEOUT_SECONDS = 90.0
+_DEFAULT_OPENROUTER_TIMEOUT_SECONDS = 300.0
 # Inner LangChain-client retries (LLM_CLIENT_MAX_RETRIES). Default 0:
 # ThrottledRunnable (rate_limit.py, LLM_MAX_RETRIES, default 6) is the single
 # retry owner — a non-zero inner value multiplies attempts (Sprint 1 W10).
@@ -624,7 +625,7 @@ def create_llm(
     )
     if selection_reasoning_enabled is False:
         requested_reasoning_effort = None
-    runtime = get_llm_runtime_settings()
+    runtime = get_llm_runtime_settings(provider=provider)
     timeout_s = runtime["request_timeout_seconds"]
     max_retries = runtime["max_retries"]
 
@@ -640,6 +641,8 @@ def create_llm(
         "provider": provider,
         "model": model,
         "selection_creativity": selection_creativity,
+        "request_timeout_seconds": timeout_s,
+        "client_max_retries": max_retries,
     }
     if provider == "openai":
         request_settings.update(
@@ -738,19 +741,35 @@ def chat_llm_selection() -> dict[str, str]:
 
 def create_chat_llm(temperature: float = 0.2) -> BaseChatModel:
     """Create the fixed Gemini model used by company chat."""
-    runtime = get_llm_runtime_settings()
+    runtime = get_llm_runtime_settings(provider="gemini")
     timeout_s = runtime["request_timeout_seconds"]
     max_retries = runtime["max_retries"]
     return wrap_llm(_create_gemini(_CHAT_MODEL, temperature, timeout_s, max_retries))
 
 
-def get_llm_runtime_settings() -> dict[str, float | int]:
+def get_llm_runtime_settings(
+    *,
+    provider: str | None = None,
+) -> dict[str, float | int]:
     """Return the active runtime request controls for the current process."""
-    return {
-        "request_timeout_seconds": _read_positive_float_env(
+    current_selection = get_current_llm_selection() or {}
+    resolved_provider = normalize_provider(
+        provider
+        or current_selection.get("provider")
+        or os.getenv("LLM_PROVIDER", _DEFAULT_PROVIDER)
+    )
+    if resolved_provider == "openrouter":
+        timeout_seconds = _read_positive_float_env(
+            "OPENROUTER_REQUEST_TIMEOUT_SECONDS",
+            _DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
+        )
+    else:
+        timeout_seconds = _read_positive_float_env(
             "LLM_REQUEST_TIMEOUT_SECONDS",
             _DEFAULT_TIMEOUT_SECONDS,
-        ),
+        )
+    return {
+        "request_timeout_seconds": timeout_seconds,
         # Decoupled from LLM_MAX_RETRIES (outer ThrottledRunnable policy) so
         # tuning the outer policy cannot silently re-enable inner retries.
         "max_retries": _read_nonnegative_int_env(
@@ -893,6 +912,12 @@ def _create_openrouter(
         "zdr": True,
     }
     if isinstance(routing, dict):
+        data_collection = routing.get("data_collection")
+        if data_collection in {"allow", "deny"}:
+            # ZDR remains locked on below. This switch only controls the
+            # additional OpenRouter policy filter used to widen eligible
+            # zero-retention inference routes in the staging experiment.
+            provider_preferences["data_collection"] = data_collection
         for key in ("only", "order", "allow_fallbacks", "sort", "quantizations"):
             if key in routing:
                 provider_preferences[key] = routing[key]

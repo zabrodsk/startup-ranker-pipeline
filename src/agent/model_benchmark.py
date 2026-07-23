@@ -14,6 +14,7 @@ import random
 import re
 import statistics
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -30,8 +31,38 @@ OPENROUTER_PREFLIGHT_MODELS: tuple[str, ...] = (
     "deepseek/deepseek-v4-flash",
     "deepseek/deepseek-v4-pro",
 )
-OPENROUTER_APPROVED_PROVIDER_SLUGS: tuple[str, ...] = ("deepinfra",)
+OPENROUTER_ROUTE_CANDIDATES: dict[str, tuple[str, ...]] = {
+    "moonshotai/kimi-k2.6": ("digitalocean", "together", "baseten"),
+    "z-ai/glm-5.2": ("baseten", "together", "fireworks"),
+    "deepseek/deepseek-v4-flash": ("digitalocean", "wandb", "fireworks"),
+    "deepseek/deepseek-v4-pro": ("deepseek", "streamlake", "novita", "deepinfra"),
+}
 SPECTER_TEAM_CAPTURE_VERSION = 2
+
+
+@contextmanager
+def _bounded_openrouter_retries(max_retries: int):
+    """Temporarily make the outer retry owner explicit for benchmark tooling."""
+    import agent.rate_limit as rate_limit_module
+    from agent.rate_limit import RetryPolicy
+
+    previous_policy = rate_limit_module._LLM_RETRY_POLICY
+    previous_inner_retries = os.getenv("LLM_CLIENT_MAX_RETRIES")
+    rate_limit_module._LLM_RETRY_POLICY = RetryPolicy(
+        max_retries=max_retries,
+        base_delay_sec=previous_policy.base_delay_sec,
+        max_delay_sec=previous_policy.max_delay_sec,
+        jitter_sec=previous_policy.jitter_sec,
+    )
+    os.environ["LLM_CLIENT_MAX_RETRIES"] = "0"
+    try:
+        yield
+    finally:
+        rate_limit_module._LLM_RETRY_POLICY = previous_policy
+        if previous_inner_retries is None:
+            os.environ.pop("LLM_CLIENT_MAX_RETRIES", None)
+        else:
+            os.environ["LLM_CLIENT_MAX_RETRIES"] = previous_inner_retries
 
 
 def build_run_schedule(
@@ -843,9 +874,10 @@ async def _invoke_openrouter_smoke_case(
             response = await runnable.ainvoke(
                 f"Return ok=true and marker='{marker}'. Do not add other fields."
             )
+    all_rows = collector.snapshot_model_executions()
     rows = [
         row
-        for row in collector.snapshot_model_executions()
+        for row in all_rows
         if row.get("service") == "llm" and row.get("status") == "done"
     ]
     metadata = (rows[-1].get("metadata") or {}) if rows else {}
@@ -856,6 +888,12 @@ async def _invoke_openrouter_smoke_case(
         "generation_id": metadata.get("generation_id"),
         "actual_cost_usd": metadata.get("actual_cost_usd"),
         "reasoning_tokens": metadata.get("reasoning_tokens"),
+        "latency_ms": rows[-1].get("latency_ms") if rows else None,
+        "retry_count": sum(
+            1
+            for row in all_rows
+            if row.get("service") == "llm" and row.get("status") == "retrying"
+        ),
         "request_parameters": {
             key: metadata.get(key)
             for key in (
@@ -878,16 +916,15 @@ async def run_openrouter_smoke(
     """Run small synthetic schema calls using the final B/C request settings."""
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
-    routing_policy = {
+    privacy_policy = {
         "require_parameters": True,
-        "data_collection": "deny",
+        "data_collection": "allow",
         "zdr": True,
-        "only": list(OPENROUTER_APPROVED_PROVIDER_SLUGS),
-        "allow_fallbacks": False,
     }
     invoker = invoke_case or _invoke_openrouter_smoke_case
     reports: list[dict[str, Any]] = []
     for case in _openrouter_smoke_cases():
+        routing_policy = _operational_openrouter_routing(str(case["model"]))
         public_case = {
             key: value for key, value in case.items() if key != "selection"
         }
@@ -900,7 +937,11 @@ async def run_openrouter_smoke(
             selected_provider = str(result.get("selected_provider") or "").strip()
             eligible = (
                 result.get("structured_ok") is True
-                and selected_provider.lower() in OPENROUTER_APPROVED_PROVIDER_SLUGS
+                and _normalized_provider_slug(selected_provider)
+                in {
+                    _normalized_provider_slug(provider)
+                    for provider in routing_policy["only"]
+                }
             )
             reports.append(
                 {
@@ -924,10 +965,206 @@ async def run_openrouter_smoke(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "synthetic_only": True,
         "eligible": bool(reports) and all(item["eligible"] for item in reports),
-        "routing_policy": routing_policy,
+        "privacy_policy": privacy_policy,
         "cases": reports,
     }
     _write_json(root / "smoke.json", report)
+    return report
+
+
+def _normalized_provider_slug(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def _operational_openrouter_routing(model: str) -> dict[str, Any]:
+    from agent.model_profiles import OPENROUTER_MODEL_ROUTES, OPENROUTER_ROUTING_POLICY
+
+    routes = list(OPENROUTER_MODEL_ROUTES.get(model) or ())
+    if not routes:
+        raise RuntimeError(f"No qualified OpenRouter route is configured for {model}.")
+    return {
+        **dict(OPENROUTER_ROUTING_POLICY),
+        "order": routes,
+        "only": routes,
+        "allow_fallbacks": True,
+    }
+
+
+async def run_openrouter_route_qualification(
+    output_dir: str | Path,
+    *,
+    invoke_case: Any | None = None,
+    calls_per_case: int = 2,
+    concurrency: int = 2,
+    route_candidates: dict[str, Sequence[str]] | None = None,
+) -> dict[str, Any]:
+    """Soak-test pinned ZDR endpoints and rank routes by observed reliability."""
+    if calls_per_case <= 0:
+        raise ValueError("calls_per_case must be greater than zero.")
+    if concurrency <= 0:
+        raise ValueError("concurrency must be greater than zero.")
+
+    root = Path(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    invoker = invoke_case or _invoke_openrouter_smoke_case
+    candidates = {
+        str(model): tuple(str(provider).strip().lower() for provider in providers)
+        for model, providers in (route_candidates or OPENROUTER_ROUTE_CANDIDATES).items()
+    }
+    cases_by_model: dict[str, list[dict[str, Any]]] = {}
+    for case in _openrouter_smoke_cases():
+        model = str(case.get("model") or "")
+        if model in candidates:
+            cases_by_model.setdefault(model, []).append(case)
+
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def _one_call(
+        *,
+        case: dict[str, Any],
+        provider: str,
+        attempt: int,
+        routing: dict[str, Any],
+    ) -> dict[str, Any]:
+        started = time.monotonic()
+        try:
+            async with semaphore:
+                result = invoker(dict(case), dict(routing))
+                if inspect.isawaitable(result):
+                    result = await result
+            if not isinstance(result, dict):
+                raise RuntimeError("Route qualification invoker returned an invalid result.")
+            selected_provider = str(result.get("selected_provider") or "").strip()
+            structured_ok = result.get("structured_ok") is True
+            provider_ok = _normalized_provider_slug(selected_provider) == _normalized_provider_slug(provider)
+            return {
+                "case_id": case["id"],
+                "attempt": attempt,
+                **dict(result),
+                "success": structured_ok and provider_ok,
+                "provider_match": provider_ok,
+                "error": None,
+                "observed_wall_clock_ms": round(
+                    (time.monotonic() - started) * 1000,
+                    3,
+                ),
+            }
+        except Exception as exc:
+            return {
+                "case_id": case["id"],
+                "attempt": attempt,
+                "success": False,
+                "provider_match": False,
+                "error": str(exc),
+                "latency_ms": None,
+                "retry_count": 0,
+                "actual_cost_usd": None,
+                "observed_wall_clock_ms": round(
+                    (time.monotonic() - started) * 1000,
+                    3,
+                ),
+            }
+
+    model_reports: list[dict[str, Any]] = []
+    recommendations: dict[str, str] = {}
+    for model, providers in candidates.items():
+        cases = cases_by_model.get(model) or []
+        provider_reports: list[dict[str, Any]] = []
+        for provider in providers:
+            routing = {
+                "require_parameters": True,
+                "data_collection": "allow",
+                "zdr": True,
+                "only": [provider],
+                "allow_fallbacks": False,
+            }
+            with _bounded_openrouter_retries(max_retries=1):
+                calls = await asyncio.gather(
+                    *(
+                        _one_call(
+                            case=case,
+                            provider=provider,
+                            attempt=attempt,
+                            routing=routing,
+                        )
+                        for case in cases
+                        for attempt in range(1, calls_per_case + 1)
+                    )
+                )
+            latencies = [
+                float(call["latency_ms"])
+                for call in calls
+                if isinstance(call.get("latency_ms"), (int, float))
+            ]
+            costs = [
+                float(call["actual_cost_usd"])
+                for call in calls
+                if isinstance(call.get("actual_cost_usd"), (int, float))
+            ]
+            successes = sum(1 for call in calls if call.get("success") is True)
+            provider_reports.append(
+                {
+                    "provider": provider,
+                    "routing_policy": routing,
+                    "call_count": len(calls),
+                    "successful_calls": successes,
+                    "success_rate": round(successes / max(1, len(calls)), 6),
+                    "retry_count": sum(int(call.get("retry_count") or 0) for call in calls),
+                    "median_latency_ms": _percentile(latencies, 0.50),
+                    "p95_latency_ms": _percentile(latencies, 0.95),
+                    "actual_cost_usd": round(sum(costs), 8),
+                    "calls": calls,
+                }
+            )
+
+        ranked = sorted(
+            provider_reports,
+            key=lambda item: (
+                -float(item["success_rate"]),
+                int(item["retry_count"]),
+                float(item["p95_latency_ms"])
+                if item["p95_latency_ms"] is not None
+                else float("inf"),
+            ),
+        )
+        winner = next(
+            (
+                item
+                for item in ranked
+                if item["call_count"] > 0
+                and item["successful_calls"] == item["call_count"]
+            ),
+            None,
+        )
+        if winner is not None:
+            recommendations[model] = str(winner["provider"])
+        model_reports.append(
+            {
+                "model": model,
+                "eligible": winner is not None,
+                "recommended_provider": (
+                    winner["provider"] if winner is not None else None
+                ),
+                "providers": ranked,
+            }
+        )
+
+    report = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "synthetic_only": True,
+        "privacy_policy": {
+            "data_collection": "allow",
+            "zdr": True,
+            "require_parameters": True,
+        },
+        "calls_per_case": calls_per_case,
+        "concurrency": concurrency,
+        "eligible": bool(model_reports)
+        and all(model["eligible"] for model in model_reports),
+        "recommendations": recommendations,
+        "models": model_reports,
+    }
+    _write_json(root / "route-qualification.json", report)
     return report
 
 
@@ -979,22 +1216,16 @@ async def run_openrouter_preflight(
     invoke_model: Any | None = None,
     conformance_calls: int = 2,
 ) -> dict[str, Any]:
-    """Verify strict-schema/privacy conformance and freeze one provider per model."""
+    """Verify strict-schema/privacy conformance for every operational model route."""
     if conformance_calls <= 0:
         raise ValueError("conformance_calls must be greater than zero.")
     root = Path(campaign_dir)
     verify_manifest(root, require_approval=True)
     invoker = invoke_model or _invoke_openrouter_preflight
-    routing_policy = {
-        "require_parameters": True,
-        "data_collection": "deny",
-        "zdr": True,
-        "only": list(OPENROUTER_APPROVED_PROVIDER_SLUGS),
-        "allow_fallbacks": False,
-    }
     model_reports: list[dict[str, Any]] = []
-    provider_pins: dict[str, str] = {}
+    provider_routes: dict[str, list[str]] = {}
     for model in OPENROUTER_PREFLIGHT_MODELS:
+        routing_policy = _operational_openrouter_routing(model)
         calls: list[dict[str, Any]] = []
         errors: list[str] = []
         for attempt in range(1, conformance_calls + 1):
@@ -1007,30 +1238,33 @@ async def run_openrouter_preflight(
                 calls.append(dict(result))
             except Exception as exc:
                 errors.append(str(exc))
-        providers = {
+        selected_providers = {
             str(call.get("selected_provider") or "").strip()
             for call in calls
             if str(call.get("selected_provider") or "").strip()
+        }
+        allowed_providers = {
+            _normalized_provider_slug(provider)
+            for provider in routing_policy["only"]
         }
         eligible = (
             not errors
             and len(calls) == conformance_calls
             and all(call.get("structured_ok") is True for call in calls)
-            and len(providers) == 1
-            and next(iter(providers)).lower() in OPENROUTER_APPROVED_PROVIDER_SLUGS
+            and bool(selected_providers)
+            and all(
+                _normalized_provider_slug(provider) in allowed_providers
+                for provider in selected_providers
+            )
         )
         if eligible:
-            provider_pins[model] = next(
-                slug
-                for slug in OPENROUTER_APPROVED_PROVIDER_SLUGS
-                if slug == next(iter(providers)).lower()
-            )
+            provider_routes[model] = list(routing_policy["only"])
         model_reports.append(
             {
                 "model": model,
                 "eligible": eligible,
                 "routing_policy": dict(routing_policy),
-                "selected_provider": next(iter(providers)) if len(providers) == 1 else None,
+                "selected_providers": sorted(selected_providers),
                 "calls": calls,
                 "errors": errors,
             }
@@ -1040,14 +1274,17 @@ async def run_openrouter_preflight(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "eligible": all(item["eligible"] for item in model_reports),
         "conformance_calls": conformance_calls,
-        "provider_pins": provider_pins,
+        "provider_routes": provider_routes,
         "models": model_reports,
     }
     _write_json(root / "preflight.json", report)
     return report
 
 
-def _pinned_profile_policy(profile_id: str, provider_pins: dict[str, str]):
+def _qualified_profile_policy(
+    profile_id: str,
+    provider_routes: dict[str, list[str]],
+):
     from agent.llm_policy import PipelineModelPolicy
     from agent.model_profiles import resolve_model_profile
 
@@ -1057,12 +1294,20 @@ def _pinned_profile_policy(profile_id: str, provider_pins: dict[str, str]):
         if selection.get("provider") != "openrouter":
             continue
         model = str(selection.get("model") or "")
-        pin = str(provider_pins.get(model) or "").strip()
-        if not pin:
-            raise RuntimeError(f"No compliant provider pin is available for {model}.")
+        routes = [
+            str(provider).strip().lower()
+            for provider in provider_routes.get(model, [])
+            if str(provider).strip()
+        ]
+        if not routes:
+            raise RuntimeError(f"No compliant provider route is available for {model}.")
         selection["openrouter_routing"] = {
-            "only": [pin],
-            "allow_fallbacks": False,
+            "require_parameters": True,
+            "data_collection": "allow",
+            "zdr": True,
+            "order": routes,
+            "only": routes,
+            "allow_fallbacks": True,
         }
     return PipelineModelPolicy(**phase_models)
 
@@ -1081,6 +1326,66 @@ def _jsonable(value: Any) -> Any:
     if hasattr(value, "__dict__"):
         return _jsonable(vars(value))
     return str(value)
+
+
+def benchmark_completeness_issues(
+    *,
+    skipped: bool,
+    final_state: dict[str, Any],
+    model_executions: Sequence[dict[str, Any]],
+) -> list[str]:
+    """Return semantic failures that make a structurally terminal run unusable."""
+    issues: list[str] = []
+    if skipped:
+        issues.append("pipeline_skipped")
+
+    normalized_state = _jsonable(final_state)
+    decision = str(normalized_state.get("final_decision") or "").strip().lower()
+    if decision not in {"invest", "not_invest"}:
+        issues.append("missing_final_decision")
+    if not normalized_state.get("final_arguments"):
+        issues.append("missing_final_arguments")
+
+    terminal_error_stages = sorted(
+        {
+            str(row.get("stage") or "unknown")
+            for row in model_executions
+            if row.get("service") == "llm"
+            and row.get("status") in {"error", "timeout"}
+        }
+    )
+    issues.extend(
+        f"required_llm_stage_error:{stage}"
+        for stage in terminal_error_stages
+    )
+
+    ranking = normalized_state.get("ranking_result")
+    if not isinstance(ranking, dict):
+        issues.append("missing_ranking_result")
+        return issues
+
+    dimensions = ranking.get("dimension_scores")
+    if not isinstance(dimensions, list):
+        issues.append("missing_ranking_dimensions")
+        return issues
+
+    observed_dimensions: set[str] = set()
+    for dimension in dimensions:
+        if not isinstance(dimension, dict):
+            continue
+        name = str(dimension.get("dimension") or "").strip()
+        if name:
+            observed_dimensions.add(name)
+        critical_gaps = [
+            str(value).strip().lower()
+            for value in dimension.get("critical_gaps") or []
+        ]
+        if any("scoring failed due to llm error" in value for value in critical_gaps):
+            issues.append(f"ranking_dimension_failed:{name or 'unknown'}")
+
+    for missing in sorted({"strategy_fit", "team", "upside"} - observed_dimensions):
+        issues.append(f"missing_ranking_dimension:{missing}")
+    return issues
 
 
 async def _evaluate_frozen_run(
@@ -1146,14 +1451,20 @@ async def _evaluate_frozen_run(
 
     rows = collector.snapshot_model_executions()
     final_state = result.get("final_state") or {}
+    completeness_issues = benchmark_completeness_issues(
+        skipped=bool(result.get("skipped")),
+        final_state=final_state,
+        model_executions=rows,
+    )
     final_arguments = list(final_state.get("final_arguments") or [])
     final_arguments.sort(
         key=lambda argument: getattr(argument, "score", None) or float("-inf"),
         reverse=True,
     )
     return {
-        "status": "done" if not result.get("skipped") else "incomplete",
-        "structured_success": not bool(result.get("skipped")),
+        "status": "done" if not completeness_issues else "incomplete",
+        "structured_success": not completeness_issues,
+        "completeness_issues": completeness_issues,
         "wall_clock_seconds": round(time.monotonic() - started, 6),
         "final_decision": final_state.get("final_decision", "unknown"),
         "ranking_result": _jsonable(final_state.get("ranking_result")),
@@ -1324,14 +1635,14 @@ async def run_campaign(
         raise RuntimeError(
             "Every staging OpenRouter model must pass the strict schema and privacy preflight."
         )
-    provider_pins = dict(preflight.get("provider_pins") or {})
+    provider_routes = dict(preflight.get("provider_routes") or {})
     required_openrouter_models = {
         "moonshotai/kimi-k2.6",
         "z-ai/glm-5.2",
         "deepseek/deepseek-v4-flash",
     }
-    if not required_openrouter_models.issubset(provider_pins):
-        raise RuntimeError("A primary experiment arm lacks a compliant provider pin.")
+    if not required_openrouter_models.issubset(provider_routes):
+        raise RuntimeError("A primary experiment arm lacks a compliant provider route.")
 
     companies: dict[str, dict[str, Any]] = {}
     for entry in manifest.get("companies") or []:
@@ -1359,7 +1670,7 @@ async def run_campaign(
         run_path = run_dir / f"{int(item['sequence']):03d}-{_safe_component(company_id)}-{item_profile_id}.json"
         if run_path.is_file():
             continue
-        policy = _pinned_profile_policy(item_profile_id, provider_pins)
+        policy = _qualified_profile_policy(item_profile_id, provider_routes)
         frozen = companies[company_id]
         try:
             result = evaluator(
@@ -1529,7 +1840,10 @@ def _spearman(left: Sequence[float], right: Sequence[float]) -> float:
     right_ranks = _rank_values(right)
     left_mean = _mean(left_ranks)
     right_mean = _mean(right_ranks)
-    numerator = sum((a - left_mean) * (b - right_mean) for a, b in zip(left_ranks, right_ranks))
+    numerator = sum(
+        (a - left_mean) * (b - right_mean)
+        for a, b in zip(left_ranks, right_ranks, strict=True)
+    )
     denominator = math.sqrt(
         sum((a - left_mean) ** 2 for a in left_ranks)
         * sum((b - right_mean) ** 2 for b in right_ranks)
@@ -1774,6 +2088,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     smoke.add_argument("--output-dir", required=True)
 
+    qualify = subparsers.add_parser(
+        "qualify-routes",
+        help="Run a low-cost reliability soak against approved pinned ZDR routes.",
+    )
+    qualify.add_argument("--output-dir", required=True)
+    qualify.add_argument("--calls-per-case", type=int, default=2)
+    qualify.add_argument("--concurrency", type=int, default=2)
+
     preflight = subparsers.add_parser("preflight", help="Verify strict ZDR-capable provider routes.")
     preflight.add_argument("--campaign-dir", required=True)
     preflight.add_argument("--conformance-calls", type=int, default=2)
@@ -1810,6 +2132,13 @@ async def async_main(argv: Sequence[str] | None = None) -> dict[str, Any]:
     if args.command == "smoke":
         _require_staging()
         return await run_openrouter_smoke(Path(args.output_dir))
+    if args.command == "qualify-routes":
+        _require_staging()
+        return await run_openrouter_route_qualification(
+            Path(args.output_dir),
+            calls_per_case=args.calls_per_case,
+            concurrency=args.concurrency,
+        )
     if args.command == "preflight":
         _require_staging()
         return await run_openrouter_preflight(

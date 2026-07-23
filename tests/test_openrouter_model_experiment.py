@@ -206,7 +206,7 @@ def test_named_profiles_resolve_immutable_seven_stage_policies(monkeypatch) -> N
     }
     assert hybrid.openrouter_routing == {
         "require_parameters": True,
-        "data_collection": "deny",
+        "data_collection": "allow",
         "zdr": True,
     }
 

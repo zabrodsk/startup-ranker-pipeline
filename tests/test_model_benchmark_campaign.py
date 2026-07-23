@@ -19,13 +19,13 @@ from agent.model_benchmark import (  # noqa: E402
     PRIMARY_PROFILE_IDS,
     approve_manifest,
     build_run_schedule,
+    capture_specter_corpus,
     evaluate_candidate_gates,
     freeze_corpus,
-    capture_specter_corpus,
     prepare_staging_corpus,
     run_campaign,
-    run_openrouter_smoke,
     run_openrouter_preflight,
+    run_openrouter_smoke,
     verify_manifest,
 )
 
@@ -231,7 +231,7 @@ def test_candidate_gates_treat_quality_as_a_hard_gate() -> None:
     assert next(item for item in failing["gates"] if item["id"] == "quality")["passed"] is False
 
 
-def test_preflight_requires_consistent_zdr_provider_pin(tmp_path: Path) -> None:
+def test_preflight_requires_qualified_zdr_provider_routes(tmp_path: Path) -> None:
     companies = [
         {
             "company_id": f"company-{index}",
@@ -251,7 +251,7 @@ def test_preflight_requires_consistent_zdr_provider_pin(tmp_path: Path) -> None:
         observed_routing.append(dict(routing))
         return {
             "structured_ok": True,
-            "selected_provider": "DeepInfra",
+            "selected_provider": routing["only"][0],
             "generation_id": f"{model}-{attempt}",
         }
 
@@ -265,7 +265,7 @@ def test_preflight_requires_consistent_zdr_provider_pin(tmp_path: Path) -> None:
 
     assert report["eligible"] is True
     assert len(report["models"]) == 4
-    assert set(report["provider_pins"]) == {
+    assert set(report["provider_routes"]) == {
         "moonshotai/kimi-k2.6",
         "z-ai/glm-5.2",
         "deepseek/deepseek-v4-flash",
@@ -273,8 +273,9 @@ def test_preflight_requires_consistent_zdr_provider_pin(tmp_path: Path) -> None:
     }
     assert all(model["routing_policy"]["zdr"] is True for model in report["models"])
     assert observed_routing
-    assert all(item["only"] == ["deepinfra"] for item in observed_routing)
-    assert all(item["allow_fallbacks"] is False for item in observed_routing)
+    assert all(item["data_collection"] == "allow" for item in observed_routing)
+    assert all(item["order"] == item["only"] for item in observed_routing)
+    assert all(item["allow_fallbacks"] is True for item in observed_routing)
 
 
 def test_smoke_covers_every_distinct_profile_reasoning_and_sampling_mode(tmp_path: Path, monkeypatch) -> None:
@@ -286,7 +287,7 @@ def test_smoke_covers_every_distinct_profile_reasoning_and_sampling_mode(tmp_pat
         observed.append((dict(case), dict(routing)))
         return {
             "structured_ok": True,
-            "selected_provider": "DeepInfra",
+            "selected_provider": routing["only"][0],
             "generation_id": f"gen-{case['id']}",
         }
 
@@ -302,8 +303,9 @@ def test_smoke_covers_every_distinct_profile_reasoning_and_sampling_mode(tmp_pat
         "deepseek-high-refinement",
         "deepseek-pro-high-admin",
     }
-    assert all(routing["only"] == ["deepinfra"] for _, routing in observed)
-    assert all(routing["allow_fallbacks"] is False for _, routing in observed)
+    assert all(routing["data_collection"] == "allow" for _, routing in observed)
+    assert all(routing["order"] == routing["only"] for _, routing in observed)
+    assert all(routing["allow_fallbacks"] is True for _, routing in observed)
     assert (tmp_path / "smoke.json").is_file()
 
 
@@ -325,7 +327,7 @@ def test_campaign_runner_writes_blinded_non_persisted_outputs(tmp_path: Path, mo
     approve_manifest(tmp_path, approved_by="Dusan")
 
     async def fake_preflight(model, attempt, routing):
-        return {"structured_ok": True, "selected_provider": "DeepInfra"}
+        return {"structured_ok": True, "selected_provider": routing["only"][0]}
 
     asyncio.run(run_openrouter_preflight(tmp_path, invoke_model=fake_preflight))
     seen_pinned = []
@@ -380,7 +382,10 @@ def test_campaign_runner_writes_blinded_non_persisted_outputs(tmp_path: Path, mo
     assert review_output["questions_answers"] == [{"question": "Q", "answer": "A"}]
     assert review_output["final_arguments"] == [{"content": "Argument", "score": 80}]
     assert seen_pinned
-    assert all(item["allow_fallbacks"] is False and len(item["only"]) == 1 for item in seen_pinned)
+    assert all(
+        item["allow_fallbacks"] is True and item["order"] == item["only"]
+        for item in seen_pinned
+    )
 
 
 def test_capture_specter_corpus_fetches_deep_team_once_and_freezes_raw_responses(tmp_path: Path) -> None:
