@@ -434,6 +434,90 @@ _MAX_ATTEMPTS = 3
 _BACKOFF_BASE_SEC = 1.5
 
 
+def _financials_from_funding_rounds(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Specter's split funding response to RDI's legacy schema."""
+    raw_rounds = payload.get("funding_rounds")
+    if not isinstance(raw_rounds, list):
+        raw_rounds = []
+
+    rounds: list[dict[str, Any]] = []
+    investor_names: list[str] = []
+    seen_investors: set[str] = set()
+    for raw_round in raw_rounds:
+        if not isinstance(raw_round, dict):
+            continue
+        raw_investors = raw_round.get("investors")
+        investors = (
+            [dict(item) for item in raw_investors if isinstance(item, dict)]
+            if isinstance(raw_investors, list)
+            else []
+        )
+        for investor in investors:
+            name = investor.get("name")
+            if not isinstance(name, str):
+                continue
+            clean_name = name.strip()
+            if clean_name and clean_name not in seen_investors:
+                seen_investors.add(clean_name)
+                investor_names.append(clean_name)
+        rounds.append(
+            {
+                "funding_round_name": raw_round.get("name")
+                or raw_round.get("investment_type"),
+                "date": raw_round.get("announced_on"),
+                "raised": raw_round.get("raised_amount_usd"),
+                "lead_investors_partners": investors,
+                "pre_money_valuation": raw_round.get("pre_money_valuation_usd"),
+                "post_money_valuation": raw_round.get("post_money_valuation_usd"),
+            }
+        )
+
+    reported_total = payload.get("total")
+    round_count = (
+        reported_total
+        if isinstance(reported_total, int) and not isinstance(reported_total, bool)
+        else len(rounds)
+    )
+    financials: dict[str, Any] = {
+        "number_of_funding_rounds": round_count,
+        "funding_rounds": rounds,
+    }
+
+    if investor_names:
+        financials["number_of_investors"] = len(investor_names)
+        financials["investors"] = investor_names
+
+    if rounds:
+        latest = rounds[0]
+        if latest.get("raised") is not None:
+            financials["last_funding_amount"] = latest["raised"]
+        if latest.get("date"):
+            financials["last_funding_date"] = latest["date"]
+        if latest.get("funding_round_name"):
+            financials["last_funding_type"] = latest["funding_round_name"]
+
+        latest_valuation = next(
+            (
+                item.get("post_money_valuation")
+                for item in rounds
+                if item.get("post_money_valuation") is not None
+            ),
+            None,
+        )
+        if latest_valuation is not None:
+            financials["post_money_valuation"] = latest_valuation
+
+        raised_amounts = [item.get("raised") for item in rounds]
+        has_complete_page = round_count <= len(rounds)
+        if has_complete_page and all(
+            isinstance(amount, (int, float)) and not isinstance(amount, bool)
+            for amount in raised_amounts
+        ):
+            financials["total_funding_amount"] = sum(raised_amounts)
+
+    return financials
+
+
 class SpecterMCPClient:
     """Thin Specter MCP client over Streamable HTTP."""
 
@@ -460,9 +544,18 @@ class SpecterMCPClient:
         )
 
     def get_company_financials(self, external_company_id: str) -> dict[str, Any]:
-        return self._call_tool(
-            "get_company_financials", {"external_company_id": external_company_id}
+        """Return the legacy financial shape from Specter's split funding API.
+
+        Specter removed ``get_company_financials`` in favor of narrower tools.
+        Funding rounds contain every field currently consumed by RDI's
+        ``Funding & Investors`` evidence builder, so normalize that response at
+        this boundary and keep the rest of the pipeline stable.
+        """
+        payload = self._call_tool(
+            "get_company_funding_rounds",
+            {"external_company_id": external_company_id, "limit": 50},
         )
+        return _financials_from_funding_rounds(payload)
 
     def get_person_profile(self, external_person_id: str) -> dict[str, Any]:
         return self._call_tool(
