@@ -143,11 +143,11 @@ On any failure (no URL, MCP error, disambiguation rejection,
 A second toggle "Fetch deep team profiles (Specter)" (default OFF) flips
 `fetch_full_team`:
 
-- **OFF** — 3 MCP calls per company (find + profile + intelligence +
-  financials). Founders come from the `intelligence.founders` summary
-  list. Recommended for pitch-deck mode (deck usually carries founder
-  bios).
-- **ON** — Same 3 calls + one `get_person_profile` per founder/key
+- **OFF** — 4 MCP calls per company (`find_company`, `get_company_profile`,
+  `get_company_intelligence`, and `get_company_funding_rounds`). Founders come
+  from the `intelligence.founders` summary list. Recommended for pitch-deck
+  mode (deck usually carries founder bios).
+- **ON** — Same 4 calls + one `get_person_profile` per founder/key
   person. Adds ~60% more MCP calls but yields full LinkedIn-grade
   career history, education, and seniority per person. Recommended for
   URL-list mode where there is no deck context.
@@ -193,7 +193,8 @@ See `.env.example` and the README's environment table.
 
 - **NEW** `src/agent/ingest/specter_mcp_client.py` — OAuth token
   manager, MCP tool wrappers (`find_company`, `get_company_profile`,
-  `get_company_intelligence`, `get_company_financials`,
+  `get_company_intelligence`, `get_company_funding_rounds` (normalized through
+  the compatibility `get_company_financials` method),
   `get_person_profile`), chunk builders, `fetch_specter_company()`
   with brand-stem fallback.
 - **NEW** `src/agent/ingest/specter_augmentation.py` —

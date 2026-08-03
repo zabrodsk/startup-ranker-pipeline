@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed — Specter MCP financial tool compatibility (2026-08-03)
+
+- Specter removed the legacy `get_company_financials` MCP tool and replaced it
+  with split finance tools. The client now calls `get_company_funding_rounds`
+  and normalizes the response into the existing evidence schema, restoring URL
+  quality preflight and worker enrichment without increasing per-company MCP
+  call count.
+
 ### Fixed — production persistence (2026-04-30)
 
 - **Missing non-partial UNIQUE constraint on `companies.company_key`** —

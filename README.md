@@ -180,12 +180,13 @@ subsequent token rotation the new refresh token is persisted to the
 the session reaches its bounded maximum lifetime.
 
 **Cost control** — The deep-team toggle (UI: "Fetch deep team profiles")
-controls per-founder profile fan-out. Default OFF: ~3 MCP calls per
-company (find + profile + intelligence + financials). Default ON: same
-plus one `get_person_profile` per founder/key person — adds ~60% more
-calls and yields full LinkedIn-grade career history. Recommended OFF for
-pitch-deck mode (deck usually carries founder bios) and ON for URL-list
-mode where there is no deck context.
+controls per-founder profile fan-out. Default OFF: 4 MCP calls per company
+(`find_company`, `get_company_profile`, `get_company_intelligence`, and
+`get_company_funding_rounds`). Default ON: the same calls plus one
+`get_person_profile` per founder/key person — adds ~60% more calls and yields
+full LinkedIn-grade career history. Recommended OFF for pitch-deck mode (deck
+usually carries founder bios) and ON for URL-list mode where there is no deck
+context.
 
 ### Railway deployment layout
 
