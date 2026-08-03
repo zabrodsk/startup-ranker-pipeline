@@ -365,7 +365,13 @@ def _is_exact_gpt5_model(model: str) -> bool:
 
 
 def _is_reasoning_effort_model(model: str) -> bool:
-    return (model or "").strip() in {"gpt-5.2", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"}
+    return (model or "").strip() in {
+        "gpt-5.2",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
+        "gpt-5.6-luna",
+    }
 
 
 def _resolve_openai_request_settings(

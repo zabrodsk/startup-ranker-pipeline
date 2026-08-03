@@ -18,6 +18,7 @@ if str(ROOT / "src") not in sys.path:
 
 from agent.llm_catalog import (
     available_models_payload,
+    pricing_catalog_payload,
     validate_chat_requested_selection,
     validate_requested_selection,
 )
@@ -137,6 +138,7 @@ def test_available_models_payload_marks_availability(monkeypatch) -> None:
         "gemini-2.5-flash-lite",
         "gemini-3.1-pro-preview",
         "claude-haiku-4-5-20251001",
+        "gpt-5.6-luna",
         "gpt-5.4-nano",
         "gpt-5.4-mini",
         "gpt-5",
@@ -170,6 +172,23 @@ def test_available_models_payload_marks_availability(monkeypatch) -> None:
     assert gemini["tier"] == "budget"
     assert next(item for item in models if item["model"] == "gpt-5")["supports_creativity_control"] is True
     assert next(item for item in models if item["model"] == "o4-mini")["supports_creativity_control"] is False
+    luna = next(item for item in models if item["model"] == "gpt-5.6-luna")
+    assert pricing_catalog_payload()["openai:gpt-5.6-luna"]["pricing"] == {
+        "input_per_million_tokens_usd": 0.20,
+        "output_per_million_tokens_usd": 1.20,
+    }
+    assert luna["supports_structured_output"] is True
+    assert luna["supports_temperature_control"] is True
+    assert luna["supports_reasoning_effort_control"] is True
+    assert luna["temperature_requires_reasoning_none"] is True
+    assert luna["reasoning_effort_options"] == [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ]
     gpt54_mini = next(item for item in models if item["model"] == "gpt-5.4-mini")
     assert gpt54_mini["supports_temperature_control"] is True
     assert gpt54_mini["supports_reasoning_effort_control"] is True
@@ -189,6 +208,7 @@ def test_validate_requested_selection_accepts_new_catalog_models(monkeypatch) ->
     assert validate_requested_selection("openai", "gpt-5.4") is not None
     assert validate_requested_selection("openai", "gpt-5.4-mini") is not None
     assert validate_requested_selection("openai", "gpt-5.4-nano") is not None
+    assert validate_requested_selection("openai", "gpt-5.6-luna") is not None
 
 
 def test_build_pipeline_policy_resolves_cheap_and_premium(monkeypatch) -> None:
@@ -338,29 +358,49 @@ def test_phase_model_defaults_follow_new_analysis_recommendations(monkeypatch) -
 
     assert defaults["decomposition"] == {
         "provider": "openai",
-        "model": "gpt-5.4-mini",
-        "label": "GPT-5.4 mini",
+        "model": "gpt-5.6-luna",
+        "label": "GPT-5.6 Luna",
     }
     assert defaults["answering"] == {
         "provider": "openai",
-        "model": "gpt-5.4-nano",
-        "label": "GPT-5.4 nano",
+        "model": "gpt-5.6-luna",
+        "label": "GPT-5.6 Luna",
     }
     assert defaults["generation"] == {
         "provider": "openai",
-        "model": "gpt-5.4-mini",
-        "label": "GPT-5.4 mini",
+        "model": "gpt-5.6-luna",
+        "label": "GPT-5.6 Luna",
     }
     assert defaults["evaluation"] == {
         "provider": "openai",
-        "model": "gpt-5.4-mini",
-        "label": "GPT-5.4 mini",
+        "model": "gpt-5.6-luna",
+        "label": "GPT-5.6 Luna",
     }
     assert defaults["ranking"] == {
         "provider": "openai",
-        "model": "gpt-5.4-mini",
-        "label": "GPT-5.4 mini",
+        "model": "gpt-5.6-luna",
+        "label": "GPT-5.6 Luna",
     }
+
+
+def test_resolve_openai_phase_sampling_uses_luna_stage_policy() -> None:
+    expected = {
+        "decomposition": {"temperature": None, "reasoning_effort": "low"},
+        "answering": {"temperature": None, "reasoning_effort": "low"},
+        "generation_pro": {"temperature": 0.7, "reasoning_effort": "none"},
+        "generation_contra": {"temperature": 0.7, "reasoning_effort": "none"},
+        "critique": {"temperature": None, "reasoning_effort": "low"},
+        "evaluation": {"temperature": None, "reasoning_effort": "medium"},
+        "refinement": {"temperature": None, "reasoning_effort": "low"},
+        "ranking_dimension_score": {"temperature": None, "reasoning_effort": "high"},
+        "ranking_upside_score": {"temperature": 0.7, "reasoning_effort": "none"},
+        "ranking_executive_summary": {"temperature": None, "reasoning_effort": "high"},
+    }
+
+    assert {
+        stage: resolve_openai_phase_sampling("gpt-5.6-luna", stage, 0.0)
+        for stage in expected
+    } == expected
 
 
 def test_resolve_openai_phase_sampling_uses_low_reasoning_for_gpt54_answering_auto() -> None:
@@ -652,6 +692,27 @@ def test_create_llm_maps_gpt54_mini_decomposition_to_temperature_plus_reasoning(
             llm_module.create_llm(temperature=0.2)
 
     assert called == {"model": "gpt-5.4-mini", "temperature": 0.5, "reasoning_effort": "none"}
+
+
+def test_create_llm_maps_luna_decomposition_to_low_reasoning_without_temperature(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    called = {}
+
+    def fake_openai(model, temperature, timeout_s, max_retries, reasoning_effort=None):
+        called["model"] = model
+        called["temperature"] = temperature
+        called["reasoning_effort"] = reasoning_effort
+        return object()
+
+    monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable, **kwargs: runnable)
+
+    with use_run_context(llm_selection={"provider": "openai", "model": "gpt-5.6-luna"}):
+        with use_stage_context("decomposition"):
+            llm_module.create_llm(temperature=0.2)
+
+    assert called == {"model": "gpt-5.6-luna", "temperature": None, "reasoning_effort": "low"}
 
 
 def test_create_llm_ignores_selection_creativity_for_unsupported_reasoning_model(monkeypatch) -> None:
@@ -1424,8 +1485,8 @@ def test_start_analysis_defaults_to_phase_model_policy_when_no_selection_is_prov
         assert cache["quality_tier"] is None
         assert cache["run_config"]["phase_models"] == expected_defaults
         assert cache["run_config"]["llm"] == (
-            "Per-phase · D GPT-5.4 mini · A GPT-5.4 nano"
-            " · G GPT-5.4 mini · E GPT-5.4 mini · R GPT-5.4 mini"
+            "Per-phase · D GPT-5.6 Luna · A GPT-5.6 Luna"
+            " · G GPT-5.6 Luna · E GPT-5.6 Luna · R GPT-5.6 Luna"
         )
 
 

@@ -374,6 +374,7 @@ def _first_available_entry(
 
 def default_phase_model_selections() -> dict[UserSelectablePhase, dict[str, Any]]:
     decomposition = _first_available_entry(
+        ("openai", "gpt-5.6-luna"),
         ("openai", "gpt-5.4-mini"),
         ("gemini", "gemini-3.1-pro-preview"),
         ("gemini", "gemini-2.5-flash"),
@@ -381,6 +382,7 @@ def default_phase_model_selections() -> dict[UserSelectablePhase, dict[str, Any]
         ("openai", "gpt-5"),
     )
     answering = _first_available_entry(
+        ("openai", "gpt-5.6-luna"),
         ("openai", "gpt-5.4-nano"),
         ("gemini", "gemini-2.5-flash"),
         ("gemini", "gemini-3.1-flash-lite-preview"),
@@ -388,18 +390,21 @@ def default_phase_model_selections() -> dict[UserSelectablePhase, dict[str, Any]
         ("openai", "gpt-5.4-mini"),
     )
     generation = _first_available_entry(
+        ("openai", "gpt-5.6-luna"),
         ("openai", "gpt-5.4-mini"),
         ("openai", "gpt-5.2"),
         ("openai", "gpt-5"),
         ("gemini", "gemini-3.1-pro-preview"),
     )
     evaluation = _first_available_entry(
+        ("openai", "gpt-5.6-luna"),
         ("openai", "gpt-5.4-mini"),
         ("openai", "o4-mini"),
         ("openai", "gpt-4.1-mini"),
         ("anthropic", "claude-haiku-4-5-20251001"),
     )
     ranking = _first_available_entry(
+        ("openai", "gpt-5.6-luna"),
         ("openai", "gpt-5.4-mini"),
         ("openai", "gpt-5.2"),
         ("openai", "gpt-5"),
@@ -663,19 +668,33 @@ def resolve_openai_phase_sampling(
     model_norm = (model or "").strip()
     stage = (stage_name or "").strip().lower()
 
-    if model_norm in {"gpt-5.4-mini", "gpt-5.4-nano"}:
-        stage_map: dict[str, dict[str, float | str | None]] = {
-            "decomposition": {"temperature": 0.5, "reasoning_effort": "none"},
-            "answering": {"temperature": None, "reasoning_effort": "low"},
-            "generation_pro": {"temperature": 0.7, "reasoning_effort": "none"},
-            "generation_contra": {"temperature": 0.7, "reasoning_effort": "none"},
-            "critique": {"temperature": 0.5, "reasoning_effort": "none"},
-            "evaluation": {"temperature": None, "reasoning_effort": "medium"},
-            "refinement": {"temperature": 0.7, "reasoning_effort": "none"},
-            "ranking_dimension_score": {"temperature": None, "reasoning_effort": "high"},
-            "ranking_upside_score": {"temperature": 0.7, "reasoning_effort": "none"},
-            "ranking_executive_summary": {"temperature": None, "reasoning_effort": "high"},
-        }
+    if model_norm in {"gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.4-nano"}:
+        if model_norm == "gpt-5.6-luna":
+            stage_map: dict[str, dict[str, float | str | None]] = {
+                "decomposition": {"temperature": None, "reasoning_effort": "low"},
+                "answering": {"temperature": None, "reasoning_effort": "low"},
+                "generation_pro": {"temperature": 0.7, "reasoning_effort": "none"},
+                "generation_contra": {"temperature": 0.7, "reasoning_effort": "none"},
+                "critique": {"temperature": None, "reasoning_effort": "low"},
+                "evaluation": {"temperature": None, "reasoning_effort": "medium"},
+                "refinement": {"temperature": None, "reasoning_effort": "low"},
+                "ranking_dimension_score": {"temperature": None, "reasoning_effort": "high"},
+                "ranking_upside_score": {"temperature": 0.7, "reasoning_effort": "none"},
+                "ranking_executive_summary": {"temperature": None, "reasoning_effort": "high"},
+            }
+        else:
+            stage_map = {
+                "decomposition": {"temperature": 0.5, "reasoning_effort": "none"},
+                "answering": {"temperature": None, "reasoning_effort": "low"},
+                "generation_pro": {"temperature": 0.7, "reasoning_effort": "none"},
+                "generation_contra": {"temperature": 0.7, "reasoning_effort": "none"},
+                "critique": {"temperature": 0.5, "reasoning_effort": "none"},
+                "evaluation": {"temperature": None, "reasoning_effort": "medium"},
+                "refinement": {"temperature": 0.7, "reasoning_effort": "none"},
+                "ranking_dimension_score": {"temperature": None, "reasoning_effort": "high"},
+                "ranking_upside_score": {"temperature": 0.7, "reasoning_effort": "none"},
+                "ranking_executive_summary": {"temperature": None, "reasoning_effort": "high"},
+            }
         resolved = dict(
             stage_map.get(
                 stage,

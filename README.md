@@ -337,7 +337,7 @@ MODEL_NAME=gpt-5.4-mini
 OPENAI_API_KEY=your_openai_api_key_here
 ```
 
-Available OpenAI models in the UI: `gpt-5.4-nano`, `gpt-5.4-mini`, `gpt-5`, `gpt-4.1-mini`, `o4-mini`, `gpt-5.2`, `gpt-5.4`
+Available OpenAI models in the UI: `gpt-5.6-luna`, `gpt-5.4-nano`, `gpt-5.4-mini`, `gpt-5`, `gpt-4.1-mini`, `o4-mini`, `gpt-5.2`, `gpt-5.4`
 
 **Example for OpenRouter:**
 
