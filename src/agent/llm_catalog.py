@@ -58,6 +58,21 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
     ),
     ModelCatalogEntry(
         provider="openai",
+        model="gpt-5.6-luna",
+        label="GPT-5.6 Luna",
+        summary="Efficient high-volume GPT-5.6",
+        tier="budget",
+        pricing=ModelPricing(
+            input_per_million_tokens_usd=0.20,
+            output_per_million_tokens_usd=1.20,
+        ),
+        required_env=("OPENAI_API_KEY",),
+        supports_reasoning_effort_control=True,
+        reasoning_effort_options=("none", "low", "medium", "high", "xhigh", "max"),
+        temperature_requires_reasoning_none=True,
+    ),
+    ModelCatalogEntry(
+        provider="openai",
         model="gpt-5.4-nano",
         label="GPT-5.4 nano",
         summary="Cheapest GPT-5.4",

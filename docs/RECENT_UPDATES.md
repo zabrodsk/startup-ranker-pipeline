@@ -23,6 +23,15 @@ Specter header sniffing, Rockaway branding) are preserved below.
 
 ---
 
+## GPT-5.6 Luna Pipeline Defaults (2026-08-03)
+
+The New Analysis pipeline now defaults every user-facing phase to
+`gpt-5.6-luna`. Phase-aware sampling keeps creative generation at temperature
+`0.7`, while evidence and decision stages use explicit reasoning effort from
+`low` through `high` and omit temperature.
+
+---
+
 ## Production Persistence Fix (2026-04-30)
 
 A pre-existing production bug surfaced during the Specter MCP cutover and
