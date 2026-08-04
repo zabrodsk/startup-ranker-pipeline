@@ -22,6 +22,7 @@ from web.analysis_quality import (
     normalize_company_display_name,
     safe_company_slug_for_key,
 )
+from web.leadgen_domain import normalize_company_domain
 
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
@@ -108,13 +109,9 @@ def _record_persist_step_failure(
 
 
 def _normalize_company_key(name: str | None, domain: str | None = None, slug: str | None = None) -> str:
-    base = (domain or "").strip().lower()
+    base = normalize_company_domain(domain or "")
     if base:
-        base = re.sub(r"^https?://", "", base)
-        base = re.sub(r"^www\.", "", base)
-        base = base.strip("/")
-        if base:
-            return f"domain:{base}"
+        return f"domain:{base}"
 
     slug_base = (slug or "").strip().lower()
     if slug_base:
@@ -123,6 +120,19 @@ def _normalize_company_key(name: str | None, domain: str | None = None, slug: st
     text = (name or "").strip().lower()
     text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
     return f"name:{text or 'unknown'}"
+
+
+def _machine_source_company_key(run_config: dict[str, Any]) -> str | None:
+    """Return the immutable requested domain for machine-originated runs."""
+    if run_config.get("source") != "leadgen_machine":
+        return None
+    machine_context = run_config.get("leadgen_machine")
+    if not isinstance(machine_context, dict):
+        return None
+    requested_domain = normalize_company_domain(
+        str(machine_context.get("canonical_domain") or "")
+    )
+    return f"domain:{requested_domain}" if requested_domain else None
 
 
 def _record_company_identity_guardrail(
@@ -808,6 +818,7 @@ def _persist_company_analysis_row(
     ranking_result = company_payload.get("ranking_result") or {}
     summary_row = ((company_payload.get("summary_rows") or [{}]) or [{}])[0]
     dimension_fields = _company_run_dimension_fields(company_payload, summary_row=summary_row)
+    source_company_key = _machine_source_company_key(run_config)
 
     company_id = _upsert_company(
         client,
@@ -914,29 +925,32 @@ def _persist_company_analysis_row(
         )
 
     try:
+        company_run_payload = {
+            "company_id": company_id,
+            "job_id": job_uuid,
+            "job_id_legacy": job_id_legacy,
+            "company_key": company_key,
+            "company_lookup_key": company_lookup_key,
+            "company_name": company_name,
+            "startup_slug": slug,
+            "input_order": summary_row.get("specter_input_order"),
+            "decision": company_payload.get("decision"),
+            "total_score": company_payload.get("total_score"),
+            "composite_score": ranking_result.get("composite_score"),
+            **dimension_fields,
+            "bucket": ranking_result.get("bucket"),
+            "mode": run_config.get("input_mode", "pitchdeck"),
+            "run_created_at": datetime.now(timezone.utc).isoformat(),
+            "result_payload": _serialize(company_payload),
+            # Duplicate-run gate (Sprint 3): hash of the evidence inputs,
+            # threaded by the caller at gate/dispatch time; None is fine.
+            "evidence_fingerprint": result_row.get("evidence_fingerprint") or None,
+            **_extract_started_by_fields(run_config),
+        }
+        if source_company_key is not None:
+            company_run_payload["source_company_key"] = source_company_key
         client.table("company_runs").upsert(
-            {
-                "company_id": company_id,
-                "job_id": job_uuid,
-                "job_id_legacy": job_id_legacy,
-                "company_key": company_key,
-                "company_lookup_key": company_lookup_key,
-                "company_name": company_name,
-                "startup_slug": slug,
-                "input_order": summary_row.get("specter_input_order"),
-                "decision": company_payload.get("decision"),
-                "total_score": company_payload.get("total_score"),
-                "composite_score": ranking_result.get("composite_score"),
-                **dimension_fields,
-                "bucket": ranking_result.get("bucket"),
-                "mode": run_config.get("input_mode", "pitchdeck"),
-                "run_created_at": datetime.now(timezone.utc).isoformat(),
-                "result_payload": _serialize(company_payload),
-                # Duplicate-run gate (Sprint 3): hash of the evidence inputs,
-                # threaded by the caller at gate/dispatch time; None is fine.
-                "evidence_fingerprint": result_row.get("evidence_fingerprint") or None,
-                **_extract_started_by_fields(run_config),
-            },
+            company_run_payload,
             on_conflict="job_id_legacy,company_key",
         ).execute()
     except Exception as exc:
@@ -1162,12 +1176,16 @@ def upsert_job(
         "instructions": rc.get("instructions"),
         "use_web_search": rc.get("use_web_search", False),
         "run_config": _serialize(rc),
-        "app_version": vv.get("app_version"),
-        "prompt_version": vv.get("prompt_version"),
-        "pipeline_version": vv.get("pipeline_version"),
-        "schema_version": vv.get("schema_version"),
         **started_by,
     }
+    for version_field in (
+        "app_version",
+        "prompt_version",
+        "pipeline_version",
+        "schema_version",
+    ):
+        if vv.get(version_field) is not None:
+            payload[version_field] = vv[version_field]
 
     try:
         result = client.table("jobs").upsert(payload, on_conflict="job_id_legacy").execute()
@@ -1773,6 +1791,112 @@ def reject_leadgen_intake(
     except Exception as exc:
         _log_supabase_error("reject_leadgen_intake", "leadgen_intake_batches,leadgen_intake_leads", exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# LeadGen machine lifecycle (all mutations are atomic database RPCs)
+# ---------------------------------------------------------------------------
+
+def _machine_rpc_object(
+    function_name: str,
+    params: dict[str, Any],
+) -> dict[str, Any] | None:
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        data = client.rpc(function_name, _serialize(params)).execute().data
+        if isinstance(data, dict):
+            return _serialize(data)
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            return _serialize(data[0])
+        return None
+    except Exception as exc:
+        _log_supabase_error(
+            function_name,
+            "leadgen_machine_intakes,leadgen_machine_events",
+            exc,
+        )
+        return None
+
+
+def create_machine_intake(**record: Any) -> dict[str, Any] | None:
+    """Atomically create or replay one machine lifecycle intake."""
+    return _machine_rpc_object(
+        "create_leadgen_machine_intake",
+        {"p_record": record},
+    )
+
+
+def reserve_machine_start(
+    *,
+    intake_id: str,
+    target_environment: str,
+    job_id: str,
+    actor: str,
+    global_limit: int,
+) -> dict[str, Any] | None:
+    """Atomically fence one start and enforce the environment-wide start limit."""
+    return _machine_rpc_object(
+        "reserve_leadgen_machine_start",
+        {
+            "p_intake_id": intake_id,
+            "p_target_environment": target_environment,
+            "p_job_id": job_id,
+            "p_actor": actor,
+            "p_global_limit": global_limit,
+        },
+    )
+
+
+def release_machine_start(
+    *,
+    intake_id: str,
+    job_id: str,
+    actor: str,
+) -> dict[str, Any] | None:
+    """Atomically release a fence after a proven definite no-start outcome."""
+    return _machine_rpc_object(
+        "release_leadgen_machine_start",
+        {
+            "p_intake_id": intake_id,
+            "p_job_id": job_id,
+            "p_actor": actor,
+        },
+    )
+
+
+def finalize_machine_start(
+    *,
+    intake_id: str,
+    job_id: str,
+    lifecycle_state: str,
+    safe_error_code: str | None,
+    safe_error_class: str | None,
+    safe_error_message: str | None,
+    actor: str,
+) -> dict[str, Any] | None:
+    """Persist a known or uncertain remote-start outcome against its fence."""
+    return _machine_rpc_object(
+        "finalize_leadgen_machine_start",
+        {
+            "p_intake_id": intake_id,
+            "p_job_id": job_id,
+            "p_lifecycle_state": lifecycle_state,
+            "p_safe_error_code": safe_error_code,
+            "p_safe_error_class": safe_error_class,
+            "p_safe_error_message": safe_error_message,
+            "p_actor": actor,
+        },
+    )
+
+
+def load_machine_lifecycle(intake_id: str) -> dict[str, Any] | None:
+    """Load one correlated lifecycle snapshot from durable RDI persistence."""
+    return _machine_rpc_object(
+        "get_leadgen_machine_lifecycle",
+        {"p_intake_id": intake_id},
+    )
 
 
 def list_claimable_specter_worker_jobs(limit: int = 10) -> list[dict[str, Any]]:
@@ -2583,7 +2707,7 @@ def _load_company_run_rows_for_job(client: Client, job_id_legacy: str) -> list[d
         rows = (
             client.table("company_runs")
             .select(
-                "company_key, company_lookup_key, company_name, startup_slug, job_id_legacy, decision, total_score, "
+                "company_key, source_company_key, company_lookup_key, company_name, startup_slug, job_id_legacy, decision, total_score, "
                 "composite_score, strategy_fit_score, team_score, upside_score, bucket, mode, input_order, "
                 "run_created_at, created_at, result_payload"
             )
