@@ -402,7 +402,7 @@ def test_phase_model_defaults_follow_new_analysis_recommendations(monkeypatch) -
 
 def test_resolve_openai_phase_sampling_uses_luna_stage_policy() -> None:
     expected = {
-        "decomposition": {"temperature": None, "reasoning_effort": "low"},
+        "decomposition": {"temperature": None, "reasoning_effort": "medium"},
         "answering": {"temperature": None, "reasoning_effort": "low"},
         "generation_pro": {"temperature": 0.7, "reasoning_effort": "none"},
         "generation_contra": {"temperature": 0.7, "reasoning_effort": "none"},
@@ -731,7 +731,7 @@ def test_create_llm_maps_gpt54_mini_decomposition_to_temperature_plus_reasoning(
     assert called == {"model": "gpt-5.4-mini", "temperature": 0.5, "reasoning_effort": "none"}
 
 
-def test_create_llm_maps_luna_decomposition_to_low_reasoning_without_temperature(monkeypatch) -> None:
+def test_create_llm_maps_luna_decomposition_to_medium_reasoning_without_temperature(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
 
     called = {}
@@ -749,7 +749,7 @@ def test_create_llm_maps_luna_decomposition_to_low_reasoning_without_temperature
         with use_stage_context("decomposition"):
             llm_module.create_llm(temperature=0.2)
 
-    assert called == {"model": "gpt-5.6-luna", "temperature": None, "reasoning_effort": "low"}
+    assert called == {"model": "gpt-5.6-luna", "temperature": None, "reasoning_effort": "medium"}
 
 
 def test_create_llm_maps_muse_decomposition_to_meta_stage_policy(monkeypatch) -> None:

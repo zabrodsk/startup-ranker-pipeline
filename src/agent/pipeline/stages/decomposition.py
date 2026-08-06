@@ -15,6 +15,7 @@ that captures all the sub-questions needed to fully answer the main question.
 
 import asyncio
 import json
+import logging
 from typing import Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -22,15 +23,24 @@ from langgraph.graph import END, START, StateGraph
 
 from agent.common.llm_config import get_llm
 from agent.dataclasses.question_tree import QuestionNode, QuestionTree
-from agent.prompt_library.manager import get_prompt
+from agent.pipeline.stages.question_portfolio import (
+    QuestionPortfolioValidationError,
+    build_portfolio_instruction,
+    validate_question_portfolio,
+)
 from agent.pipeline.state.decomposition import (
     DecompositionInput,
     DecompositionOutput,
     DecompositionTree,
 )
 from agent.pipeline.utils.phase_llm import ainvoke_with_phase_fallback
+from agent.prompt_library.manager import get_prompt
 from agent.run_context import get_current_pipeline_policy, use_stage_context
 from agent.web_search.planner import ROUTE_TAGGING_INSTRUCTION, normalize_route_tag
+
+logger = logging.getLogger(__name__)
+
+QUESTION_PORTFOLIO_MAX_ATTEMPTS = 3
 
 
 def _normalized_route_value(tag: str | None) -> str | None:
@@ -90,11 +100,25 @@ async def decompose_question_async(state: DecompositionInput) -> DecompositionOu
     """
     decompose_system_prompt = get_prompt("decomposition.system", state.prompt_overrides)
     decompose_user_prompt = get_prompt("decomposition.user", state.prompt_overrides)
+    portfolio_instruction = ""
+    if state.question_budget is not None:
+        if state.aspect is None:
+            raise ValueError("A question aspect is required when using a portfolio budget")
+        portfolio_instruction = build_portfolio_instruction(
+            state.aspect, state.question_budget
+        )
     # Route tagging rides the same decomposition call (zero extra LLM calls).
     # Appended in code, not in the editable catalog, so stale persisted
     # library.json overlays cannot silently drop the instruction.
     messages = [
-        SystemMessage(content=decompose_system_prompt + "\n\n" + ROUTE_TAGGING_INSTRUCTION),
+        SystemMessage(
+            content=(
+                decompose_system_prompt
+                + "\n\n"
+                + ROUTE_TAGGING_INSTRUCTION
+                + ("\n\n" + portfolio_instruction if portfolio_instruction else "")
+            )
+        ),
         HumanMessage(
             content=decompose_user_prompt.format(
                 question=state.question, industry=state.industry
@@ -108,7 +132,48 @@ async def decompose_question_async(state: DecompositionInput) -> DecompositionOu
         with use_stage_context("decomposition"):
             llm = get_llm(temperature=0.5)
             llm_with_structured_output = llm.with_structured_output(DecompositionTree)
-            return await llm_with_structured_output.ainvoke(messages)
+            attempt_messages = list(messages)
+            attempts = (
+                QUESTION_PORTFOLIO_MAX_ATTEMPTS
+                if state.question_budget is not None
+                else 1
+            )
+            for attempt in range(1, attempts + 1):
+                decomposition_tree = await llm_with_structured_output.ainvoke(
+                    attempt_messages
+                )
+                if state.question_budget is None:
+                    return decomposition_tree
+                try:
+                    validate_question_portfolio(
+                        decomposition_tree,
+                        aspect=state.aspect,
+                        root_question=state.question or "",
+                        budget=state.question_budget,
+                    )
+                    return decomposition_tree
+                except QuestionPortfolioValidationError as exc:
+                    if attempt >= attempts:
+                        raise
+                    logger.warning(
+                        "Question portfolio validation failed for %s (attempt %s/%s): %s",
+                        state.aspect,
+                        attempt,
+                        attempts,
+                        exc,
+                    )
+                    attempt_messages = messages + [
+                        HumanMessage(
+                            content=(
+                                "The generated portfolio violated the contract: "
+                                f"{exc}. Regenerate the complete category from scratch. "
+                                "Do not truncate or patch the previous tree. Return "
+                                f"exactly {state.question_budget} nodes and satisfy every "
+                                "structural, coverage, rationale, and priority requirement."
+                            )
+                        )
+                    ]
+            raise RuntimeError("Question portfolio generation ended unexpectedly")
 
     decomposition_tree = await ainvoke_with_phase_fallback(
         policy.decomposition if policy else None,

@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed — budget-aware investment-question portfolio (2026-08-06)
+
+- Replaced unconstrained question decomposition with an upfront 76-question
+  portfolio: 14 strategy-fit, 24 market, 20 product, and 18 team nodes.
+- Added deterministic validation for exact count, root identity, uniqueness,
+  coverage tags, decision rationale, priority, connectivity, and parentage.
+  Invalid category trees are regenerated in full and are never truncated.
+- Raised GPT-5.6 Luna decomposition from low to medium reasoning while keeping
+  temperature omitted; all other Luna phase defaults are unchanged.
+
 ### Added — Meta Muse Spark Contributor staging model (2026-08-06)
 
 - Added `muse-spark-1.2-contributor` through Meta's OpenAI-compatible Model API,

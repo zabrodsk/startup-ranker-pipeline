@@ -22,6 +22,8 @@ import logging
 import os
 
 from agent.dataclasses.question_tree import QuestionTree
+from agent.pipeline.stages.constants import QuestionAspect
+from agent.pipeline.stages.question_portfolio import build_portfolio_instruction
 from agent.prompt_library.manager import get_prompt
 from agent.web_search.planner import ROUTE_TAGGING_INSTRUCTION
 
@@ -32,7 +34,7 @@ _STORE_MODES = ("local", "supabase")
 _DEFAULT_STORE_MODE = "local"
 _WARNED_INVALID_STORE_MODE: set[str] = set()
 
-_KEY_VERSION_PREFIX = "dtree-v3"
+_KEY_VERSION_PREFIX = "dtree-v4"
 
 
 def _store_mode() -> str:
@@ -62,19 +64,29 @@ def use_supabase_store() -> bool:
         return False
 
 
-def compute_prompt_signature(prompt_overrides: dict | None = None) -> str:
+def compute_prompt_signature(
+    prompt_overrides: dict | None = None,
+    *,
+    aspect: QuestionAspect | None = None,
+    question_budget: int | None = None,
+) -> str:
     """Signature over everything the decomposition LLM call is prompted with.
 
     Covers decomposition.system, decomposition.user, AND
     ROUTE_TAGGING_INSTRUCTION (appended at call time in decomposition.py) —
     the local-cache signature historically omitted the instruction.
     """
+    portfolio_instruction = ""
+    if aspect is not None and question_budget is not None:
+        portfolio_instruction = build_portfolio_instruction(aspect, question_budget)
     raw = (
         str(get_prompt("decomposition.system", prompt_overrides))
         + "\n||\n"
         + str(get_prompt("decomposition.user", prompt_overrides))
         + "\n||\n"
         + ROUTE_TAGGING_INSTRUCTION
+        + "\n||\n"
+        + portfolio_instruction
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -94,16 +106,24 @@ def lookup(
     *,
     question: str,
     industry: str,
-    aspect: str,
+    aspect: QuestionAspect,
     company_name: str,
     prompt_overrides: dict | None = None,
+    question_budget: int | None = None,
 ) -> QuestionTree | None:
     """Return a cached QuestionTree, or None on miss/error (fail-open)."""
     try:
         from web import db
 
         query_hash = compute_query_hash(
-            question, industry, str(aspect), compute_prompt_signature(prompt_overrides)
+            question,
+            industry,
+            str(aspect),
+            compute_prompt_signature(
+                prompt_overrides,
+                aspect=aspect,
+                question_budget=question_budget,
+            ),
         )
         entry = db.get_decomposition_tree_cache_entry(query_hash)
         if not entry:
@@ -135,16 +155,21 @@ def store(
     *,
     question: str,
     industry: str,
-    aspect: str,
+    aspect: QuestionAspect,
     company_name: str,
     tree: QuestionTree,
     prompt_overrides: dict | None = None,
+    question_budget: int | None = None,
 ) -> None:
     """Best-effort store of a freshly decomposed tree; failures are swallowed."""
     try:
         from web import db
 
-        prompt_signature = compute_prompt_signature(prompt_overrides)
+        prompt_signature = compute_prompt_signature(
+            prompt_overrides,
+            aspect=aspect,
+            question_budget=question_budget,
+        )
         db.upsert_decomposition_tree_cache_entry(
             query_hash=compute_query_hash(
                 question, industry, str(aspect), prompt_signature

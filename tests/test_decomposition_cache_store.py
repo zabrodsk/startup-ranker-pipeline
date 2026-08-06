@@ -77,6 +77,17 @@ def test_prompt_signature_covers_route_tagging_instruction(monkeypatch):
     assert dcs.compute_prompt_signature() != base
 
 
+def test_prompt_signature_covers_portfolio_budget_and_category_contract():
+    base = dcs.compute_prompt_signature()
+    market = dcs.compute_prompt_signature(aspect="market", question_budget=24)
+    product = dcs.compute_prompt_signature(aspect="product", question_budget=20)
+
+    assert market != base
+    assert product != base
+    assert market != product
+    assert dcs._KEY_VERSION_PREFIX == "dtree-v4"
+
+
 def test_prompt_signature_covers_prompt_overrides():
     base = dcs.compute_prompt_signature()
     overridden = dcs.compute_prompt_signature(
