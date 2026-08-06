@@ -215,6 +215,10 @@ decides whether the saved report can be opened, which avoids stale browser-side
 availability state. Both the **Analysis** and **Companies** headers expose a
 manual **Refresh** action for an immediate server sync.
 
+The additive per-company LeadGen machine intake/start/status/result/error
+contract is documented in
+[`docs/leadgen-machine-lifecycle.md`](./docs/leadgen-machine-lifecycle.md).
+
 ### Deploy via Cloudflare Tunnel
 
 ```bash
@@ -307,6 +311,11 @@ Copy `.env.example` to `.env` and set:
 | `SUPABASE_SOURCE_FILES_BUCKET` | optional | Shared storage bucket for uploaded source files (default: `analysis-inputs`) |
 | `SERVICE_ROLE` | Railway only | `web` or `worker`; selects service behavior inside the shared image |
 | `ENABLE_SPECTER_WORKER_SERVICE` | optional | Queue Specter runs for the dedicated worker service instead of executing them in the web process |
+| `RDI_LEADGEN_AUTOSTART_KEY` | for LeadGen machine routes | Dedicated server-side key for the versioned machine contract |
+| `RDI_LEADGEN_AUTOSTART_ENABLED` | optional | Must be exactly `true` to permit autonomous machine starts; otherwise fail closed |
+| `RDI_LEADGEN_TARGET_ENVIRONMENT` | for LeadGen machine routes | Server deployment target; must be exactly `staging` or `production` and match every machine intake/start request |
+| `RDI_LEADGEN_GLOBAL_START_LIMIT` | optional | Maximum machine starts across campaigns per target environment (default: `20`) |
+| `RDI_SCORING_VERSION` | for LeadGen machine start | Explicit scoring version persisted with the worker job and returned in terminal results |
 | `SPECTER_WORKER_POLL_SECONDS` | optional | Poll interval for the dedicated Specter worker (code default: `5`; current Railway production override: `10`) |
 | `SPECTER_MCP_URL` | optional | Specter MCP endpoint (default: `https://mcp.tryspecter.com/mcp`) — used for both URL-list intake and pitch-deck augmentation |
 | `SPECTER_MCP_CLIENT_ID` | optional | Specter MCP OAuth client ID minted by `scripts/specter_oauth_login.py` |

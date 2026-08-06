@@ -5744,18 +5744,22 @@ def _create_url_intake_job(
     if run_config_extra:
         _results_cache[job_id]["run_config_extra"] = dict(run_config_extra)
     if db and db.is_configured():
-        db.insert_analysis_event(
-            job_id,
-            message=f"Received {len(cleaned)} URLs for Specter MCP intake",
-            event_type=source,
-            payload={"num_urls": len(cleaned), "source": source},
-        )
-        db.insert_job_status_history(
-            job_id,
-            status="pending",
-            progress="URLs received",
-            source=source,
-        )
+        insert_event = getattr(db, "insert_analysis_event", None)
+        if callable(insert_event):
+            insert_event(
+                job_id,
+                message=f"Received {len(cleaned)} URLs for Specter MCP intake",
+                event_type=source,
+                payload={"num_urls": len(cleaned), "source": source},
+            )
+        insert_status = getattr(db, "insert_job_status_history", None)
+        if callable(insert_status):
+            insert_status(
+                job_id,
+                status="pending",
+                progress="URLs received",
+                source=source,
+            )
 
     return {
         "job_id": job_id,
@@ -7247,6 +7251,7 @@ async def _start_analysis_job(
     run_config_extra = cache.get("run_config_extra")
     if not isinstance(run_config_extra, dict):
         run_config_extra = {}
+    versions = _runtime_versions()
     cache["run_config"] = {
         "input_mode": req.input_mode,
         "run_name": req.run_name,
@@ -7265,14 +7270,15 @@ async def _start_analysis_job(
         "llm": llm_display,
         **started_by,
         **run_config_extra,
+        **versions,
     }
     cache["model_executions"] = []
     cache["run_costs_aggregate"] = _empty_run_costs_summary()
-    cache["versions"] = _runtime_versions()
+    cache["versions"] = versions
 
     if db and db.is_configured():
         run_config = dict(cache["run_config"])
-        db.upsert_job(job_id, run_config=run_config, versions=_runtime_versions())
+        db.upsert_job(job_id, run_config=run_config, versions=versions)
         db.upsert_job_control(
             job_id,
             pause_requested=False,
@@ -7313,6 +7319,143 @@ async def _start_analysis_job(
         daemon=True,
     ).start()
     return {"status": "running", "use_web_search": use_web_search_effective, "web_search_mode": web_search_mode, "llm": llm_display}
+
+
+async def _start_leadgen_url_job(
+    job_id: str,
+    url_items: list[dict[str, str] | str],
+    run_context: dict[str, Any],
+    actor: dict[str, str | None],
+):
+    """Start the current deployed worker-backed URL flow for one LeadGen call."""
+    machine_start = run_context.get("source") == "leadgen_machine"
+    preflight_block = await _run_specter_mcp_start_preflight(
+        job_id=None,
+        identifiers=url_items,
+    )
+    if preflight_block is not None:
+        if machine_start:
+            from web.leadgen_machine import MachineStartDefiniteRejection
+
+            if preflight_block.status_code == 429:
+                return MachineStartDefiniteRejection(
+                    status_code=429,
+                    error_code="machine_upstream_rate_limited",
+                    message="The provider start limit is exhausted; the run was not started.",
+                )
+            return MachineStartDefiniteRejection(
+                status_code=503,
+                error_code="machine_upstream_unavailable",
+                message="The provider preflight is unavailable; the run was not started.",
+            )
+        return preflight_block
+
+    try:
+        pipeline_policy = build_default_phase_model_policy()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    phase_models = phase_model_defaults_payload()
+    effective_phase_models = resolve_effective_phase_models(pipeline_policy)
+    llm_selection = dict(pipeline_policy.answering)
+    llm_display = build_phase_policy_display_label(effective_phase_models)
+
+    context = run_context.get("leadgen_machine") or run_context.get("leadgen") or {}
+    batch_id = context.get("batch_id") if isinstance(context, dict) else None
+    _create_url_intake_job(
+        url_items,
+        job_id=job_id,
+        run_config_extra=run_context,
+        source="leadgen_machine" if machine_start else "leadgen",
+    )
+    cache = _results_cache[job_id]
+    cache.update(
+        {
+            "input_mode": "specter",
+            "run_name": f"leadgen:{batch_id or job_id}",
+            "use_web_search": True,
+            "fetch_full_team": True,
+            "llm_selection": llm_selection,
+            "phase_models": phase_models,
+            "effective_phase_models": effective_phase_models,
+            "started_by_user_id": actor.get("started_by_user_id"),
+            "started_by_email": actor.get("started_by_email"),
+            "started_by_display_name": actor.get("started_by_display_name"),
+            "started_by_label": actor.get("started_by_label"),
+        }
+    )
+    versions = _runtime_versions()
+    cache["run_config"] = {
+        "input_mode": "specter",
+        "run_name": cache["run_name"],
+        "use_web_search": True,
+        "fetch_full_team": True,
+        "phase_models": phase_models,
+        "effective_phase_models": effective_phase_models,
+        "llm_provider": llm_selection["provider"],
+        "llm_model": llm_selection["model"],
+        "llm": llm_display,
+        **actor,
+        **run_context,
+        **versions,
+    }
+    cache["versions"] = versions
+    _set_job_status(
+        job_id,
+        "running",
+        f"Queued for worker — 0/{len(url_items)} companies completed.",
+        source="leadgen_machine" if machine_start else "leadgen",
+    )
+    queued, queue_message = _queue_worker_backed_specter_job(job_id)
+    if not queued:
+        _set_job_status(
+            job_id,
+            "error",
+            f"Worker queue failed. {queue_message or 'Unknown worker queue error.'}",
+            source="leadgen_machine" if machine_start else "leadgen",
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"Specter worker queue failed: {queue_message or 'unknown error'}",
+        )
+    return {"status": "running", "job_id": job_id}
+
+
+async def _start_leadgen_machine_url_job(
+    job_id: str,
+    url_items: list[dict[str, str] | str],
+    run_context: dict[str, Any],
+    actor: dict[str, str | None],
+):
+    """Classify only proven no-start outcomes for the machine fence contract."""
+    from web.leadgen_machine import MachineStartAccepted, MachineStartDefiniteRejection
+
+    if not ENABLE_SPECTER_WORKER_SERVICE:
+        return MachineStartDefiniteRejection(
+            status_code=503,
+            error_code="machine_start_unavailable",
+            message="The worker-backed start is disabled.",
+        )
+    if not db or not db.is_configured():
+        return MachineStartDefiniteRejection(
+            status_code=503,
+            error_code="machine_start_unavailable",
+            message="Worker-backed storage is not configured.",
+        )
+
+    # After entering the current deployed start seam, an exception or malformed
+    # result is ambiguous because the first worker-visible write may have committed.
+    result = await _start_leadgen_url_job(job_id, url_items, run_context, actor)
+    if isinstance(result, dict):
+        status = str(result.get("status") or "").strip().lower()
+        returned_job_id = str(result.get("job_id") or "")
+        if returned_job_id == job_id and status in {
+            "accepted",
+            "pending",
+            "queued",
+            "running",
+        }:
+            return MachineStartAccepted(job_id=job_id, status=status)
+    return result
 
 
 @app.post("/api/analyze/{job_id}")
@@ -9844,6 +9987,21 @@ async def get_company_analyses(
 
     analyses = db.load_analyses_by_company(company_name)
     return {"company_name": company_name, "analyses": analyses}
+
+
+from web.leadgen_machine import (  # noqa: E402
+    MachineLifecycleDependencies,
+    build_leadgen_machine_router,
+)
+
+app.include_router(
+    build_leadgen_machine_router(
+        MachineLifecycleDependencies(
+            store=db,
+            start_adapter=_start_leadgen_machine_url_job,
+        )
+    )
+)
 
 
 if __name__ == "__main__":

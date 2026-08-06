@@ -71,6 +71,18 @@ def _normalize_company_key(name: str | None, slug: str | None) -> str:
     return f"{(slug or name or 'unknown').strip().lower()}"
 
 
+def _source_company_key(value: Any) -> str | None:
+    key = str(value or "").strip().lower()
+    return key if key.startswith("domain:") else None
+
+
+def _task_company_key(task: dict[str, Any]) -> str:
+    source_key = _source_company_key(task.get("source_company_key"))
+    if source_key:
+        return source_key
+    return _normalize_company_key(task.get("name"), task.get("slug"))
+
+
 def _domain_root(value: str | None) -> str:
     if not value:
         return ""
@@ -163,6 +175,7 @@ def _build_company_tasks(
     """
     tasks: list[dict[str, Any]] = []
     seen_domains: set[str] = set()
+    machine_job = run_config.get("source") == "leadgen_machine"
 
     if companies_csv is not None:
         descriptors = list_specter_companies(companies_csv)
@@ -189,7 +202,10 @@ def _build_company_tasks(
             )
             continue
         seen_domains.add(url_task["domain"])
-        tasks.append({"mode": "url", **url_task})
+        task = {"mode": "url", **url_task}
+        if machine_job:
+            task["source_company_key"] = f"domain:{url_task['domain']}"
+        tasks.append(task)
 
     return tasks
 
@@ -244,7 +260,10 @@ def _load_completed_company_keys(job_id: str) -> tuple[set[str], int, int]:
     completed: set[str] = set()
     failed = 0
     for row in rows:
-        key = _normalize_company_key(row.get("company_name"), row.get("startup_slug"))
+        key = _source_company_key(row.get("source_company_key")) or _normalize_company_key(
+            row.get("company_name"),
+            row.get("startup_slug"),
+        )
         completed.add(key)
         if str(row.get("decision") or "").strip().lower() in {"error", "timeout"}:
             failed += 1
@@ -706,7 +725,7 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
                 stopped = True
                 _log(f"{job_id}: stop requested — finalizing {completed_companies}/{total_companies} ranked")
                 break
-            company_key = _normalize_company_key(task.get("name"), task.get("slug"))
+            company_key = _task_company_key(task)
             if company_key in completed_keys:
                 _log(f"{job_id}: skipping already persisted company {absolute_index}/{total_companies}")
                 continue
