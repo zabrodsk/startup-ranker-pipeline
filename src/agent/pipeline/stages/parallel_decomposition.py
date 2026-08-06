@@ -11,18 +11,18 @@ The 4 questions cover:
 - Team experience and track record
 """
 
-import hashlib
 from typing import Dict
 
 from agent.dataclasses.company import Company
 from agent.dataclasses.question_tree import QuestionTree
-from agent.prompt_library.manager import get_prompt, get_questions
 from agent.pipeline.stages import decomposition_cache_store
 from agent.pipeline.stages.cache import cache_question_tree, get_cached_question_tree
 from agent.pipeline.stages.constants import QuestionAspect
 from agent.pipeline.stages.decomposition import graph as decomposition_graph
+from agent.pipeline.stages.question_portfolio import QUESTION_PORTFOLIO_ALLOCATION
 from agent.pipeline.state.decomposition import DecompositionInput
 from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
+from agent.prompt_library.manager import get_questions
 from agent.rate_limit import gather_with_concurrency
 
 
@@ -31,6 +31,7 @@ async def _decompose_single_question(
     industry: str,
     aspect: QuestionAspect,
     prompt_overrides: dict | None = None,
+    question_budget: int | None = None,
 ) -> Dict[str, QuestionTree | str]:
     """Decompose a single question using the decomposition graph.
 
@@ -47,6 +48,7 @@ async def _decompose_single_question(
             question=question,
             industry=industry,
             aspect=aspect,
+            question_budget=question_budget,
             prompt_overrides=prompt_overrides or {},
         )
     )
@@ -59,6 +61,7 @@ async def _get_or_decompose_question(
     aspect: QuestionAspect,
     company_name: str,
     prompt_overrides: dict | None = None,
+    question_budget: int | None = None,
 ) -> Dict[str, QuestionTree | str]:
     """Get cached question tree or decompose if not cached.
 
@@ -79,9 +82,10 @@ async def _get_or_decompose_question(
         cached = decomposition_cache_store.lookup(
             question=question,
             industry=industry,
-            aspect=str(aspect),
+            aspect=aspect,
             company_name=company_name,
             prompt_overrides=prompt_overrides,
+            question_budget=question_budget,
         )
         if cached is not None:
             return {"aspect": aspect, "tree": cached}
@@ -90,27 +94,27 @@ async def _get_or_decompose_question(
             industry,
             aspect,
             prompt_overrides=prompt_overrides,
+            question_budget=question_budget,
         )
         decomposition_cache_store.store(
             question=question,
             industry=industry,
-            aspect=str(aspect),
+            aspect=aspect,
             company_name=company_name,
             tree=result["tree"],
             prompt_overrides=prompt_overrides,
+            question_budget=question_budget,
         )
         return result
 
     # Keep decomposition caches company-scoped to preserve company-specific
     # question shaping even if prompts or upstream context evolve.
     cache_company = Company(name=company_name, industry=industry)
-    decomposition_signature = hashlib.sha256(
-        (
-            str(get_prompt("decomposition.system", prompt_overrides))
-            + "\n||\n"
-            + str(get_prompt("decomposition.user", prompt_overrides))
-        ).encode("utf-8")
-    ).hexdigest()[:12]
+    decomposition_signature = decomposition_cache_store.compute_prompt_signature(
+        prompt_overrides,
+        aspect=aspect,
+        question_budget=question_budget,
+    )[:12]
     cache_question = f"{question} [decompose:{decomposition_signature}]"
 
     # Check cache first
@@ -124,6 +128,7 @@ async def _get_or_decompose_question(
         industry,
         aspect,
         prompt_overrides=prompt_overrides,
+        question_budget=question_budget,
     )
     cache_question_tree(cache_question, cache_company, result["tree"])
     return result
@@ -158,6 +163,7 @@ async def decompose_all_questions(
                 aspect=aspect,
                 company_name=state.company.name,
                 prompt_overrides=state.prompt_overrides,
+                question_budget=QUESTION_PORTFOLIO_ALLOCATION[aspect],
             )
         )
 

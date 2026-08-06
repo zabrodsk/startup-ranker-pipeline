@@ -671,7 +671,7 @@ def resolve_openai_phase_sampling(
     if model_norm in {"gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.4-nano"}:
         if model_norm == "gpt-5.6-luna":
             stage_map: dict[str, dict[str, float | str | None]] = {
-                "decomposition": {"temperature": None, "reasoning_effort": "low"},
+                "decomposition": {"temperature": None, "reasoning_effort": "medium"},
                 "answering": {"temperature": None, "reasoning_effort": "low"},
                 "generation_pro": {"temperature": 0.7, "reasoning_effort": "none"},
                 "generation_contra": {"temperature": 0.7, "reasoning_effort": "none"},

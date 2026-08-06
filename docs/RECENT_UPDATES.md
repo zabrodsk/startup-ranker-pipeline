@@ -30,6 +30,17 @@ The New Analysis pipeline now defaults every user-facing phase to
 `0.7`, while evidence and decision stages use explicit reasoning effort from
 `low` through `high` and omit temperature.
 
+## Budget-Aware Question Portfolio (2026-08-06)
+
+Question decomposition now receives a fixed 76-question portfolio before it
+generates anything: 14 strategy-fit, 24 market, 20 product, and 18 team nodes,
+with each category count including its root. The prompt requires Luna to build
+a larger private candidate pool, rank candidates by decision value, remove
+overlap, and then return the exact category allocation with mandatory coverage
+tags, rationale, and priority metadata. Structural validation rejects and
+regenerates an invalid category; the pipeline never truncates a generated tree.
+Luna decomposition uses medium reasoning with temperature omitted.
+
 ---
 
 ## Production Persistence Fix (2026-04-30)
