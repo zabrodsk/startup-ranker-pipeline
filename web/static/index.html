@@ -5951,6 +5951,7 @@ function getProviderLabel(provider) {
     openai: 'OpenAI',
     anthropic: 'Anthropic',
     gemini: 'Gemini',
+    meta: 'Meta',
     openrouter: 'OpenRouter',
   };
   return labels[provider] || provider || 'Model';
@@ -6048,6 +6049,16 @@ function setPhaseModelSetting(phase, nextSetting) {
 
 function getAutoReasoningEffort(phase, model) {
   const modelId = model?.model || '';
+  if (modelId === 'muse-spark-1.2-contributor') {
+    const defaults = {
+      decomposition: 'low',
+      answering: 'low',
+      generation: 'minimal',
+      evaluation: 'medium',
+      ranking: 'high',
+    };
+    return defaults[phase] || null;
+  }
   if (modelId === 'gpt-5.6-luna') {
     const defaults = {
       decomposition: 'low',
@@ -6140,6 +6151,16 @@ function getAutoPhaseTemperatureValue(phase, model, setting = getPhaseModelSetti
     const effectiveReasoning = getEffectivePhaseReasoningEffort(phase, model, setting);
     if (effectiveReasoning && effectiveReasoning !== 'none') return null;
   }
+  if (model?.model === 'muse-spark-1.2-contributor') {
+    const defaults = {
+      decomposition: 0.2,
+      answering: 0.2,
+      generation: 0.7,
+      evaluation: 0.1,
+      ranking: 0.1,
+    };
+    return defaults[phase] ?? 0.2;
+  }
   const defaults = {
     decomposition: 0.5,
     answering: 0.0,
@@ -6202,33 +6223,38 @@ function getPhaseModelDefaults() {
     return found ? `${found.provider}:${found.model}` : null;
   };
 
-  const decompositionKey = findKey('openai', 'gpt-5.6-luna')
+  const decompositionKey = findKey('meta', 'muse-spark-1.2-contributor')
+    || findKey('openai', 'gpt-5.6-luna')
     || findKey('openai', 'gpt-5.4-mini')
     || findKey('gemini', 'gemini-3.1-pro-preview')
     || findKey('gemini', 'gemini-2.5-flash')
     || findKey('openai', 'gpt-5.2')
     || findKey('openai', 'gpt-5');
-  const answeringKey = findKey('openai', 'gpt-5.6-luna')
+  const answeringKey = findKey('meta', 'muse-spark-1.2-contributor')
+    || findKey('openai', 'gpt-5.6-luna')
     || findKey('openai', 'gpt-5.4-nano')
     || findKey('gemini', 'gemini-2.5-flash')
     || findKey('gemini', 'gemini-3.1-flash-lite-preview')
     || findKey('anthropic', 'claude-haiku-4-5-20251001')
     || (available[0] ? `${available[0].provider}:${available[0].model}` : null);
-  const generationKey = findKey('openai', 'gpt-5.6-luna')
+  const generationKey = findKey('meta', 'muse-spark-1.2-contributor')
+    || findKey('openai', 'gpt-5.6-luna')
     || findKey('openai', 'gpt-5.4-mini')
     || findKey('openai', 'gpt-5.2')
     || findKey('openai', 'gpt-5')
     || findKey('gemini', 'gemini-3.1-pro-preview')
     || decompositionKey
     || answeringKey;
-  const evaluationKey = findKey('openai', 'gpt-5.6-luna')
+  const evaluationKey = findKey('meta', 'muse-spark-1.2-contributor')
+    || findKey('openai', 'gpt-5.6-luna')
     || findKey('openai', 'gpt-5.4-mini')
     || findKey('openai', 'o4-mini')
     || findKey('openai', 'gpt-4.1-mini')
     || findKey('anthropic', 'claude-haiku-4-5-20251001')
     || generationKey
     || answeringKey;
-  const rankingKey = findKey('openai', 'gpt-5.6-luna')
+  const rankingKey = findKey('meta', 'muse-spark-1.2-contributor')
+    || findKey('openai', 'gpt-5.6-luna')
     || findKey('openai', 'gpt-5.4-mini')
     || findKey('openai', 'gpt-5.2')
     || findKey('openai', 'gpt-5')

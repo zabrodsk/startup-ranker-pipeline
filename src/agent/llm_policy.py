@@ -8,8 +8,8 @@ from typing import Any, Literal
 from agent.llm_catalog import (
     ModelCatalogEntry,
     find_model_entry,
-    normalize_creativity,
     get_tier_default,
+    normalize_creativity,
     serialize_selection,
     supports_selection_creativity_control,
     validate_requested_selection,
@@ -374,6 +374,7 @@ def _first_available_entry(
 
 def default_phase_model_selections() -> dict[UserSelectablePhase, dict[str, Any]]:
     decomposition = _first_available_entry(
+        ("meta", "muse-spark-1.2-contributor"),
         ("openai", "gpt-5.6-luna"),
         ("openai", "gpt-5.4-mini"),
         ("gemini", "gemini-3.1-pro-preview"),
@@ -382,6 +383,7 @@ def default_phase_model_selections() -> dict[UserSelectablePhase, dict[str, Any]
         ("openai", "gpt-5"),
     )
     answering = _first_available_entry(
+        ("meta", "muse-spark-1.2-contributor"),
         ("openai", "gpt-5.6-luna"),
         ("openai", "gpt-5.4-nano"),
         ("gemini", "gemini-2.5-flash"),
@@ -390,6 +392,7 @@ def default_phase_model_selections() -> dict[UserSelectablePhase, dict[str, Any]
         ("openai", "gpt-5.4-mini"),
     )
     generation = _first_available_entry(
+        ("meta", "muse-spark-1.2-contributor"),
         ("openai", "gpt-5.6-luna"),
         ("openai", "gpt-5.4-mini"),
         ("openai", "gpt-5.2"),
@@ -397,6 +400,7 @@ def default_phase_model_selections() -> dict[UserSelectablePhase, dict[str, Any]
         ("gemini", "gemini-3.1-pro-preview"),
     )
     evaluation = _first_available_entry(
+        ("meta", "muse-spark-1.2-contributor"),
         ("openai", "gpt-5.6-luna"),
         ("openai", "gpt-5.4-mini"),
         ("openai", "o4-mini"),
@@ -404,6 +408,7 @@ def default_phase_model_selections() -> dict[UserSelectablePhase, dict[str, Any]
         ("anthropic", "claude-haiku-4-5-20251001"),
     )
     ranking = _first_available_entry(
+        ("meta", "muse-spark-1.2-contributor"),
         ("openai", "gpt-5.6-luna"),
         ("openai", "gpt-5.4-mini"),
         ("openai", "gpt-5.2"),
@@ -654,6 +659,49 @@ def phase_model_defaults_payload() -> dict[UserSelectablePhase, dict[str, Any]]:
         return default_phase_model_selections()
     except ValueError:
         return {}
+
+
+def resolve_meta_phase_sampling(
+    model: str | None,
+    stage_name: str | None,
+    requested_temperature: float | None,
+    *,
+    requested_reasoning_effort: str | None = None,
+    selected_temperature: float | None = None,
+    selected_reasoning_effort: str | None = None,
+) -> dict[str, float | str | None] | None:
+    """Resolve Muse Contributor sampling defaults for one pipeline stage."""
+    if (model or "").strip() != "muse-spark-1.2-contributor":
+        return None
+
+    stage_map: dict[str, dict[str, float | str | None]] = {
+        "decomposition": {"temperature": 0.2, "reasoning_effort": "low"},
+        "answering": {"temperature": 0.2, "reasoning_effort": "low"},
+        "generation_pro": {"temperature": 0.7, "reasoning_effort": "minimal"},
+        "generation_contra": {"temperature": 0.7, "reasoning_effort": "minimal"},
+        "critique": {"temperature": 0.2, "reasoning_effort": "low"},
+        "evaluation": {"temperature": 0.1, "reasoning_effort": "medium"},
+        "refinement": {"temperature": 0.2, "reasoning_effort": "low"},
+        "ranking_dimension_score": {"temperature": 0.1, "reasoning_effort": "high"},
+        "ranking_upside_score": {"temperature": 0.7, "reasoning_effort": "minimal"},
+        "ranking_executive_summary": {"temperature": 0.2, "reasoning_effort": "high"},
+    }
+    resolved = stage_map.get(
+        (stage_name or "").strip().lower(),
+        {"temperature": requested_temperature, "reasoning_effort": "minimal"},
+    )
+    return {
+        "temperature": (
+            selected_temperature
+            if selected_temperature is not None
+            else resolved["temperature"]
+        ),
+        "reasoning_effort": (
+            selected_reasoning_effort
+            if selected_reasoning_effort is not None
+            else requested_reasoning_effort or resolved["reasoning_effort"]
+        ),
+    }
 
 
 def resolve_openai_phase_sampling(

@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added — Meta Muse Spark Contributor staging model (2026-08-06)
+
+- Added `muse-spark-1.2-contributor` through Meta's OpenAI-compatible Model API,
+  including structured-output selection, cost telemetry, phase-specific
+  temperature/reasoning defaults, and the New Analysis model selector.
+- The Meta model becomes the per-phase default only when `MODEL_API_KEY` is
+  configured; existing Luna defaults remain the credential-aware fallback.
+- The Contributor catalog entry and environment docs warn that its prompts and
+  outputs may be used to improve future Meta models.
+
 ### Fixed — Specter MCP financial tool compatibility (2026-08-03)
 
 - Specter removed the legacy `get_company_financials` MCP tool and replaced it

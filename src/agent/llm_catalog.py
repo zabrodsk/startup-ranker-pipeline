@@ -57,6 +57,20 @@ MODEL_CATALOG: tuple[ModelCatalogEntry, ...] = (
         required_env=("ANTHROPIC_API_KEY",),
     ),
     ModelCatalogEntry(
+        provider="meta",
+        model="muse-spark-1.2-contributor",
+        label="Meta Muse Spark 1.2 Contributor",
+        summary="Contributor pricing; prompts and outputs may train future Meta models",
+        tier="budget",
+        pricing=ModelPricing(
+            input_per_million_tokens_usd=0.10,
+            output_per_million_tokens_usd=0.20,
+        ),
+        required_env=("MODEL_API_KEY",),
+        supports_reasoning_effort_control=True,
+        reasoning_effort_options=("minimal", "low", "medium", "high", "xhigh"),
+    ),
+    ModelCatalogEntry(
         provider="openai",
         model="gpt-5.6-luna",
         label="GPT-5.6 Luna",
@@ -285,6 +299,7 @@ _PROVIDER_ALIASES = {
     "google": "gemini",
     "gemini": "gemini",
     "anthropic": "anthropic",
+    "meta": "meta",
     "openai": "openai",
     "openrouter": "openrouter",
 }

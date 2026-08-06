@@ -288,6 +288,8 @@ Copy `.env.example` to `.env` and set:
 | `OPENROUTER_API_KEY` | if OpenRouter | For `LLM_PROVIDER=openrouter` |
 | `OPENROUTER_BASE_URL` | optional | Defaults to `https://openrouter.ai/api/v1` |
 | `ANTHROPIC_API_KEY` | if Anthropic | For `LLM_PROVIDER=anthropic` |
+| `MODEL_API_KEY` | if Meta | For `LLM_PROVIDER=meta` |
+| `META_BASE_URL` | optional | Meta Model API base URL (default: `https://api.meta.ai/v1`) |
 | `APP_ENV` | optional | `development` (default), `staging`, or `production` |
 | `APP_PASSWORD` | optional locally, required in production web | Web app login |
 | `SESSION_SECRET` | optional locally, required in production web | Cookie/session signing secret |
@@ -339,6 +341,18 @@ OPENAI_API_KEY=your_openai_api_key_here
 ```
 
 Available OpenAI models in the UI: `gpt-5.6-luna`, `gpt-5.4-nano`, `gpt-5.4-mini`, `gpt-5`, `gpt-4.1-mini`, `o4-mini`, `gpt-5.2`, `gpt-5.4`
+
+**Example for Meta Muse Spark Contributor:**
+
+```
+LLM_PROVIDER=meta
+MODEL_NAME=muse-spark-1.2-contributor
+MODEL_API_KEY=your_meta_model_api_key_here
+```
+
+The Contributor tier may allow Meta to use submitted prompts and outputs for
+future model training. Use it only with analysis inputs approved for that data
+use; the staging catalog labels the model accordingly.
 
 **Example for OpenRouter:**
 

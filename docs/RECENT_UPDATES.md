@@ -30,6 +30,15 @@ The New Analysis pipeline now defaults every user-facing phase to
 `0.7`, while evidence and decision stages use explicit reasoning effort from
 `low` through `high` and omit temperature.
 
+## Meta Muse Spark Contributor Staging Arm (2026-08-06)
+
+Staging can now route every pipeline phase through
+`muse-spark-1.2-contributor` using Meta's OpenAI-compatible Model API. The
+phase policy combines temperature and reasoning effort: low reasoning for
+decomposition and Q&A, minimal reasoning for creative generation, medium for
+evaluation, and high for decision ranking. The model becomes the phase default
+when `MODEL_API_KEY` is configured. Contributor data-use terms apply.
+
 ---
 
 ## Production Persistence Fix (2026-04-30)
