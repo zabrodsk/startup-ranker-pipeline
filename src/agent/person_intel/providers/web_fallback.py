@@ -69,7 +69,8 @@ class WebFallbackProvider(PersonSourceProvider):
         provider_name = os.getenv("WEB_SEARCH_PROVIDER", "sonar")
         pplx_key = os.getenv("PPLX_API_KEY") or os.getenv("PERPLEXITY_API_KEY")
         brave_key = os.getenv("BRAVE_SEARCH_API_KEY")
-        if not pplx_key and not brave_key:
+        serper_key = os.getenv("SERPER_API_KEY")
+        if not pplx_key and not brave_key and not serper_key:
             return []
 
         try:

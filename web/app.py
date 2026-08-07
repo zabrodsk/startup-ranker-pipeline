@@ -1464,8 +1464,11 @@ def _run_costs_from_cache(job_id: str) -> dict[str, Any]:
         "total_usd": None,
         "llm_usd": None,
         "perplexity_usd": None,
+        "serper_usd": None,
         "llm_tokens": {"prompt": 0, "completion": 0, "total": 0},
         "perplexity_search": {"requests": 0, "total_usd": 0.0},
+        "serper_search": {"requests": 0, "total_usd": 0.0},
+        "web_search": {"requests": 0, "by_provider": {}, "total_usd": 0.0},
         "by_model": [],
     }
 
@@ -1477,8 +1480,11 @@ def _empty_run_costs_summary() -> dict[str, Any]:
         "total_usd": None,
         "llm_usd": None,
         "perplexity_usd": 0.0,
+        "serper_usd": 0.0,
         "llm_tokens": {"prompt": 0, "completion": 0, "total": 0},
         "perplexity_search": {"requests": 0, "total_usd": 0.0},
+        "serper_search": {"requests": 0, "total_usd": 0.0},
+        "web_search": {"requests": 0, "by_provider": {}, "total_usd": 0.0},
         "by_model": [],
     }
 
@@ -1505,6 +1511,16 @@ def _merge_run_cost_summaries(base: dict[str, Any] | None, delta: dict[str, Any]
         merged["perplexity_search"]["requests"] += int((side.get("perplexity_search") or {}).get("requests") or 0)
         merged["perplexity_search"]["total_usd"] += float((side.get("perplexity_search") or {}).get("total_usd") or 0.0)
         merged["perplexity_usd"] += float(side.get("perplexity_usd") or 0.0)
+        merged["serper_search"]["requests"] += int((side.get("serper_search") or {}).get("requests") or 0)
+        merged["serper_search"]["total_usd"] += float((side.get("serper_search") or {}).get("total_usd") or 0.0)
+        merged["serper_usd"] += float(side.get("serper_usd") or 0.0)
+        web_search = side.get("web_search") or {}
+        merged["web_search"]["requests"] += int(web_search.get("requests") or 0)
+        merged["web_search"]["total_usd"] += float(web_search.get("total_usd") or 0.0)
+        for provider, requests in (web_search.get("by_provider") or {}).items():
+            merged["web_search"]["by_provider"][provider] = (
+                merged["web_search"]["by_provider"].get(provider, 0) + int(requests or 0)
+            )
 
     def _sum_optional(left: Any, right: Any) -> float | None:
         known = [float(v) for v in (left, right) if isinstance(v, (int, float))]
@@ -1513,7 +1529,10 @@ def _merge_run_cost_summaries(base: dict[str, Any] | None, delta: dict[str, Any]
     merged["llm_usd"] = _sum_optional(base.get("llm_usd"), delta.get("llm_usd"))
     merged["total_usd"] = _sum_optional(base.get("total_usd"), delta.get("total_usd"))
     merged["perplexity_usd"] = round(merged["perplexity_usd"], 8)
+    merged["serper_usd"] = round(merged["serper_usd"], 8)
     merged["perplexity_search"]["total_usd"] = round(merged["perplexity_search"]["total_usd"], 8)
+    merged["serper_search"]["total_usd"] = round(merged["serper_search"]["total_usd"], 8)
+    merged["web_search"]["total_usd"] = round(merged["web_search"]["total_usd"], 8)
 
     by_model: dict[tuple[str, str], dict[str, Any]] = {}
     for side in (base, delta):
@@ -5480,9 +5499,11 @@ async def web_search_available(session_id: str | None = Cookie(default=None)):
         raise HTTPException(status_code=401, detail="Not authenticated")
     pplx = os.getenv("PPLX_API_KEY") or os.getenv("PERPLEXITY_API_KEY")
     brave = os.getenv("BRAVE_SEARCH_API_KEY")
+    serper = os.getenv("SERPER_API_KEY")
     has_key = bool(
         (pplx and pplx != "your_perplexity_api_key_here")
         or brave
+        or serper
     )
     provider = os.getenv("WEB_SEARCH_PROVIDER", "sonar")
     return {"available": has_key, "provider": provider}

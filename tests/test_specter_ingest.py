@@ -616,11 +616,18 @@ def test_merge_run_cost_summaries_prefers_available_status() -> None:
         {
             "currency": "USD",
             "status": "complete",
-            "total_usd": 0.001,
+            "total_usd": 0.003,
             "llm_usd": 0.001,
             "perplexity_usd": 0.0,
+            "serper_usd": 0.002,
             "llm_tokens": {"prompt": 100, "completion": 50, "total": 150},
             "perplexity_search": {"requests": 0, "total_usd": 0.0},
+            "serper_search": {"requests": 2, "total_usd": 0.002},
+            "web_search": {
+                "requests": 2,
+                "by_provider": {"serper": 2},
+                "total_usd": 0.002,
+            },
             "by_model": [
                 {
                     "provider": "gemini",
@@ -640,6 +647,8 @@ def test_merge_run_cost_summaries_prefers_available_status() -> None:
     assert merged["status"] == "complete"
     assert merged["llm_usd"] == 0.001
     assert merged["llm_tokens"] == {"prompt": 100, "completion": 50, "total": 150}
+    assert merged["serper_search"]["requests"] == 2
+    assert merged["web_search"]["by_provider"] == {"serper": 2}
     assert merged["by_model"][0]["provider"] == "gemini"
 
 

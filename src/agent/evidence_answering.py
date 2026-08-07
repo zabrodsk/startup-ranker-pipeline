@@ -167,6 +167,11 @@ from agent.web_search.planner import (
     build_web_search_plan,
     evaluate_web_result_relevance,
 )
+from agent.web_search.portfolio import (
+    PortfolioQuestion,
+    build_company_web_evidence_plan,
+    evidence_bucket_key,
+)
 from agent.web_search.unanswerable import (
     predict_search_unanswerable,
     predict_targeted_skip,
@@ -432,6 +437,8 @@ def _run_web_search(
     planner_mode: str | None = None,
     query_purpose: str | None = None,
     cache_info: dict | None = None,
+    provider_override: str | None = None,
+    fallback_from: str | None = None,
 ) -> str:
     """Run a web search using the configured provider.
 
@@ -445,9 +452,12 @@ def _run_web_search(
     """
     from datetime import datetime
 
-    provider_name = _resolve_web_search_provider_name()
-    if not provider_name:
+    configured_provider = _resolve_web_search_provider_name()
+    if not configured_provider:
         return "No web search API key configured."
+    provider_name = (provider_override or configured_provider).strip().lower()
+    if provider_name == "hybrid":
+        provider_name = "serper"
 
     try:
         from agent.web_search import get_provider, result_cache
@@ -466,7 +476,7 @@ def _run_web_search(
             result and not str(result).lower().startswith("web search failed")
         )
         collector = get_current_collector()
-        if collector and provider_name == "sonar" and result_is_valid:
+        if collector and provider_name in {"sonar", "serper"} and result_is_valid:
             metadata: dict[str, Any] = {
                 "query": search_query,
                 "domain_filter": domain_filter or [],
@@ -483,11 +493,16 @@ def _run_web_search(
                 metadata["planner_mode"] = planner_mode
             if query_purpose:
                 metadata["query_purpose"] = query_purpose
+            if fallback_from:
+                metadata["fallback_from"] = fallback_from
             # Cache telemetry: only present on hits so cache-off metadata
             # stays byte-identical (and dashboards can net out provider spend).
             if cache_hit:
                 metadata["cache_hit"] = True
-            collector.record_perplexity_search(metadata=metadata)
+            if provider_name == "sonar":
+                collector.record_perplexity_search(metadata=metadata)
+            else:
+                collector.record_web_search(provider=provider_name, metadata=metadata)
         if not cache_hit and result_is_valid:
             result_cache.store(provider_name, search_query, domain_filter, result)
         return result
@@ -496,9 +511,22 @@ def _run_web_search(
 
 
 def _resolve_web_search_provider_name() -> str | None:
-    provider_name = os.getenv("WEB_SEARCH_PROVIDER", "sonar")
+    provider_name = os.getenv("WEB_SEARCH_PROVIDER", "sonar").strip().lower()
     pplx_key = os.getenv("PPLX_API_KEY") or os.getenv("PERPLEXITY_API_KEY")
     brave_key = os.getenv("BRAVE_SEARCH_API_KEY")
+    serper_key = os.getenv("SERPER_API_KEY")
+
+    if provider_name == "hybrid":
+        if serper_key:
+            return "hybrid" if pplx_key and pplx_key != "your_perplexity_api_key_here" else "serper"
+        if pplx_key and pplx_key != "your_perplexity_api_key_here":
+            return "sonar"
+        return "brave" if brave_key else None
+
+    if provider_name == "serper" and not serper_key:
+        if pplx_key and pplx_key != "your_perplexity_api_key_here":
+            return "sonar"
+        return "brave" if brave_key else None
 
     if provider_name == "sonar" and (not pplx_key or pplx_key == "your_perplexity_api_key_here"):
         if brave_key:
@@ -512,7 +540,181 @@ def _resolve_web_search_provider_name() -> str | None:
         else:
             return None
 
+    if provider_name not in {"sonar", "serper", "brave"}:
+        return None
     return provider_name
+
+
+def _shared_web_evidence_enabled() -> bool:
+    return os.getenv("RDI_SHARED_WEB_EVIDENCE", "off").strip().lower() == "on"
+
+
+async def _run_quality_routed_search(
+    *,
+    query: str,
+    domain_filter: list[str] | None,
+    purpose: str,
+    route: Any,
+    relevance_policy: Any,
+    representative_question: str,
+    company: Company,
+    trigger_reason: str,
+) -> dict[str, Any] | None:
+    """Run Serper first and use Perplexity only after a failed quality gate."""
+    strategy = _resolve_web_search_provider_name()
+    if not strategy:
+        return None
+    primary_provider = "serper" if strategy == "hybrid" else None
+    cache_info: dict[str, Any] = {}
+    try:
+        raw = await asyncio.wait_for(
+            asyncio.to_thread(
+                _run_web_search,
+                query,
+                domain_filter,
+                trigger_reason,
+                "portfolio",
+                route.value,
+                "portfolio",
+                purpose,
+                cache_info,
+                provider_override=primary_provider,
+            ),
+            timeout=WEB_SEARCH_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError:
+        raw = "Web search failed: timeout"
+    useful, reason = evaluate_web_result_relevance(
+        policy=relevance_policy,
+        route=route,
+        question=representative_question,
+        company_name=company.name,
+        web_results=raw,
+        industry_hint=company.industry,
+    )
+    accepted_provider = primary_provider or strategy
+
+    if not useful and strategy == "hybrid":
+        fallback_cache_info: dict[str, Any] = {}
+        try:
+            fallback_raw = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _run_web_search,
+                    query,
+                    domain_filter,
+                    "quality fallback",
+                    "portfolio",
+                    route.value,
+                    "portfolio",
+                    purpose,
+                    fallback_cache_info,
+                    provider_override="sonar",
+                    fallback_from="serper",
+                ),
+                timeout=WEB_SEARCH_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            fallback_raw = "Web search failed: timeout"
+        fallback_useful, fallback_reason = evaluate_web_result_relevance(
+            policy=relevance_policy,
+            route=route,
+            question=representative_question,
+            company_name=company.name,
+            web_results=fallback_raw,
+            industry_hint=company.industry,
+        )
+        if fallback_useful:
+            raw = fallback_raw
+            useful = True
+            reason = fallback_reason
+            accepted_provider = "perplexity fallback"
+
+    if not useful:
+        return None
+    return {
+        "query": query,
+        "purpose": purpose,
+        "route": route,
+        "relevance_policy": relevance_policy,
+        "representative_question": representative_question,
+        "provider": accepted_provider,
+        "result": raw,
+        "quality_reason": reason,
+    }
+
+
+def _portfolio_questions(question_trees: Dict[str, QuestionTree]) -> list[PortfolioQuestion]:
+    questions: list[PortfolioQuestion] = []
+
+    def visit(node: QuestionNode, *, aspect: str, is_root: bool) -> None:
+        questions.append(
+            PortfolioQuestion(
+                question=node.question,
+                route_tag=getattr(node, "route", None),
+                aspect=aspect,
+                is_root=is_root,
+            )
+        )
+        for child in node.sub_nodes:
+            visit(child, aspect=aspect, is_root=False)
+
+    for aspect, tree in question_trees.items():
+        visit(tree.root_node, aspect=aspect, is_root=True)
+    return questions
+
+
+async def _prepare_shared_web_evidence(
+    question_trees: Dict[str, QuestionTree],
+    company: Company,
+) -> dict[str, Any]:
+    """Plan and fetch the bounded company-level evidence portfolio."""
+    from datetime import datetime
+
+    core_budget = max(0, int(os.getenv("WEB_SEARCH_CORE_BUDGET", "10")))
+    reserve_budget = max(0, int(os.getenv("WEB_SEARCH_RESERVE_BUDGET", "2")))
+    plan = build_company_web_evidence_plan(
+        questions=_portfolio_questions(question_trees),
+        company_name=company.name,
+        company_domain=company.domain,
+        industry_hint=company.industry,
+        geo_hint=getattr(company, "geo", None),
+        current_year=datetime.now().year,
+        core_budget=core_budget,
+        reserve_budget=reserve_budget,
+    )
+    concurrency = max(1, int(os.getenv("WEB_SEARCH_PREFETCH_CONCURRENCY", "4")))
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def fetch(objective: Any) -> tuple[str, dict[str, Any] | None]:
+        async with semaphore:
+            evidence = await _run_quality_routed_search(
+                query=objective.query.query,
+                domain_filter=list(objective.query.domain_filter)
+                if objective.query.domain_filter is not None
+                else None,
+                purpose=objective.query.purpose,
+                route=objective.route,
+                relevance_policy=objective.relevance_policy,
+                representative_question=objective.representative_question,
+                company=company,
+                trigger_reason="portfolio core",
+            )
+            return objective.bucket_key, evidence
+
+    fetched = await asyncio.gather(*(fetch(objective) for objective in plan.objectives))
+    evidence_by_bucket: dict[str, list[dict[str, Any]]] = {}
+    for bucket_key, evidence in fetched:
+        if evidence is not None:
+            evidence_by_bucket.setdefault(bucket_key, []).append(evidence)
+
+    return {
+        "portfolio_plan": plan,
+        "portfolio_evidence": evidence_by_bucket,
+        "portfolio_core_queries": {objective.query.query for objective in plan.objectives},
+        "portfolio_reserve_used": [0],
+        "portfolio_reserve_max": plan.reserve_budget,
+        "portfolio_lock": asyncio.Lock(),
+    }
 
 
 CHUNK_PREVIEW_CHARS = 200
@@ -664,6 +866,7 @@ async def answer_question_from_evidence(
             executed: list[str] = []
             accepted_blocks: list[str] = []
             accepted = 0
+            accepted_providers: list[str] = []
             cache_hits = 0
             cap_reached = False
             deadline = time.monotonic() + WEB_SEARCH_TIMEOUT_SEC
@@ -678,20 +881,31 @@ async def answer_question_from_evidence(
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
+                strategy = _resolve_web_search_provider_name()
+                primary_provider = "serper" if strategy == "hybrid" else None
                 cache_info: dict[str, Any] = {}
                 try:
-                    raw = await asyncio.wait_for(
+                    search_args = (
+                        spec.query,
+                        list(spec.domain_filter) if spec.domain_filter is not None else None,
+                        search_reason,
+                        heavy_mode,
+                        active_plan.route.value,
+                        planner_mode,
+                        spec.purpose,
+                        cache_info,
+                    )
+                    search_call = (
                         asyncio.to_thread(
                             _run_web_search,
-                            spec.query,
-                            list(spec.domain_filter) if spec.domain_filter is not None else None,
-                            search_reason,
-                            heavy_mode,
-                            active_plan.route.value,
-                            planner_mode,
-                            spec.purpose,
-                            cache_info,
-                        ),
+                            *search_args,
+                            provider_override=primary_provider,
+                        )
+                        if primary_provider
+                        else asyncio.to_thread(_run_web_search, *search_args)
+                    )
+                    raw = await asyncio.wait_for(
+                        search_call,
                         timeout=remaining,
                     )
                 except asyncio.TimeoutError:
@@ -712,11 +926,68 @@ async def answer_question_from_evidence(
                     web_results=raw,
                     industry_hint=company.industry,
                 )
+                accepted_provider = primary_provider or strategy or "configured"
+
+                # Hybrid route: Serper is always attempted first. Perplexity is
+                # called only when the same route-aware quality gate rejects the
+                # Serper evidence (or Serper failed). The fallback consumes its
+                # own provider-call slot and shares the same wall-clock budget.
+                if not useful and strategy == "hybrid":
+                    fallback_allowed = True
+                    if web_search_state is not None:
+                        async with web_search_state["lock"]:
+                            if web_search_state["count"][0] >= web_search_state["max"]:
+                                fallback_allowed = False
+                            else:
+                                web_search_state["count"][0] += 1
+                    remaining = deadline - time.monotonic()
+                    if fallback_allowed and remaining > 0:
+                        fallback_cache_info: dict[str, Any] = {}
+                        try:
+                            fallback_raw = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    _run_web_search,
+                                    spec.query,
+                                    list(spec.domain_filter)
+                                    if spec.domain_filter is not None
+                                    else None,
+                                    "quality fallback",
+                                    heavy_mode,
+                                    active_plan.route.value,
+                                    planner_mode,
+                                    spec.purpose,
+                                    fallback_cache_info,
+                                    provider_override="sonar",
+                                    fallback_from="serper",
+                                ),
+                                timeout=remaining,
+                            )
+                        except asyncio.TimeoutError:
+                            fallback_raw = "Web search failed: timeout"
+                        if fallback_cache_info.get("hit"):
+                            cache_hits += 1
+                            if web_search_state is not None:
+                                async with web_search_state["lock"]:
+                                    web_search_state["count"][0] -= 1
+                        fallback_useful, _fallback_reason = evaluate_web_result_relevance(
+                            policy=active_plan.relevance_policy,
+                            route=active_plan.route,
+                            question=question,
+                            company_name=company.name,
+                            web_results=fallback_raw,
+                            industry_hint=company.industry,
+                        )
+                        if fallback_useful:
+                            raw = fallback_raw
+                            useful = True
+                            accepted_provider = "perplexity fallback"
                 if useful:
                     accepted += 1
+                    accepted_providers.append(accepted_provider)
                     accepted_blocks.append(
                         f'=== Web results {position}/{total} '
-                        f'(purpose: {spec.purpose}; query: "{spec.query}") ===\n{raw}'
+                        f'(provider: {accepted_provider}; purpose: {spec.purpose}; '
+                        f'query: "{spec.query}") ===\n{raw}'
                     )
 
             web_search_query = " | ".join(executed) if executed else None
@@ -742,8 +1013,121 @@ async def answer_question_from_evidence(
             if len(combined) > WEB_RESULTS_TRUNCATE:
                 web_search_results += "\n...[truncated]"
             web_search_used = True
+            provider_suffix = (
+                f" via {', '.join(dict.fromkeys(accepted_providers))}"
+                if any(
+                    provider in {"serper", "perplexity fallback"}
+                    for provider in accepted_providers
+                )
+                else ""
+            )
             web_search_decision = (
-                f"used: {accepted}/{len(executed)} results passed {gate} gate{cache_suffix}"
+                f"used: {accepted}/{len(executed)} results passed {gate} gate"
+                f"{provider_suffix}{cache_suffix}"
+            )
+            return await _hybrid_answer(web_search_results)
+
+        async def _answer_from_shared_portfolio(
+            active_plan: WebSearchPlan,
+            grounded: str,
+        ) -> str:
+            """Reuse company-level evidence; spend reserve only on a material gap."""
+            nonlocal web_search_query, web_search_results, web_search_used, web_search_decision
+            assert web_search_state is not None
+            bucket_key = evidence_bucket_key(active_plan.route, aspect)
+            async with web_search_state["portfolio_lock"]:
+                candidates = list(
+                    web_search_state["portfolio_evidence"].get(bucket_key, [])
+                )
+
+            accepted: list[dict[str, Any]] = []
+            for evidence in candidates:
+                useful, _reason = evaluate_web_result_relevance(
+                    policy=active_plan.relevance_policy,
+                    route=active_plan.route,
+                    question=question,
+                    company_name=company.name,
+                    web_results=evidence["result"],
+                    industry_hint=company.industry,
+                )
+                if useful:
+                    accepted.append(evidence)
+
+            reserve_used = False
+            if not accepted and active_plan.queries:
+                reserve_allowed = False
+                async with web_search_state["portfolio_lock"]:
+                    if (
+                        web_search_state["portfolio_reserve_used"][0]
+                        < web_search_state["portfolio_reserve_max"]
+                    ):
+                        web_search_state["portfolio_reserve_used"][0] += 1
+                        reserve_allowed = True
+                if reserve_allowed:
+                    core_queries = web_search_state["portfolio_core_queries"]
+                    reserve_query = next(
+                        (
+                            item
+                            for item in active_plan.queries
+                            if item.query not in core_queries
+                        ),
+                        active_plan.queries[0],
+                    )
+                    reserve_evidence = await _run_quality_routed_search(
+                        query=reserve_query.query,
+                        domain_filter=list(reserve_query.domain_filter)
+                        if reserve_query.domain_filter is not None
+                        else None,
+                        purpose=reserve_query.purpose,
+                        route=active_plan.route,
+                        relevance_policy=active_plan.relevance_policy,
+                        representative_question=question,
+                        company=company,
+                        trigger_reason="portfolio reserve",
+                    )
+                    if reserve_evidence is not None:
+                        reserve_used = True
+                        accepted.append(reserve_evidence)
+                        async with web_search_state["portfolio_lock"]:
+                            web_search_state["portfolio_evidence"].setdefault(
+                                bucket_key, []
+                            ).append(reserve_evidence)
+
+            if not accepted:
+                web_search_decision = (
+                    "skipped: shared portfolio has no evidence passing the question gate"
+                )
+                return grounded
+
+            # Prefer a compact bundle: at most three distinct evidence objects,
+            # ordered by the deterministic core plan (reserve comes last).
+            unique: list[dict[str, Any]] = []
+            seen_queries: set[str] = set()
+            for evidence in accepted:
+                if evidence["query"] in seen_queries:
+                    continue
+                seen_queries.add(evidence["query"])
+                unique.append(evidence)
+                if len(unique) >= 3:
+                    break
+            web_search_query = " | ".join(item["query"] for item in unique)
+            blocks = [
+                f'=== Shared web evidence {position}/{len(unique)} '
+                f'(provider: {item["provider"]}; purpose: {item["purpose"]}; '
+                f'query: "{item["query"]}") ===\n{item["result"]}'
+                for position, item in enumerate(unique, start=1)
+            ]
+            combined = "\n\n".join(blocks)
+            web_search_results = combined[:WEB_RESULTS_TRUNCATE]
+            if len(combined) > WEB_RESULTS_TRUNCATE:
+                web_search_results += "\n...[truncated]"
+            web_search_used = True
+            providers = ", ".join(
+                dict.fromkeys(str(item["provider"]) for item in unique)
+            )
+            source = "reserve" if reserve_used else "core"
+            web_search_decision = (
+                f"used: shared portfolio {source} evidence via {providers}"
             )
             return await _hybrid_answer(web_search_results)
 
@@ -865,6 +1249,15 @@ async def answer_question_from_evidence(
         if needs_search and planner_controls and plan.is_skip:
             web_search_decision = f"skipped: planner {plan.route.value} — {plan.skip_reason}"
             return (grounded_answer, _provenance())
+
+        if (
+            needs_search
+            and planner_controls
+            and web_search_state is not None
+            and "portfolio_plan" in web_search_state
+        ):
+            answer = await _answer_from_shared_portfolio(plan, grounded_answer)
+            return (answer, _provenance())
 
         # Per-company cap: check and increment under lock
         do_search = False
@@ -1073,6 +1466,10 @@ async def answer_all_trees_from_evidence(
             "lock": asyncio.Lock(),
             "max": MAX_PPLX_CALLS_PER_COMPANY,
         }
+        if _shared_web_evidence_enabled() and _web_evidence_planner_mode() == "on":
+            web_search_state.update(
+                await _prepare_shared_web_evidence(question_trees, company)
+            )
 
     tasks = [
         _answer_node_from_evidence(

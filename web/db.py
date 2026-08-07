@@ -2811,6 +2811,7 @@ def get_costs_by_day(days: int = 14) -> list[dict[str, Any]] | None:
                     "total_usd": 0.0,
                     "llm_usd": 0.0,
                     "perplexity_usd": 0.0,
+                    "serper_usd": 0.0,
                     "search_requests": 0,
                 },
             )
@@ -2825,12 +2826,13 @@ def get_costs_by_day(days: int = 14) -> list[dict[str, Any]] | None:
             entry["total_usd"] += float(total_usd)
             entry["llm_usd"] += float(run_costs.get("llm_usd") or 0.0)
             entry["perplexity_usd"] += float(run_costs.get("perplexity_usd") or 0.0)
-            search = run_costs.get("perplexity_search")
+            entry["serper_usd"] += float(run_costs.get("serper_usd") or 0.0)
+            search = run_costs.get("web_search") or run_costs.get("perplexity_search")
             if isinstance(search, dict):
                 entry["search_requests"] += int(search.get("requests") or 0)
         results = sorted(by_day.values(), key=lambda item: item["day"], reverse=True)
         for entry in results:
-            for key in ("total_usd", "llm_usd", "perplexity_usd"):
+            for key in ("total_usd", "llm_usd", "perplexity_usd", "serper_usd"):
                 entry[key] = round(entry[key], 6)
         return results
     except Exception as exc:
@@ -6181,6 +6183,8 @@ def admin_get_recent_analyses(limit: int = 40) -> list[dict[str, Any]]:
                     "total_usd": run_costs.get("total_usd"),
                     "llm_usd": run_costs.get("llm_usd"),
                     "perplexity_usd": run_costs.get("perplexity_usd"),
+                    "serper_usd": run_costs.get("serper_usd"),
+                    "web_search_usd": (run_costs.get("web_search") or {}).get("total_usd"),
                 }
 
             results.append({

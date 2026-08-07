@@ -1,5 +1,5 @@
 """
-Web search provider abstractions supporting Brave Search and Perplexity Sonar.
+Web search provider abstractions supporting Serper, Brave, and Perplexity Sonar.
 
 Both providers expose the same string-based output contract that the rest of the
 agent relies on (`Search Results for: <query> ...`). This keeps downstream
@@ -74,6 +74,107 @@ class BraveSearchProvider(WebSearchProvider):
             end_date = datetime.strptime(search_end_date, "%Y-%m-%d")
         start_date = end_date - timedelta(days=365)
         return f"{start_date.strftime('%Y-%m-%d')}to{end_date.strftime('%Y-%m-%d')}"
+
+
+class SerperSearchProvider(WebSearchProvider):
+    """Client for Serper's Google Search REST API."""
+
+    BASE_URL = "https://google.serper.dev/search"
+
+    def __init__(
+        self,
+        search_end_date: str,
+        *,
+        country: str = DEFAULT_COUNTRY,
+        max_results: int = 5,
+    ):
+        api_key = os.getenv("SERPER_API_KEY")
+        if not api_key:
+            raise ValueError("Serper requires SERPER_API_KEY environment variable.")
+
+        self._api_key = api_key
+        self._country = (country or DEFAULT_COUNTRY).lower()
+        self._max_results = max(1, min(max_results, 10))
+        self._search_end_date = search_end_date
+        try:
+            self._requests = importlib.import_module("requests")
+        except ImportError as exc:
+            raise ImportError(
+                "The 'requests' package is required for SerperSearchProvider."
+            ) from exc
+
+    def search(self, query: str, *, domain_filter: Optional[List[str]] = None) -> str:
+        search_query = self._apply_domain_filter(query, domain_filter)
+        payload = {
+            "q": search_query,
+            "gl": self._country,
+            "hl": "en",
+            "num": self._max_results,
+        }
+        response = run_with_sync_retries(
+            self._requests.post,
+            self.BASE_URL,
+            headers={
+                "X-API-KEY": self._api_key,
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ValueError("Unexpected Serper response format: root is not an object")
+        return self._format_results(query, data)
+
+    @staticmethod
+    def _apply_domain_filter(query: str, domain_filter: Optional[List[str]]) -> str:
+        domains = [
+            str(domain).strip().lower()
+            for domain in (domain_filter or [])[:10]
+            if str(domain).strip()
+        ]
+        if not domains:
+            return query
+        clauses = " OR ".join(f"site:{domain}" for domain in domains)
+        return f"{query} ({clauses})"
+
+    @staticmethod
+    def _format_results(query: str, data: dict) -> str:
+        lines: List[str] = [f"Search Results for: {query}", ""]
+
+        answer_box = data.get("answerBox")
+        if isinstance(answer_box, dict):
+            title = answer_box.get("title") or answer_box.get("answer") or "Answer"
+            answer = answer_box.get("answer") or answer_box.get("snippet") or ""
+            link = answer_box.get("link") or ""
+            lines.append(f"Answer box: {title}" + (f" — {link}" if link else ""))
+            if answer and answer != title:
+                lines.append(f"   {answer}")
+            lines.append("")
+
+        results = data.get("organic", [])
+        if not isinstance(results, list):
+            raise ValueError("Unexpected Serper response format: 'organic' is not a list")
+        if not results and not isinstance(answer_box, dict):
+            lines.append("No search results returned.")
+            return "\n".join(lines)
+
+        for index, item in enumerate(results, start=1):
+            if not isinstance(item, dict):
+                continue
+            title = item.get("title") or "No title"
+            url = item.get("link") or "No URL provided"
+            snippet = item.get("snippet") or ""
+            date = item.get("date")
+            lines.append(f"{index}. {title} — {url}")
+            if date:
+                lines.append(f"   Date: {date}")
+            if snippet:
+                lines.append(f"   {snippet}")
+            lines.append("")
+
+        return "\n".join(lines).rstrip()
 
 
 class SonarSearchProvider(WebSearchProvider):
@@ -167,7 +268,6 @@ class SonarSearchProvider(WebSearchProvider):
             title = item.get("title") or "No title"
             url = item.get("url") or "No URL provided"
             snippet = item.get("snippet") or ""
-            date = item.get("date")
 
             lines.append(f"{index}. {title} — {url}")
             if snippet:
@@ -182,7 +282,8 @@ def get_provider(search_end_date: str, *, provider_name: str) -> WebSearchProvid
     provider = provider_name.lower()
     if provider == "sonar":
         return SonarSearchProvider(search_end_date=search_end_date)
+    if provider in {"serper", "hybrid"}:
+        return SerperSearchProvider(search_end_date=search_end_date)
     if provider == "brave":
         return BraveSearchProvider(search_end_date=search_end_date)
     raise ValueError(f"Unsupported web search provider '{provider_name}'.")
-
