@@ -931,7 +931,7 @@ def test_job_log_endpoint_returns_live_progress_for_active_job(monkeypatch) -> N
         web_app._jobs.pop(job_id, None)
 
 
-def test_job_log_endpoint_rejects_interrupted_run(monkeypatch) -> None:
+def test_job_log_endpoint_returns_persisted_progress_without_event_history(monkeypatch) -> None:
     job_id = "job-interrupted-log"
     monkeypatch.setattr(web_app, "_check_session", lambda session_id: True)
     monkeypatch.setattr(
@@ -948,11 +948,14 @@ def test_job_log_endpoint_rejects_interrupted_run(monkeypatch) -> None:
         ),
     )
 
-    with pytest.raises(web_app.HTTPException) as exc_info:
-        asyncio.run(web_app.get_job_log(job_id, response=Response(), session_id="session"))
+    payload = asyncio.run(web_app.get_job_log(job_id, response=Response(), session_id="session"))
 
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.detail == "Run is no longer active."
+    assert payload == {
+        "job_id": job_id,
+        "status": "running",
+        "progress": "Chunk 2/2 — Evaluating Delta",
+        "progress_log": ["Chunk 2/2 — Evaluating Delta"],
+    }
 
 
 def test_job_log_endpoint_returns_db_progress_for_worker_backed_job(monkeypatch) -> None:
