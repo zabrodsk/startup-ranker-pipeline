@@ -38,6 +38,7 @@ An intake request carries:
 - campaign, iteration, source-run, and batch IDs;
 - stable per-company idempotency key;
 - target environment;
+- Prague business date and the fixed `Europe/Prague` business timezone;
 - bounded provenance reference.
 
 The caller sends one company per intake. The worker receives only the canonical
@@ -62,12 +63,15 @@ The auditable actor is always `service:rockaway-leadgen`.
 `RDI_LEADGEN_AUTOSTART_ENABLED` defaults disabled and accepts only the explicit
 value `true`. Other unset/false values remain disabled; malformed values fail
 closed. `RDI_SCORING_VERSION` must contain an explicit bounded version before a
-reservation can be created. `RDI_LEADGEN_GLOBAL_START_LIMIT` defaults to 20 and
-is enforced atomically across all campaigns in the server-configured target
-environment. The persisted environment, reservation parameter, advisory lock,
-count, and audit event all use or verify that server value. A caller cannot
-select another environment partition. Replays are resolved before the limit
-check, so they cannot consume or bypass capacity.
+reservation can be created. `RDI_LEADGEN_DAILY_START_LIMIT` defaults to 20 and
+is enforced atomically across all campaigns for the server-configured target
+environment and current Prague business date. The deprecated
+`RDI_LEADGEN_GLOBAL_START_LIMIT` is accepted only when the preferred variable is
+unset; configuring both fails closed. The persisted environment/date scope,
+reservation parameter, advisory lock, count, response capacity fields, and
+audit event all use or verify that server scope. A caller cannot select another
+environment or date partition. Exact replays resolve before the current-date
+check and do not consume or bypass capacity; new starts for a closed date fail.
 
 The durable order is:
 
@@ -133,15 +137,18 @@ credential-like text are not projected.
 
 ## Persistence and rollout
 
-`supabase/migrations/20260731000000_leadgen_machine_lifecycle.sql` is a forward,
-additive migration. It adds the bounded nullable company-run source key and
-index, and defines unique identities, lifecycle checks, an audit relation with
-a foreign key, RLS, fixed-search-path security-definer RPCs,
-environment-scoped global advisory locking, row locking, and RPC-only
-service-role execution grants. Direct table DML is revoked from all application
-roles. All mutations, including definite-no-start fence release and its audit
-event, go through atomic RPCs; the adapter does not use read-then-write REST
-composition.
+`supabase/migrations/20260731000000_leadgen_machine_lifecycle.sql` establishes
+the machine lifecycle. The forward-only correction
+`20260807102328_leadgen_machine_daily_start_scope.sql` backfills the Prague
+business date, registers one canonical campaign per environment/date scope,
+drops the unsafe environment-only reservation signature, and installs the
+daily-scoped reservation/capacity RPCs. RLS, fixed-search-path security-definer
+RPCs, row locking, and RPC-only service-role grants remain enforced. Direct
+table DML is revoked from all application roles. All mutations, including
+definite-no-start fence release and its audit event, go through atomic RPCs; the
+adapter does not use read-then-write REST composition. Rollback is operational:
+disable autostart and roll back application code; do not reverse the additive
+data migration.
 
 Apply the migration to staging before deploying the matching route code. Until
 the migration and required environment configuration are present, machine

@@ -1832,19 +1832,23 @@ def reserve_machine_start(
     *,
     intake_id: str,
     target_environment: str,
+    business_date: str,
+    business_timezone: str,
     job_id: str,
     actor: str,
-    global_limit: int,
+    daily_start_limit: int,
 ) -> dict[str, Any] | None:
-    """Atomically fence one start and enforce the environment-wide start limit."""
+    """Atomically fence one start within its immutable Prague daily scope."""
     return _machine_rpc_object(
         "reserve_leadgen_machine_start",
         {
             "p_intake_id": intake_id,
             "p_target_environment": target_environment,
+            "p_business_date": business_date,
+            "p_business_timezone": business_timezone,
             "p_job_id": job_id,
             "p_actor": actor,
-            "p_global_limit": global_limit,
+            "p_daily_start_limit": daily_start_limit,
         },
     )
 

@@ -9,8 +9,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml ./
 COPY src/ ./src/
 COPY web/ ./web/
+COPY security/ ./security/
+COPY scripts/verify_protected_scoring.py ./scripts/verify_protected_scoring.py
 
-RUN pip install --no-cache-dir -e "." && \
+RUN python scripts/verify_protected_scoring.py
+
+RUN python -m pip install --no-cache-dir --upgrade "pip>=26.1.2" && \
+    pip install --no-cache-dir -e "." && \
     pip install --no-cache-dir fastapi uvicorn python-multipart
 
 EXPOSE 8000
