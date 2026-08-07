@@ -11,7 +11,7 @@ import re
 import unicodedata
 
 from agent.pipeline.stages.constants import QuestionAspect
-from agent.pipeline.state.decomposition import DecompositionTree
+from agent.pipeline.state.decomposition import DecompositionNode, DecompositionTree
 
 QUESTION_PORTFOLIO_MAX_TOTAL = 88
 QUESTION_PORTFOLIO_ALLOWANCES: dict[QuestionAspect, int] = {
@@ -41,14 +41,39 @@ def validate_question_portfolio(
     aspect: QuestionAspect,
     root_question: str,
     budget: int,
-) -> None:
-    """Validate only the allowance and essential tree invariants."""
+) -> DecompositionTree:
+    """Materialize referenced leaves, then validate the allowance and tree."""
     violations: list[str] = []
-    nodes = tree.nodes
+    nodes = [node.model_copy(deep=True) for node in tree.nodes]
+
+    # Luna may express leaves only in a parent's sub_questions list. Turn those
+    # references into normal leaf nodes so every distinct question is counted.
+    canonical_nodes: dict[str, DecompositionNode] = {}
+    for node in nodes:
+        key = _normalize_question(node.question)
+        if key and key not in canonical_nodes:
+            canonical_nodes[key] = node
+    for node in nodes:
+        for index, child_question in enumerate(node.sub_questions):
+            child_key = _normalize_question(child_question)
+            if not child_key:
+                continue
+            child_node = canonical_nodes.get(child_key)
+            if child_node is None:
+                child_node = DecompositionNode(
+                    question=child_question,
+                    sub_questions=[],
+                )
+                canonical_nodes[child_key] = child_node
+                nodes.append(child_node)
+            node.sub_questions[index] = child_node.question
+
+    normalized_tree = tree.model_copy(update={"nodes": nodes})
 
     if len(nodes) > budget:
         violations.append(
-            f"portfolio must contain no more than {budget} nodes including the root; got {len(nodes)}"
+            f"portfolio must contain no more than {budget} distinct questions "
+            f"including the root; got {len(nodes)}"
         )
     if not nodes:
         raise QuestionPortfolioValidationError(violations or ["portfolio has no root node"])
@@ -111,6 +136,8 @@ def validate_question_portfolio(
     if violations:
         raise QuestionPortfolioValidationError(violations)
 
+    return normalized_tree
+
 
 def build_portfolio_instruction(aspect: QuestionAspect, budget: int) -> str:
     """Return the upfront quality and allowance contract for one category."""
@@ -120,10 +147,11 @@ def build_portfolio_instruction(aspect: QuestionAspect, budget: int) -> str:
     return f"""
 QUESTION PORTFOLIO CONTRACT
 You are selecting the {aspect} category of an investment-diligence portfolio.
-The maximum total allowance is {QUESTION_PORTFOLIO_MAX_TOTAL} nodes, allocated as: {allowances}.
+The maximum total allowance is {QUESTION_PORTFOLIO_MAX_TOTAL} distinct questions, allocated as: {allowances}.
 
-Return no more than {budget} nodes for this category, including the root question.
-You are not required to use the full allowance. Use fewer nodes whenever additional
+Return no more than {budget} distinct questions for this category, including the root question
+and every referenced sub-question.
+You are not required to use the full allowance. Use fewer questions whenever additional
 questions would add little decision value. Never add filler to reach a count.
 
 Before producing the structured output, privately:
@@ -134,9 +162,10 @@ Before producing the structured output, privately:
 4. Select only high-quality, non-duplicative questions and stop once the remaining
    candidates would not materially improve the assessment.
 
-Return one connected, acyclic tree. Every sub-question must also appear exactly
-once as a node; every non-root node must have exactly one parent. Questions must
-be specific, independently answerable from company documents or credible external
-evidence, belong to the {aspect} category, and collectively cover its material
-opportunities, risks, and uncertainties.
+Return one connected, acyclic tree in which every non-root question has exactly one
+parent. A leaf question does not need a standalone node; list it only in its parent's
+sub_questions. Add a standalone node only when that question has sub-questions of
+its own. Questions must be specific, independently answerable from company documents
+or credible external evidence, belong to the {aspect} category, and collectively
+cover its material opportunities, risks, and uncertainties.
 """.strip()

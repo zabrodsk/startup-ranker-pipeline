@@ -130,7 +130,7 @@ async def decompose_question_async(state: DecompositionInput) -> DecompositionOu
                 if state.question_budget is None:
                     return decomposition_tree
                 try:
-                    validate_question_portfolio(
+                    decomposition_tree = validate_question_portfolio(
                         decomposition_tree,
                         aspect=state.aspect,
                         root_question=state.question or "",
@@ -153,9 +153,10 @@ async def decompose_question_async(state: DecompositionInput) -> DecompositionOu
                                 "The generated portfolio violated the contract: "
                                 f"{exc}. Regenerate the complete category from scratch. "
                                 "Do not truncate or patch the previous tree. Return "
-                                f"no more than {state.question_budget} nodes, preserve the "
-                                "root and tree structure, remove duplicates, and use fewer "
-                                "questions whenever additional ones add little decision value."
+                                f"no more than {state.question_budget} distinct questions "
+                                "in total, preserve the root and tree structure, remove "
+                                "duplicates, and use fewer questions whenever additional "
+                                "ones add little decision value."
                             )
                         )
                     ]
