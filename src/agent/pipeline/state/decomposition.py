@@ -43,8 +43,8 @@ class DecompositionInput(BaseModel):
     industry: str | None = "AI marketing tools"
     question: str | None = "What is the current size and forecast growth of the target market?"
     aspect: Literal["general_company", "market", "product", "team"] | None = "general_company"
-    # Exact number of nodes for this category, root included. None preserves
-    # direct/legacy decomposition behavior outside the full pipeline.
+    # Maximum distinct questions for this category, root included. None
+    # preserves direct/legacy decomposition behavior outside the full pipeline.
     question_budget: int | None = None
     prompt_overrides: Dict[str, Any] = Field(default_factory=dict)
 

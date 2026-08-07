@@ -7,7 +7,8 @@ All notable changes to this project will be documented in this file.
 ### Changed — flexible investment-question allowance (2026-08-07)
 
 - Replaced the exact 76-question requirement with an upfront maximum allowance
-  of 88 nodes: up to 16 strategy-fit, 28 market, 24 product, and 20 team nodes.
+  of 88 distinct questions: up to 16 strategy-fit, 28 market, 24 product, and
+  20 team questions.
   Luna may stop below any allowance when additional questions add little
   decision value; generated trees are never truncated after the fact.
 - Simplified generation to high-quality, independently answerable,
@@ -17,6 +18,9 @@ All notable changes to this project will be documented in this file.
 - Deterministic validation now checks only the maximum allowance, root identity,
   uniqueness, connectivity, and parentage. Invalid structures regenerate in
   full; returning fewer than the allowance is valid.
+- Compact trees are accepted when leaf questions appear only under their
+  parent. Those leaves are materialized and counted before validation, avoiding
+  needless regeneration while preserving the same allowance and safeguards.
 - Raised GPT-5.6 Luna decomposition from low to medium reasoning while keeping
   temperature omitted; all other Luna phase defaults are unchanged.
 

@@ -29,10 +29,12 @@ def test_portfolio_instruction_gives_market_a_flexible_upfront_allowance() -> No
     instruction = build_portfolio_instruction("market", 28)
 
     assert "maximum total allowance is 88" in instruction
-    assert "no more than 28 nodes" in instruction
+    assert "no more than 28 distinct questions" in instruction
     assert "including the root question" in instruction
     assert "not required to use the full allowance" in instruction
     assert "Never add filler" in instruction
+    assert "distinct questions" in instruction
+    assert "does not need a standalone node" in instruction
     assert "rank the candidates by decision value" in instruction.lower()
     assert "coverage_tags" not in instruction
     assert "decision_rationale" not in instruction
@@ -68,6 +70,71 @@ def test_valid_portfolio_allows_fewer_than_the_category_allowance() -> None:
     )
 
 
+def test_compact_luna_output_materializes_referenced_leaves() -> None:
+    tree = DecompositionTree(
+        nodes=[
+            DecompositionNode(
+                question="Does the company fit the investment strategy?",
+                sub_questions=["Is the business model attractive?"],
+            )
+        ]
+    )
+
+    normalized = validate_question_portfolio(
+        tree,
+        aspect="general_company",
+        root_question="Does the company fit the investment strategy?",
+        budget=16,
+    )
+
+    assert [node.question for node in normalized.nodes] == [
+        "Does the company fit the investment strategy?",
+        "Is the business model attractive?",
+    ]
+    assert normalized.nodes[1].sub_questions == []
+
+
+def test_decomposition_uses_the_normalized_question_text(monkeypatch) -> None:
+    output = DecompositionTree(
+        nodes=[
+            DecompositionNode(
+                question="Does the company fit the investment strategy?",
+                sub_questions=["IS THE BUSINESS MODEL ATTRACTIVE?"],
+            ),
+            DecompositionNode(
+                question="Is the business model attractive?",
+                sub_questions=["Are unit economics sustainable?"],
+            ),
+        ]
+    )
+
+    class Runnable:
+        def with_structured_output(self, _schema):
+            return self
+
+        async def ainvoke(self, _messages):
+            return output
+
+    monkeypatch.setattr(decomposition, "get_llm", lambda temperature=0.0: Runnable())
+
+    result = asyncio.run(
+        decomposition.decompose_question_async(
+            DecompositionInput(
+                question="Does the company fit the investment strategy?",
+                industry="Fintech",
+                aspect="general_company",
+                question_budget=16,
+            )
+        )
+    )
+
+    business_model = result["question_tree"].root_node.sub_nodes[0]
+    assert business_model.question == "Is the business model attractive?"
+    assert [node.question for node in business_model.sub_nodes] == [
+        "Are unit economics sustainable?"
+    ]
+
+
 @pytest.mark.parametrize(
     ("mutate", "expected"),
     [
@@ -81,15 +148,15 @@ def test_valid_portfolio_allows_fewer_than_the_category_allowance() -> None:
                     for index in range(3)
                 ]
             ),
-            "no more than 16 nodes",
+            "no more than 16 distinct questions",
         ),
         (
             lambda tree: setattr(tree.nodes[-1], "question", tree.nodes[-2].question.lower()),
             "duplicate question",
         ),
         (
-            lambda tree: tree.nodes[0].sub_questions.append("Unlisted question?"),
-            "not present as a node",
+            lambda tree: tree.nodes[1].sub_questions.append(tree.nodes[-1].question),
+            "has 2",
         ),
     ],
 )
@@ -98,6 +165,25 @@ def test_invalid_structure_or_excess_is_rejected_instead_of_truncated(mutate, ex
     mutate(tree)
 
     with pytest.raises(QuestionPortfolioValidationError, match=expected):
+        validate_question_portfolio(
+            tree,
+            aspect="general_company",
+            root_question="Does the company fit the investment strategy?",
+            budget=16,
+        )
+
+
+def test_materialized_leaves_count_toward_the_allowance() -> None:
+    tree = DecompositionTree(
+        nodes=[
+            DecompositionNode(
+                question="Does the company fit the investment strategy?",
+                sub_questions=[f"Material question {index}?" for index in range(16)],
+            )
+        ]
+    )
+
+    with pytest.raises(QuestionPortfolioValidationError, match="got 17"):
         validate_question_portfolio(
             tree,
             aspect="general_company",
@@ -148,8 +234,8 @@ def test_decomposition_regenerates_only_when_allowance_is_exceeded(monkeypatch) 
     )
 
     assert len(invocations) == 2
-    assert "no more than 16 nodes" in invocations[0][0].content
-    assert "no more than 16 nodes" in invocations[1][-1].content
+    assert "no more than 16 distinct questions" in invocations[0][0].content
+    assert "no more than 16 distinct questions" in invocations[1][-1].content
     assert "got 17" in invocations[1][-1].content
     assert "technology_validation" not in invocations[0][0].content
     assert "coverage_tags" not in invocations[0][0].content
