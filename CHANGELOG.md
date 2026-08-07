@@ -4,13 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Changed — budget-aware investment-question portfolio (2026-08-06)
+### Changed — flexible investment-question allowance (2026-08-07)
 
-- Replaced unconstrained question decomposition with an upfront 76-question
-  portfolio: 14 strategy-fit, 24 market, 20 product, and 18 team nodes.
-- Added deterministic validation for exact count, root identity, uniqueness,
-  coverage tags, decision rationale, priority, connectivity, and parentage.
-  Invalid category trees are regenerated in full and are never truncated.
+- Replaced the exact 76-question requirement with an upfront maximum allowance
+  of 88 nodes: up to 16 strategy-fit, 28 market, 24 product, and 20 team nodes.
+  Luna may stop below any allowance when additional questions add little
+  decision value; generated trees are never truncated after the fact.
+- Simplified generation to high-quality, independently answerable,
+  non-duplicative questions that collectively cover each category. Removed
+  coverage tags, decision rationale, priority, and evidence-route metadata from
+  decomposition. Evidence routing now remains a separate downstream concern.
+- Deterministic validation now checks only the maximum allowance, root identity,
+  uniqueness, connectivity, and parentage. Invalid structures regenerate in
+  full; returning fewer than the allowance is valid.
 - Raised GPT-5.6 Luna decomposition from low to medium reasoning while keeping
   temperature omitted; all other Luna phase defaults are unchanged.
 

@@ -1,8 +1,8 @@
-"""Budget and quality contract for investment-question decomposition.
+"""Flexible allowance and quality contract for investment-question decomposition.
 
-The budget is a generation constraint, not a post-generation cutoff. Each
-decomposition call knows its exact share of the full portfolio before it
-creates any questions.
+The allowance is disclosed before generation, never applied as post-generation
+truncation. The model may stop below the allowance whenever additional
+questions would add little decision value.
 """
 
 from __future__ import annotations
@@ -13,52 +13,12 @@ import unicodedata
 from agent.pipeline.stages.constants import QuestionAspect
 from agent.pipeline.state.decomposition import DecompositionTree
 
-QUESTION_PORTFOLIO_TOTAL = 76
-QUESTION_PORTFOLIO_ALLOCATION: dict[QuestionAspect, int] = {
-    "general_company": 14,
-    "market": 24,
-    "product": 20,
-    "team": 18,
-}
-
-QUESTION_PORTFOLIO_COVERAGE: dict[QuestionAspect, tuple[str, ...]] = {
-    "general_company": (
-        "sector_fit",
-        "stage_fit",
-        "geography_fit",
-        "check_size_and_ownership",
-        "business_model_fit",
-        "thesis_exceptions",
-    ),
-    "market": (
-        "customer_problem",
-        "target_segments",
-        "tam_sam_som",
-        "growth_and_timing",
-        "competition_and_substitutes",
-        "go_to_market_economics",
-        "regulation_and_market_risk",
-    ),
-    "product": (
-        "value_proposition",
-        "core_workflow",
-        "differentiation",
-        "technical_architecture",
-        "defensibility_ip_and_data",
-        "product_maturity",
-        "customer_validation",
-        "scalability_security_and_compliance",
-    ),
-    "team": (
-        "founder_identity_and_roles",
-        "domain_expertise",
-        "execution_track_record",
-        "technical_commercial_balance",
-        "commitment_and_incentives",
-        "hiring_gaps",
-        "governance_and_reputation",
-        "network_and_access",
-    ),
+QUESTION_PORTFOLIO_MAX_TOTAL = 88
+QUESTION_PORTFOLIO_ALLOWANCES: dict[QuestionAspect, int] = {
+    "general_company": 16,
+    "market": 28,
+    "product": 24,
+    "team": 20,
 }
 
 
@@ -82,13 +42,13 @@ def validate_question_portfolio(
     root_question: str,
     budget: int,
 ) -> None:
-    """Validate a generated category as a portfolio; never mutate or truncate it."""
+    """Validate only the allowance and essential tree invariants."""
     violations: list[str] = []
     nodes = tree.nodes
 
-    if len(nodes) != budget:
+    if len(nodes) > budget:
         violations.append(
-            f"portfolio must contain exactly {budget} nodes including the root; got {len(nodes)}"
+            f"portfolio must contain no more than {budget} nodes including the root; got {len(nodes)}"
         )
     if not nodes:
         raise QuestionPortfolioValidationError(violations or ["portfolio has no root node"])
@@ -108,31 +68,6 @@ def validate_question_portfolio(
             violations.append(f"duplicate question: {node.question!r}")
         else:
             node_by_key[key] = node
-
-    allowed_tags = set(QUESTION_PORTFOLIO_COVERAGE[aspect])
-    covered_tags: set[str] = set()
-    for index, node in enumerate(nodes):
-        tags = {tag.strip() for tag in node.coverage_tags if tag and tag.strip()}
-        if not tags:
-            violations.append(f"node {index} must include coverage_tags")
-        unknown_tags = tags - allowed_tags
-        if unknown_tags:
-            violations.append(
-                f"node {index} uses unknown coverage_tags: {', '.join(sorted(unknown_tags))}"
-            )
-        covered_tags.update(tags & allowed_tags)
-        if index > 0:
-            if not (node.decision_rationale or "").strip():
-                violations.append(f"node {index} must include decision_rationale")
-            if node.priority not in {"core", "supporting"}:
-                violations.append(f"node {index} must set priority to core or supporting")
-
-    missing_tags = allowed_tags - covered_tags
-    if missing_tags:
-        violations.append(
-            "portfolio is missing required coverage_tags: "
-            + ", ".join(sorted(missing_tags))
-        )
 
     parent_counts = {key: 0 for key in node_by_key}
     edges: dict[str, list[str]] = {key: [] for key in node_by_key}
@@ -178,32 +113,30 @@ def validate_question_portfolio(
 
 
 def build_portfolio_instruction(aspect: QuestionAspect, budget: int) -> str:
-    """Return the upfront selection contract for one portfolio category."""
-    allocation = ", ".join(
-        f"{name}={count}" for name, count in QUESTION_PORTFOLIO_ALLOCATION.items()
+    """Return the upfront quality and allowance contract for one category."""
+    allowances = ", ".join(
+        f"{name}<= {count}" for name, count in QUESTION_PORTFOLIO_ALLOWANCES.items()
     )
-    coverage = ", ".join(QUESTION_PORTFOLIO_COVERAGE[aspect])
     return f"""
 QUESTION PORTFOLIO CONTRACT
-You are selecting the {aspect} category of a {QUESTION_PORTFOLIO_TOTAL}-question investment-diligence portfolio.
-The full allocation is fixed before generation: {allocation}.
+You are selecting the {aspect} category of an investment-diligence portfolio.
+The maximum total allowance is {QUESTION_PORTFOLIO_MAX_TOTAL} nodes, allocated as: {allowances}.
 
-Return exactly {budget} nodes for this category, including the root question as one node.
-Do not generate extra questions. Do not draft a longer list for later truncation.
+Return no more than {budget} nodes for this category, including the root question.
+You are not required to use the full allowance. Use fewer nodes whenever additional
+questions would add little decision value. Never add filler to reach a count.
 
 Before producing the structured output, privately:
 1. Generate a broader candidate pool.
 2. Remove overlapping, cosmetic, and low-materiality candidates.
 3. Rank the candidates by decision value: how much a credible answer could change
    the investment assessment, expose a material risk, or test a key hypothesis.
-4. Select only the strongest candidates that collectively satisfy the exact budget.
-
-The selected questions must collectively cover these topic tags: {coverage}.
-Tag every node with one or more applicable coverage_tags. Every non-root node must
-include a concise decision_rationale and a priority of core or supporting.
+4. Select only high-quality, non-duplicative questions and stop once the remaining
+   candidates would not materially improve the assessment.
 
 Return one connected, acyclic tree. Every sub-question must also appear exactly
 once as a node; every non-root node must have exactly one parent. Questions must
 be specific, independently answerable from company documents or credible external
-evidence, and non-duplicative. Never add filler merely to reach the budget.
+evidence, belong to the {aspect} category, and collectively cover its material
+opportunities, risks, and uncertainties.
 """.strip()

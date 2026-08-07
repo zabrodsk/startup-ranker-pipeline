@@ -2,8 +2,8 @@
 
 "local" (default) keeps the per-container JSON cache byte-identical;
 "supabase" shares decomposed trees across workers via a company-free key
-(question + industry + aspect + full prompt signature including
-ROUTE_TAGGING_INSTRUCTION). Unconfigured DB silently falls back to local.
+(question + industry + aspect + full prompt signature). Unconfigured DB
+silently falls back to local.
 Includes the canary test pinning the decomposition prompt to {question} and
 {industry} only — adding company context to the prompt would invalidate the
 company-free key design.
@@ -71,21 +71,15 @@ def test_query_hash_is_company_free_and_input_sensitive():
     assert dcs.compute_query_hash("How big is the market?", "Robotics", "market", "x" + sig) != base
 
 
-def test_prompt_signature_covers_route_tagging_instruction(monkeypatch):
+def test_prompt_signature_covers_portfolio_allowance_and_category_contract():
     base = dcs.compute_prompt_signature()
-    monkeypatch.setattr(dcs, "ROUTE_TAGGING_INSTRUCTION", "changed instruction")
-    assert dcs.compute_prompt_signature() != base
-
-
-def test_prompt_signature_covers_portfolio_budget_and_category_contract():
-    base = dcs.compute_prompt_signature()
-    market = dcs.compute_prompt_signature(aspect="market", question_budget=24)
-    product = dcs.compute_prompt_signature(aspect="product", question_budget=20)
+    market = dcs.compute_prompt_signature(aspect="market", question_budget=28)
+    product = dcs.compute_prompt_signature(aspect="product", question_budget=24)
 
     assert market != base
     assert product != base
     assert market != product
-    assert dcs._KEY_VERSION_PREFIX == "dtree-v4"
+    assert dcs._KEY_VERSION_PREFIX == "dtree-v5"
 
 
 def test_prompt_signature_covers_prompt_overrides():
@@ -108,7 +102,7 @@ def test_canary_decomposition_user_prompt_takes_only_question_and_industry():
     decomposition.py calls decompose_user_prompt.format(question=..., industry=...).
     If anyone adds a company placeholder to the prompt, this format call raises
     (or the placeholder list changes) and this canary fails — the company-free
-    cache key in decomposition_cache_store must then be redesigned (dtree-v4).
+    cache key in decomposition_cache_store must then be redesigned (dtree-v5).
     """
     from agent.prompt_library.defaults import PROMPT_DEFINITIONS
     from agent.prompt_library.manager import get_prompt

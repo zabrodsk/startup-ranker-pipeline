@@ -1,4 +1,4 @@
-"""Tests for decomposition route tagging + the planner hybrid-prompt variant (PR4)."""
+"""Tests for separate evidence routing + the planner hybrid-prompt variant."""
 
 import asyncio
 import json
@@ -36,14 +36,14 @@ from agent.prompt_library.manager import get_prompt
 # --- Decomposition schema -----------------------------------------------------
 
 
-def test_decomposition_node_parses_old_payload_without_route():
+def test_decomposition_node_has_only_question_tree_fields():
     node = DecompositionNode(**{"question": "Q?", "sub_questions": []})
-    assert node.route is None
+    assert node.model_dump() == {"question": "Q?", "sub_questions": []}
 
 
-def test_decomposition_node_parses_route():
+def test_decomposition_node_ignores_legacy_route_metadata():
     node = DecompositionNode(question="Q?", sub_questions=[], route="sector_market")
-    assert node.route == "sector_market"
+    assert "route" not in node.model_dump()
 
 
 def test_question_node_parses_old_payload_without_route():
@@ -51,7 +51,7 @@ def test_question_node_parses_old_payload_without_route():
     assert node.route is None
 
 
-def test_tree_builder_propagates_normalized_routes():
+def test_tree_builder_leaves_evidence_routing_to_the_separate_planner():
     tree = DecompositionTree(
         nodes=[
             DecompositionNode(question="Root?", sub_questions=["A?", "B?"], route="Sector-Market"),
@@ -60,10 +60,10 @@ def test_tree_builder_propagates_normalized_routes():
         ]
     )
     qt = _build_question_tree_from_decomposition_tree(tree, "market")
-    assert qt.root_node.route == "sector_market"  # normalized from "Sector-Market"
+    assert qt.root_node.route is None
     by_q = {n.question: n for n in qt.root_node.sub_nodes}
-    assert by_q["A?"].route == "competitors"
-    assert by_q["B?"].route is None  # unknown tag -> None -> fallback router
+    assert by_q["A?"].route is None
+    assert by_q["B?"].route is None
 
 
 def test_tree_builder_orphan_children_get_no_route():

@@ -4,8 +4,8 @@ import pytest
 
 from agent.pipeline.stages import decomposition
 from agent.pipeline.stages.question_portfolio import (
-    QUESTION_PORTFOLIO_ALLOCATION,
-    QUESTION_PORTFOLIO_TOTAL,
+    QUESTION_PORTFOLIO_ALLOWANCES,
+    QUESTION_PORTFOLIO_MAX_TOTAL,
     QuestionPortfolioValidationError,
     build_portfolio_instruction,
     validate_question_portfolio,
@@ -17,70 +17,72 @@ from agent.pipeline.state.decomposition import (
 )
 
 
-def test_portfolio_instruction_gives_market_an_exact_upfront_share() -> None:
-    assert QUESTION_PORTFOLIO_ALLOCATION == {
-        "general_company": 14,
-        "market": 24,
-        "product": 20,
-        "team": 18,
+def test_portfolio_instruction_gives_market_a_flexible_upfront_allowance() -> None:
+    assert QUESTION_PORTFOLIO_ALLOWANCES == {
+        "general_company": 16,
+        "market": 28,
+        "product": 24,
+        "team": 20,
     }
-    assert sum(QUESTION_PORTFOLIO_ALLOCATION.values()) == QUESTION_PORTFOLIO_TOTAL == 76
+    assert sum(QUESTION_PORTFOLIO_ALLOWANCES.values()) == QUESTION_PORTFOLIO_MAX_TOTAL == 88
 
-    instruction = build_portfolio_instruction("market", 24)
+    instruction = build_portfolio_instruction("market", 28)
 
-    assert "76-question investment-diligence portfolio" in instruction
-    assert "exactly 24 nodes" in instruction
+    assert "maximum total allowance is 88" in instruction
+    assert "no more than 28 nodes" in instruction
     assert "including the root question" in instruction
-    assert "Do not generate extra questions" in instruction
+    assert "not required to use the full allowance" in instruction
+    assert "Never add filler" in instruction
     assert "rank the candidates by decision value" in instruction.lower()
+    assert "coverage_tags" not in instruction
+    assert "decision_rationale" not in instruction
+    assert "priority" not in instruction
 
 
 def _general_company_tree(*, count: int = 14) -> DecompositionTree:
-    tags = [
-        "sector_fit",
-        "stage_fit",
-        "geography_fit",
-        "check_size_and_ownership",
-        "business_model_fit",
-        "thesis_exceptions",
-    ]
     children = [f"Material diligence question {index}?" for index in range(1, count)]
     nodes = [
         DecompositionNode(
             question="Does the company fit the investment strategy?",
             sub_questions=children,
-            coverage_tags=tags,
-            priority="core",
         )
     ]
     nodes.extend(
         DecompositionNode(
             question=question,
             sub_questions=[],
-            coverage_tags=[tags[index % len(tags)]],
-            decision_rationale=f"Tests material investment issue {index}.",
-            priority="core" if index < 7 else "supporting",
         )
-        for index, question in enumerate(children)
+        for question in children
     )
     return DecompositionTree(nodes=nodes)
 
 
-def test_valid_portfolio_requires_exact_connected_nonduplicative_tree() -> None:
-    tree = _general_company_tree()
+def test_valid_portfolio_allows_fewer_than_the_category_allowance() -> None:
+    tree = _general_company_tree(count=11)
 
     validate_question_portfolio(
         tree,
         aspect="general_company",
         root_question="Does the company fit the investment strategy?",
-        budget=14,
+        budget=16,
     )
 
 
 @pytest.mark.parametrize(
     ("mutate", "expected"),
     [
-        (lambda tree: tree.nodes.pop(), "exactly 14 nodes"),
+        (
+            lambda tree: tree.nodes.extend(
+                [
+                    DecompositionNode(
+                        question=f"Extra material question {index}?",
+                        sub_questions=[],
+                    )
+                    for index in range(3)
+                ]
+            ),
+            "no more than 16 nodes",
+        ),
         (
             lambda tree: setattr(tree.nodes[-1], "question", tree.nodes[-2].question.lower()),
             "duplicate question",
@@ -89,17 +91,9 @@ def test_valid_portfolio_requires_exact_connected_nonduplicative_tree() -> None:
             lambda tree: tree.nodes[0].sub_questions.append("Unlisted question?"),
             "not present as a node",
         ),
-        (
-            lambda tree: tree.nodes[-1].coverage_tags.clear(),
-            "coverage_tags",
-        ),
-        (
-            lambda tree: setattr(tree.nodes[-1], "decision_rationale", ""),
-            "decision_rationale",
-        ),
     ],
 )
-def test_invalid_portfolio_is_rejected_instead_of_truncated(mutate, expected: str) -> None:
+def test_invalid_structure_or_excess_is_rejected_instead_of_truncated(mutate, expected: str) -> None:
     tree = _general_company_tree()
     mutate(tree)
 
@@ -108,13 +102,29 @@ def test_invalid_portfolio_is_rejected_instead_of_truncated(mutate, expected: st
             tree,
             aspect="general_company",
             root_question="Does the company fit the investment strategy?",
-            budget=14,
+            budget=16,
         )
 
 
-def test_decomposition_regenerates_invalid_portfolio_without_truncating(monkeypatch) -> None:
+def test_legacy_taxonomy_metadata_is_ignored_and_cannot_break_validation() -> None:
+    payload = _general_company_tree(count=12).model_dump()
+    payload["nodes"][4]["coverage_tags"] = ["technology_validation"]
+    payload["nodes"][4]["decision_rationale"] = "Legacy metadata."
+    payload["nodes"][4]["priority"] = "core"
+    tree = DecompositionTree.model_validate(payload)
+
+    assert "coverage_tags" not in tree.nodes[4].model_dump()
+    validate_question_portfolio(
+        tree,
+        aspect="general_company",
+        root_question="Does the company fit the investment strategy?",
+        budget=16,
+    )
+
+
+def test_decomposition_regenerates_only_when_allowance_is_exceeded(monkeypatch) -> None:
     invocations = []
-    outputs = [_general_company_tree(count=13), _general_company_tree(count=14)]
+    outputs = [_general_company_tree(count=17), _general_company_tree(count=13)]
 
     class SequenceRunnable:
         def with_structured_output(self, _schema):
@@ -132,13 +142,15 @@ def test_decomposition_regenerates_invalid_portfolio_without_truncating(monkeypa
                 question="Does the company fit the investment strategy?",
                 industry="Fintech",
                 aspect="general_company",
-                question_budget=14,
+                question_budget=16,
             )
         )
     )
 
     assert len(invocations) == 2
-    assert "exactly 14 nodes" in invocations[0][0].content
-    assert "exactly 14 nodes" in invocations[1][-1].content
-    assert "got 13" in invocations[1][-1].content
-    assert len(result["question_tree"].root_node.sub_nodes) == 13
+    assert "no more than 16 nodes" in invocations[0][0].content
+    assert "no more than 16 nodes" in invocations[1][-1].content
+    assert "got 17" in invocations[1][-1].content
+    assert "technology_validation" not in invocations[0][0].content
+    assert "coverage_tags" not in invocations[0][0].content
+    assert len(result["question_tree"].root_node.sub_nodes) == 12

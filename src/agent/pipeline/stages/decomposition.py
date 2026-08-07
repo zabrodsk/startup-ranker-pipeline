@@ -36,17 +36,10 @@ from agent.pipeline.state.decomposition import (
 from agent.pipeline.utils.phase_llm import ainvoke_with_phase_fallback
 from agent.prompt_library.manager import get_prompt
 from agent.run_context import get_current_pipeline_policy, use_stage_context
-from agent.web_search.planner import ROUTE_TAGGING_INSTRUCTION, normalize_route_tag
 
 logger = logging.getLogger(__name__)
 
 QUESTION_PORTFOLIO_MAX_ATTEMPTS = 3
-
-
-def _normalized_route_value(tag: str | None) -> str | None:
-    """Normalize an LLM-emitted route tag to a QuestionRoute value or None."""
-    normalized = normalize_route_tag(tag)
-    return normalized.value if normalized else None
 
 
 def _build_question_tree_from_decomposition_tree(
@@ -62,14 +55,11 @@ def _build_question_tree_from_decomposition_tree(
     The first node in decomposition_tree.nodes is assumed to be the root.
     """
     # 1. Create mapping from question text to QuestionNode
-    # Route tags are normalized here (unknown/missing -> None) so downstream
-    # consumers only ever see valid QuestionRoute values or None.
     node_map: dict[str, QuestionNode] = {
         node.question: QuestionNode(
             question=node.question,
             sub_nodes=[],
             aspect=aspect,
-            route=_normalized_route_value(node.route),
         )
         for node in decomposition_tree.nodes
     }
@@ -107,15 +97,10 @@ async def decompose_question_async(state: DecompositionInput) -> DecompositionOu
         portfolio_instruction = build_portfolio_instruction(
             state.aspect, state.question_budget
         )
-    # Route tagging rides the same decomposition call (zero extra LLM calls).
-    # Appended in code, not in the editable catalog, so stale persisted
-    # library.json overlays cannot silently drop the instruction.
     messages = [
         SystemMessage(
             content=(
                 decompose_system_prompt
-                + "\n\n"
-                + ROUTE_TAGGING_INSTRUCTION
                 + ("\n\n" + portfolio_instruction if portfolio_instruction else "")
             )
         ),
@@ -168,8 +153,9 @@ async def decompose_question_async(state: DecompositionInput) -> DecompositionOu
                                 "The generated portfolio violated the contract: "
                                 f"{exc}. Regenerate the complete category from scratch. "
                                 "Do not truncate or patch the previous tree. Return "
-                                f"exactly {state.question_budget} nodes and satisfy every "
-                                "structural, coverage, rationale, and priority requirement."
+                                f"no more than {state.question_budget} nodes, preserve the "
+                                "root and tree structure, remove duplicates, and use fewer "
+                                "questions whenever additional ones add little decision value."
                             )
                         )
                     ]

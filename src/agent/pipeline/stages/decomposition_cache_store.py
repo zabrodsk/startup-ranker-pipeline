@@ -2,11 +2,9 @@
 
 The decomposition prompt sees ONLY the question and the industry
 (decomposition.py builds it from decomposition.user with {question} and
-{industry} placeholders, plus ROUTE_TAGGING_INSTRUCTION appended in code), so
-the cache key safely drops the company: same-industry companies share rows.
-The key embeds a full prompt signature so any prompt change — including the
-route-tagging instruction the local signature historically missed —
-invalidates cleanly.
+{industry} placeholders), so the cache key safely drops the company:
+same-industry companies share rows. The key embeds a full prompt signature so
+prompt and portfolio-allowance changes invalidate cleanly.
 
 RDI_DECOMP_CACHE_STORE selects the backend:
   "local"    = the existing per-container JSON cache, byte-identical (default)
@@ -25,7 +23,6 @@ from agent.dataclasses.question_tree import QuestionTree
 from agent.pipeline.stages.constants import QuestionAspect
 from agent.pipeline.stages.question_portfolio import build_portfolio_instruction
 from agent.prompt_library.manager import get_prompt
-from agent.web_search.planner import ROUTE_TAGGING_INSTRUCTION
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +31,7 @@ _STORE_MODES = ("local", "supabase")
 _DEFAULT_STORE_MODE = "local"
 _WARNED_INVALID_STORE_MODE: set[str] = set()
 
-_KEY_VERSION_PREFIX = "dtree-v4"
+_KEY_VERSION_PREFIX = "dtree-v5"
 
 
 def _store_mode() -> str:
@@ -72,9 +69,8 @@ def compute_prompt_signature(
 ) -> str:
     """Signature over everything the decomposition LLM call is prompted with.
 
-    Covers decomposition.system, decomposition.user, AND
-    ROUTE_TAGGING_INSTRUCTION (appended at call time in decomposition.py) —
-    the local-cache signature historically omitted the instruction.
+    Covers decomposition.system, decomposition.user, and the current flexible
+    portfolio instruction.
     """
     portfolio_instruction = ""
     if aspect is not None and question_budget is not None:
@@ -83,8 +79,6 @@ def compute_prompt_signature(
         str(get_prompt("decomposition.system", prompt_overrides))
         + "\n||\n"
         + str(get_prompt("decomposition.user", prompt_overrides))
-        + "\n||\n"
-        + ROUTE_TAGGING_INSTRUCTION
         + "\n||\n"
         + portfolio_instruction
     )

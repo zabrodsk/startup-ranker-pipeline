@@ -30,16 +30,19 @@ The New Analysis pipeline now defaults every user-facing phase to
 `0.7`, while evidence and decision stages use explicit reasoning effort from
 `low` through `high` and omit temperature.
 
-## Budget-Aware Question Portfolio (2026-08-06)
+## Flexible Question Allowance (2026-08-07)
 
-Question decomposition now receives a fixed 76-question portfolio before it
-generates anything: 14 strategy-fit, 24 market, 20 product, and 18 team nodes,
-with each category count including its root. The prompt requires Luna to build
-a larger private candidate pool, rank candidates by decision value, remove
-overlap, and then return the exact category allocation with mandatory coverage
-tags, rationale, and priority metadata. Structural validation rejects and
-regenerates an invalid category; the pipeline never truncates a generated tree.
-Luna decomposition uses medium reasoning with temperature omitted.
+Question decomposition receives its allowance before generation: up to 16
+strategy-fit, 28 market, 24 product, and 20 team nodes, for a maximum of 88.
+There is no minimum or required total. Luna builds a private candidate pool,
+ranks candidates by decision value, removes overlap, and stops when additional
+questions would not materially improve the assessment. The generated structure
+contains only the question tree; coverage tags, priority, rationale, and
+evidence-route metadata are no longer mixed into question selection. Evidence
+routing happens separately in the downstream web planner. Validation checks the
+allowance and essential tree structure but accepts any smaller high-quality
+portfolio; generated trees are never truncated. Luna decomposition uses medium
+reasoning with temperature omitted.
 
 ---
 
