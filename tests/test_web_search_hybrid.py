@@ -1,0 +1,197 @@
+from __future__ import annotations
+
+import asyncio
+
+import agent.evidence_answering as ea
+import agent.web_search as web_search_module
+from agent.web_search import result_cache
+from agent.dataclasses.company import Company
+from agent.dataclasses.question_tree import QuestionNode, QuestionTree
+
+
+def test_hybrid_resolves_to_serper_primary_with_perplexity_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "hybrid")
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+
+    assert ea._resolve_web_search_provider_name() == "hybrid"
+
+
+def test_hybrid_degrades_to_available_provider(monkeypatch) -> None:
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "hybrid")
+    monkeypatch.delenv("SERPER_API_KEY", raising=False)
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+
+    assert ea._resolve_web_search_provider_name() == "sonar"
+
+
+def test_run_web_search_uses_serper_for_hybrid_and_records_provider(monkeypatch) -> None:
+    provider_names: list[str] = []
+    recorded: list[tuple[str, dict]] = []
+
+    class _Provider:
+        def search(self, query, domain_filter=None):  # noqa: ANN001
+            return "Apaleo hotel software market evidence with relevant demand data."
+
+    class _Collector:
+        def record_web_search(self, *, provider, metadata):  # noqa: ANN001
+            recorded.append((provider, metadata))
+
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "hybrid")
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    monkeypatch.setattr(
+        web_search_module,
+        "get_provider",
+        lambda *, provider_name, **_kwargs: provider_names.append(provider_name) or _Provider(),
+    )
+    monkeypatch.setattr(result_cache, "lookup", lambda *_args: None)
+    monkeypatch.setattr(result_cache, "store", lambda *_args: None)
+    monkeypatch.setattr(ea, "get_current_collector", lambda: _Collector())
+
+    result = ea._run_web_search(
+        "Apaleo market demand",
+        trigger_reason="portfolio core",
+        route="sector_market",
+    )
+
+    assert "Apaleo" in result
+    assert provider_names == ["serper"]
+    assert recorded == [
+        (
+            "serper",
+            {
+                "query": "Apaleo market demand",
+                "domain_filter": [],
+                "trigger_reason": "portfolio core",
+                "route": "sector_market",
+            },
+        )
+    ]
+
+
+class _HybridAnswerLLM:
+    async def ainvoke(self, messages):  # noqa: ANN001
+        from types import SimpleNamespace
+
+        if "Web Search Results" in messages[-1].content:
+            return SimpleNamespace(content="Apaleo has relevant public evidence [web].")
+        return SimpleNamespace(content="Unknown from provided documents.")
+
+
+def _run_planner_hybrid(monkeypatch, serper_result: str) -> tuple[dict, list[str]]:
+    provider_attempts: list[str] = []
+
+    def fake_search(*_args, provider_override=None, **_kwargs):  # noqa: ANN001
+        provider = provider_override or "configured"
+        provider_attempts.append(provider)
+        if provider == "serper":
+            return serper_result
+        return (
+            "Search Results for: Apaleo funding\n\n"
+            "1. Apaleo funding round — https://example.com/apaleo\n"
+            "   Apaleo raised funding to expand its hotel software platform."
+        )
+
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "hybrid")
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    monkeypatch.setenv("RDI_WEB_EVIDENCE_PLANNER", "on")
+    monkeypatch.setenv("WEB_SEARCH_HEAVY_OVERRIDE", "always")
+    monkeypatch.setattr(ea, "_run_web_search", fake_search)
+    monkeypatch.setattr(ea, "create_llm", lambda temperature=0.2: _HybridAnswerLLM())
+    monkeypatch.setattr(ea, "retrieve_chunks", lambda *_args, **_kwargs: [])
+
+    _answer, provenance = asyncio.run(
+        ea.answer_question_from_evidence(
+            "What funding has Apaleo raised?",
+            Company(name="Apaleo", domain="apaleo.com", industry="hospitality software"),
+            store=object(),
+            use_web_search=True,
+            route="company_specific",
+            aspect="general_company",
+        )
+    )
+    return provenance, provider_attempts
+
+
+def test_planner_uses_perplexity_only_when_serper_fails_quality_gate(monkeypatch) -> None:
+    provenance, attempts = _run_planner_hybrid(
+        monkeypatch,
+        "No search results returned.",
+    )
+
+    assert attempts == ["serper", "sonar"]
+    assert provenance["web_search_used"] is True
+    assert "perplexity fallback" in provenance["web_search_decision"]
+
+
+def test_planner_does_not_call_perplexity_when_serper_passes_quality_gate(monkeypatch) -> None:
+    provenance, attempts = _run_planner_hybrid(
+        monkeypatch,
+        (
+            "Search Results for: Apaleo funding\n\n"
+            "1. Apaleo funding — https://apaleo.com/news\n"
+            "   Apaleo raised a growth funding round for its hotel software platform."
+        ),
+    )
+
+    assert attempts == ["serper"]
+    assert provenance["web_search_used"] is True
+    assert "via serper" in provenance["web_search_decision"]
+
+
+def test_shared_portfolio_bounds_search_objectives_before_answering(monkeypatch) -> None:
+    attempts: list[str] = []
+
+    def fake_search(query, *_args, provider_override=None, **_kwargs):  # noqa: ANN001
+        attempts.append(provider_override or "configured")
+        return (
+            f"Search Results for: {query}\n\n"
+            f"1. Hospitality market evidence — https://example.com/{len(attempts)}\n"
+            f"   Apaleo hospitality software {query} market size growth adoption demand "
+            "customers opportunity evidence benchmark."
+        )
+
+    children = [
+        QuestionNode(
+            question=f"What evidence supports hospitality market segment {index} growth?",
+            route="sector_market",
+        )
+        for index in range(18)
+    ]
+    trees = {
+        "market": QuestionTree(
+            aspect="market",
+            root_node=QuestionNode(
+                question="How attractive is the hospitality software market?",
+                route="sector_market",
+                sub_nodes=children,
+            ),
+        )
+    }
+
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "hybrid")
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    monkeypatch.setenv("RDI_WEB_EVIDENCE_PLANNER", "on")
+    monkeypatch.setenv("RDI_SHARED_WEB_EVIDENCE", "on")
+    monkeypatch.setenv("WEB_SEARCH_CORE_BUDGET", "10")
+    monkeypatch.setenv("WEB_SEARCH_RESERVE_BUDGET", "2")
+    monkeypatch.setenv("WEB_SEARCH_HEAVY_OVERRIDE", "always")
+    monkeypatch.setattr(ea, "_run_web_search", fake_search)
+    monkeypatch.setattr(ea, "create_llm", lambda temperature=0.2: _HybridAnswerLLM())
+    monkeypatch.setattr(ea, "retrieve_chunks", lambda *_args, **_kwargs: [])
+
+    rows = asyncio.run(
+        ea.answer_all_trees_from_evidence(
+            trees,
+            Company(name="Apaleo", domain="apaleo.com", industry="hospitality software"),
+            store=object(),
+            use_web_search=True,
+        )
+    )
+
+    assert len(rows) == 19
+    assert 1 <= len(attempts) <= 12
+    assert set(attempts) == {"serper"}

@@ -298,8 +298,12 @@ Copy `.env.example` to `.env` and set:
 | `APP_PASSWORD` | optional locally, required in production web | Web app login |
 | `SESSION_SECRET` | optional locally, required in production web | Cookie/session signing secret |
 | `PPLX_API_KEY` | optional | Perplexity for web search |
+| `SERPER_API_KEY` | optional | Serper Google Search API (primary in `hybrid` mode) |
 | `BRAVE_SEARCH_API_KEY` | optional | Brave Search alternative |
-| `WEB_SEARCH_PROVIDER` | optional | `sonar` (Perplexity) or `brave` |
+| `WEB_SEARCH_PROVIDER` | optional | `hybrid` (Serper then quality-gated Perplexity), `serper`, `sonar`, or `brave` |
+| `RDI_SHARED_WEB_EVIDENCE` | optional | `on` builds one reusable company-wide search portfolio (requires planner `on`) |
+| `WEB_SEARCH_CORE_BUDGET` | optional | Company-wide core evidence objectives (default: `10`) |
+| `WEB_SEARCH_RESERVE_BUDGET` | optional | Question-specific material-gap reserves (default: `2`) |
 | `MAX_PPLX_CALLS_PER_COMPANY` | optional | Per-company web-search cap (default: `100`) |
 | `WEB_SEARCH_TRIGGER` | optional | `answer` (default) or `no_chunks` |
 | `WEB_SEARCH_HEAVY_OVERRIDE` | optional | Gate for forced market/competitor searches: `always` (default), `root_only`, or `never` |

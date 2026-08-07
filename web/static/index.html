@@ -7950,7 +7950,7 @@ function renderCompanyChatSection(company, run) {
         if (webCitation) {
           companyChatCitationRegistry[webCitationKey] = webCitation;
         }
-        const webSearchCost = Number(message.run_costs?.perplexity_usd || 0);
+        const webSearchCost = Number(message.run_costs?.web_search?.total_usd || message.run_costs?.perplexity_usd || 0);
         const turnMeta = message.role === 'assistant'
           ? `<div class="company-chat-turn-meta">
               ${message.llm_label ? `<span class="company-chat-turn-pill">${escapeHtml(message.llm_label)}</span>` : ''}
@@ -11299,7 +11299,10 @@ function renderRunCostStrip(runCosts, fallbackLlmLabel = '') {
   const statusNote = costs.status === 'partial'
     ? 'Some successful model calls did not include billable usage metadata, so totals are partial.'
     : '';
-  const requestCount = Number(costs.perplexity_search?.requests || 0);
+  const serperRequests = Number(costs.serper_search?.requests || 0);
+  const perplexityRequests = Number(costs.perplexity_search?.requests || 0);
+  const requestCount = Number(costs.web_search?.requests ?? (serperRequests + perplexityRequests));
+  const webSearchCost = costs.web_search?.total_usd ?? ((Number(costs.serper_usd || 0) + Number(costs.perplexity_usd || 0)) || 0);
   const byModel = Array.isArray(costs.by_model) ? costs.by_model : [];
   const modelBreakdownHtml = byModel.length
     ? `<div class="run-cost-card-note">${byModel.map((item) => {
@@ -11327,9 +11330,9 @@ function renderRunCostStrip(runCosts, fallbackLlmLabel = '') {
       </div>
       <div class="run-cost-card">
         <div class="run-cost-card-glow"></div>
-        <div class="run-cost-card-label">Perplexity Search</div>
-        <div class="run-cost-card-value">${formatUsd(costs.perplexity_usd)}</div>
-        <div class="run-cost-card-sub">${requestCount.toLocaleString()} request${requestCount === 1 ? '' : 's'} · request-based pricing</div>
+        <div class="run-cost-card-label">Web Search</div>
+        <div class="run-cost-card-value">${formatUsd(webSearchCost)}</div>
+        <div class="run-cost-card-sub">${requestCount.toLocaleString()} request${requestCount === 1 ? '' : 's'} · Serper ${serperRequests.toLocaleString()} · Perplexity fallback ${perplexityRequests.toLocaleString()}</div>
       </div>
     </div>
   `;

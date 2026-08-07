@@ -963,6 +963,37 @@ def test_run_telemetry_collector_builds_costs_for_llm_and_perplexity() -> None:
     assert costs["by_model"][0]["label"] == "Gemini 3.1 Flash Lite"
 
 
+def test_run_telemetry_collector_builds_provider_aware_web_search_costs() -> None:
+    collector = RunTelemetryCollector()
+    collector.record_web_search(
+        provider="serper",
+        metadata={"query": "market size", "trigger_reason": "portfolio core"},
+    )
+    collector.record_web_search(
+        provider="perplexity",
+        metadata={"query": "market size", "trigger_reason": "quality fallback"},
+    )
+
+    costs = collector.build_run_costs()
+
+    assert costs["serper_search"] == {
+        "requests": 1,
+        "by_reason": {"portfolio core": 1},
+        "total_usd": 0.001,
+    }
+    assert costs["perplexity_search"] == {
+        "requests": 1,
+        "by_reason": {"quality fallback": 1},
+        "total_usd": 0.005,
+    }
+    assert costs["web_search"] == {
+        "requests": 2,
+        "by_provider": {"perplexity": 1, "serper": 1},
+        "total_usd": 0.006,
+    }
+    assert costs["total_usd"] == 0.006
+
+
 def test_run_telemetry_collector_marks_partial_when_usage_missing() -> None:
     collector = RunTelemetryCollector()
     collector.record_llm_usage(
