@@ -10,7 +10,7 @@ from agent.dataclasses.company import Company
 from agent.dataclasses.question_tree import QuestionNode, QuestionTree
 from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
 from agent.pipeline.stages import parallel_decomposition
-from agent.pipeline.stages.question_portfolio import QUESTION_PORTFOLIO_ALLOCATION
+from agent.pipeline.stages.question_portfolio import QUESTION_PORTFOLIO_ALLOWANCES
 
 
 def test_parallel_decomposition_uses_overridden_root_questions(monkeypatch):
@@ -51,8 +51,8 @@ def test_parallel_decomposition_uses_overridden_root_questions(monkeypatch):
     assert seen_questions["market"] == "Custom market root question?"
     assert {
         aspect: seen_questions[f"{aspect}_budget"]
-        for aspect in QUESTION_PORTFOLIO_ALLOCATION
-    } == QUESTION_PORTFOLIO_ALLOCATION
+        for aspect in QUESTION_PORTFOLIO_ALLOWANCES
+    } == QUESTION_PORTFOLIO_ALLOWANCES
     assert result["question_trees"]["market"].root_node.question == "Custom market root question?"
 
 

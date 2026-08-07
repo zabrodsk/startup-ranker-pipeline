@@ -19,7 +19,7 @@ from agent.pipeline.stages import decomposition_cache_store
 from agent.pipeline.stages.cache import cache_question_tree, get_cached_question_tree
 from agent.pipeline.stages.constants import QuestionAspect
 from agent.pipeline.stages.decomposition import graph as decomposition_graph
-from agent.pipeline.stages.question_portfolio import QUESTION_PORTFOLIO_ALLOCATION
+from agent.pipeline.stages.question_portfolio import QUESTION_PORTFOLIO_ALLOWANCES
 from agent.pipeline.state.decomposition import DecompositionInput
 from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
 from agent.prompt_library.manager import get_questions
@@ -163,7 +163,7 @@ async def decompose_all_questions(
                 aspect=aspect,
                 company_name=state.company.name,
                 prompt_overrides=state.prompt_overrides,
-                question_budget=QUESTION_PORTFOLIO_ALLOCATION[aspect],
+                question_budget=QUESTION_PORTFOLIO_ALLOWANCES[aspect],
             )
         )
 
