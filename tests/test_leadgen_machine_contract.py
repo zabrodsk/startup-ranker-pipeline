@@ -7,9 +7,11 @@ import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -23,11 +25,16 @@ from web.leadgen_machine import (
     MachineIntakeRequest,
     MachineLifecycleDependencies,
     MachineStartAccepted,
+    _daily_start_limit,
     build_leadgen_machine_router,
 )
 
 SERVICE_KEY = "unit-test-machine-key"
 SERVICE_HEADERS = {"X-LeadGen-Service-Key": SERVICE_KEY}
+BUSINESS_TIMEZONE = "Europe/Prague"
+BUSINESS_DATE = datetime.now(timezone.utc).astimezone(
+    ZoneInfo(BUSINESS_TIMEZONE)
+).date().isoformat()
 
 
 def _load_local_specter_batch_worker() -> Any:
@@ -57,6 +64,8 @@ def _request(**overrides: Any) -> dict[str, Any]:
         "source_run_id": "source-run-01",
         "batch_id": "batch-01",
         "idempotency_key": "company-001-rdi-v1",
+        "business_date": BUSINESS_DATE,
+        "business_timezone": BUSINESS_TIMEZONE,
         "target_environment": "staging",
         "provenance_reference": "leadgen://source-run-01/company/lg-company-001",
     }
@@ -103,20 +112,42 @@ class FakeMachineStore:
                 return {"action": "unknown"}
             if record["target_environment"] != request["target_environment"]:
                 return {"action": "environment_mismatch", **deepcopy(record)}
-            state = record["lifecycle_state"]
-            if state in {"start_fenced", "uncertain", "queued", "running"}:
-                return {"action": "existing", **deepcopy(record)}
-            if state in {"rejected", "failed", "cancelled", "succeeded"}:
-                return {"action": "terminal_invalid", **deepcopy(record)}
-            environment_starts = sum(
+            if (
+                record["business_date"] != request["business_date"]
+                or record["business_timezone"] != request["business_timezone"]
+            ):
+                return {"action": "scope_mismatch", **deepcopy(record)}
+            daily_starts = sum(
                 1
                 for item in self.intakes_by_id.values()
                 if item["target_environment"] == record["target_environment"]
+                and item["business_date"] == record["business_date"]
                 and item["lifecycle_state"]
-                in {"start_fenced", "uncertain", "queued", "running", "succeeded", "failed", "cancelled"}
+                in {
+                    "start_fenced",
+                    "uncertain",
+                    "queued",
+                    "running",
+                    "succeeded",
+                    "failed",
+                    "cancelled",
+                }
             )
-            if environment_starts >= request["global_limit"]:
-                return {"action": "rate_limited", **deepcopy(record)}
+            capacity = {
+                "daily_start_limit": request["daily_start_limit"],
+                "daily_started_count": daily_starts,
+                "daily_remaining_capacity": max(
+                    request["daily_start_limit"] - daily_starts,
+                    0,
+                ),
+            }
+            state = record["lifecycle_state"]
+            if state in {"start_fenced", "uncertain", "queued", "running"}:
+                return {"action": "existing", **deepcopy(record), **capacity}
+            if state in {"rejected", "failed", "cancelled", "succeeded"}:
+                return {"action": "terminal_invalid", **deepcopy(record), **capacity}
+            if daily_starts >= request["daily_start_limit"]:
+                return {"action": "rate_limited", **deepcopy(record), **capacity}
             record.update(
                 {
                     "lifecycle_state": "start_fenced",
@@ -125,7 +156,16 @@ class FakeMachineStore:
                 }
             )
             self.events.append("fence_committed")
-            return {"action": "reserved", **deepcopy(record)}
+            return {
+                "action": "reserved",
+                **deepcopy(record),
+                "daily_start_limit": request["daily_start_limit"],
+                "daily_started_count": daily_starts + 1,
+                "daily_remaining_capacity": max(
+                    request["daily_start_limit"] - daily_starts - 1,
+                    0,
+                ),
+            }
 
     def finalize_machine_start(self, **request: Any) -> dict[str, Any] | None:
         with self._lock:
@@ -430,7 +470,7 @@ def test_one_runtime_cannot_bypass_limit_with_alternate_environment_label(
     starts: list[dict[str, Any]] = []
     monkeypatch.setenv("RDI_LEADGEN_AUTOSTART_KEY", SERVICE_KEY)
     monkeypatch.setenv("RDI_LEADGEN_AUTOSTART_ENABLED", "true")
-    monkeypatch.setenv("RDI_LEADGEN_GLOBAL_START_LIMIT", "1")
+    monkeypatch.setenv("RDI_LEADGEN_DAILY_START_LIMIT", "1")
     monkeypatch.setenv("RDI_LEADGEN_TARGET_ENVIRONMENT", "staging")
     client = _client(store, starts)
     first = _ingest_machine(client, campaign_id="campaign-staging")
@@ -454,6 +494,61 @@ def test_one_runtime_cannot_bypass_limit_with_alternate_environment_label(
     assert len(store.created) == 1
     assert len(store.reserve_calls) == 1
     assert len(starts) == 1
+
+
+def test_new_intake_for_closed_business_date_is_rejected_before_persistence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = FakeMachineStore()
+    monkeypatch.setenv("RDI_LEADGEN_AUTOSTART_KEY", SERVICE_KEY)
+    client = _client(store, [])
+
+    response = client.post(
+        "/api/machine/leadgen/v1/intakes",
+        headers=SERVICE_HEADERS,
+        json=_request(business_date="2020-01-01"),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "machine_business_date_closed"
+    assert store.created == []
+
+
+def test_deprecated_global_limit_alias_remains_compatible_and_warns(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.delenv("RDI_LEADGEN_DAILY_START_LIMIT", raising=False)
+    monkeypatch.setenv("RDI_LEADGEN_GLOBAL_START_LIMIT", "7")
+
+    assert _daily_start_limit() == 7
+    assert "deprecated" in caplog.text
+
+
+def test_conflicting_daily_and_deprecated_limits_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RDI_LEADGEN_DAILY_START_LIMIT", "7")
+    monkeypatch.setenv("RDI_LEADGEN_GLOBAL_START_LIMIT", "8")
+
+    with pytest.raises(HTTPException) as error:
+        _daily_start_limit()
+
+    assert error.value.status_code == 503
+    assert error.value.detail["code"] == "invalid_start_configuration"
+
+
+def test_configured_daily_limit_cannot_raise_absolute_twenty_start_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RDI_LEADGEN_DAILY_START_LIMIT", "21")
+    monkeypatch.delenv("RDI_LEADGEN_GLOBAL_START_LIMIT", raising=False)
+
+    with pytest.raises(HTTPException) as error:
+        _daily_start_limit()
+
+    assert error.value.status_code == 503
+    assert error.value.detail["code"] == "invalid_start_configuration"
 
 
 @pytest.mark.parametrize(
@@ -482,7 +577,11 @@ def test_machine_start_defaults_closed_without_reservation_or_remote_call(
     response = client.post(
         f"/api/machine/leadgen/v1/intakes/{intake['intake_id']}/start",
         headers=SERVICE_HEADERS,
-        json={"target_environment": "staging"},
+        json={
+            "target_environment": "staging",
+            "business_date": BUSINESS_DATE,
+            "business_timezone": BUSINESS_TIMEZONE,
+        },
     )
 
     assert response.status_code == 503
@@ -798,7 +897,11 @@ def test_machine_lifecycle_path_ids_are_bounded_before_persistence(
         client.post(
             f"/api/machine/leadgen/v1/intakes/{invalid_id}/start",
             headers=SERVICE_HEADERS,
-            json={"target_environment": "staging"},
+            json={
+                "target_environment": "staging",
+                "business_date": BUSINESS_DATE,
+                "business_timezone": BUSINESS_TIMEZONE,
+            },
         ),
         client.get(
             f"/api/machine/leadgen/v1/intakes/{invalid_id}/status",
@@ -947,7 +1050,11 @@ def _start_machine(
     return client.post(
         f"/api/machine/leadgen/v1/intakes/{intake_id}/start",
         headers=SERVICE_HEADERS,
-        json={"target_environment": target_environment},
+        json={
+            "target_environment": target_environment,
+            "business_date": BUSINESS_DATE,
+            "business_timezone": BUSINESS_TIMEZONE,
+        },
     )
 
 
@@ -1673,14 +1780,14 @@ def test_reservation_persistence_failure_and_definite_guards_make_zero_remote_ca
     assert starts == []
 
 
-def test_global_start_limit_is_atomic_and_replay_cannot_bypass_it(
+def test_daily_start_limit_is_atomic_and_replay_cannot_bypass_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = FakeMachineStore()
     starts: list[dict[str, Any]] = []
     monkeypatch.setenv("RDI_LEADGEN_AUTOSTART_KEY", SERVICE_KEY)
     monkeypatch.setenv("RDI_LEADGEN_AUTOSTART_ENABLED", "true")
-    monkeypatch.setenv("RDI_LEADGEN_GLOBAL_START_LIMIT", "1")
+    monkeypatch.setenv("RDI_LEADGEN_DAILY_START_LIMIT", "1")
     client = _client(store, starts)
     first = _ingest_machine(client)
     second = _ingest_machine(
@@ -1702,14 +1809,14 @@ def test_global_start_limit_is_atomic_and_replay_cannot_bypass_it(
     assert len(starts) == 1
 
 
-def test_global_start_limit_applies_across_campaigns_in_one_environment(
+def test_daily_start_limit_applies_across_campaigns_in_one_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = FakeMachineStore()
     starts: list[dict[str, Any]] = []
     monkeypatch.setenv("RDI_LEADGEN_AUTOSTART_KEY", SERVICE_KEY)
     monkeypatch.setenv("RDI_LEADGEN_AUTOSTART_ENABLED", "true")
-    monkeypatch.setenv("RDI_LEADGEN_GLOBAL_START_LIMIT", "1")
+    monkeypatch.setenv("RDI_LEADGEN_DAILY_START_LIMIT", "1")
     client = _client(store, starts)
     first = _ingest_machine(client, campaign_id="campaign-a")
     second = _ingest_machine(
@@ -1729,14 +1836,14 @@ def test_global_start_limit_applies_across_campaigns_in_one_environment(
     assert len(starts) == 1
 
 
-def test_concurrent_cross_campaign_starts_share_one_global_limit(
+def test_concurrent_cross_campaign_starts_share_one_daily_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = FakeMachineStore()
     starts: list[dict[str, Any]] = []
     monkeypatch.setenv("RDI_LEADGEN_AUTOSTART_KEY", SERVICE_KEY)
     monkeypatch.setenv("RDI_LEADGEN_AUTOSTART_ENABLED", "true")
-    monkeypatch.setenv("RDI_LEADGEN_GLOBAL_START_LIMIT", "1")
+    monkeypatch.setenv("RDI_LEADGEN_DAILY_START_LIMIT", "1")
     client = _client(store, starts)
     first = _ingest_machine(client, campaign_id="campaign-a")
     second = _ingest_machine(
@@ -2150,9 +2257,11 @@ def test_machine_database_adapter_uses_only_atomic_rpc_request_shapes(
     reserved = db.reserve_machine_start(
         intake_id="rdi-intake-1",
         target_environment="staging",
+        business_date=BUSINESS_DATE,
+        business_timezone=BUSINESS_TIMEZONE,
         job_id="rdi-job-1",
         actor=SERVICE_ACTOR,
-        global_limit=20,
+        daily_start_limit=20,
     )
     released = db.release_machine_start(
         intake_id="rdi-intake-1",
@@ -2185,9 +2294,11 @@ def test_machine_database_adapter_uses_only_atomic_rpc_request_shapes(
             {
                 "p_intake_id": "rdi-intake-1",
                 "p_target_environment": "staging",
+                "p_business_date": BUSINESS_DATE,
+                "p_business_timezone": BUSINESS_TIMEZONE,
                 "p_job_id": "rdi-job-1",
                 "p_actor": SERVICE_ACTOR,
-                "p_global_limit": 20,
+                "p_daily_start_limit": 20,
             },
         ),
         (
@@ -2560,6 +2671,51 @@ def test_machine_forward_migration_has_atomic_security_and_audit_contract() -> N
     assert "set lifecycle_state = 'accepted', job_id = null, start_actor = null, started_at = null" in lowered
     assert "'start_released'" in lowered
     assert "canonical_domain !~ '^www\\.'" in lowered
+
+
+def test_daily_scope_correction_replaces_unsafe_global_reservation_contract() -> None:
+    sql = Path(
+        "supabase/migrations/20260807102328_leadgen_machine_daily_start_scope.sql"
+    ).read_text(encoding="utf-8")
+    lowered = " ".join(sql.lower().split())
+
+    required_fragments = [
+        "create table if not exists public.leadgen_machine_daily_scopes",
+        "add column if not exists business_date date",
+        "add column if not exists business_timezone text",
+        "at time zone 'europe/prague'",
+        "foreign key (target_environment, business_date)",
+        "create index if not exists idx_leadgen_machine_intakes_daily_scope_state",
+        "enforce_leadgen_machine_scope_immutability",
+        "drop function if exists public.reserve_leadgen_machine_start(",
+        "text, text, text, text, integer",
+        "p_business_date date",
+        "p_business_timezone text",
+        "p_daily_start_limit integer",
+        "p_daily_start_limit > 20",
+        "v_row.target_environment || ':' || v_row.business_date::text",
+        "where target_environment = v_row.target_environment and business_date = v_row.business_date",
+        "'daily_start_limit'",
+        "'daily_started_count'",
+        "'daily_remaining_capacity'",
+        "create or replace function public.get_leadgen_machine_daily_capacity",
+        "enable row level security",
+        "revoke all on table public.leadgen_machine_daily_scopes",
+        "grant execute on function",
+        "rollback",
+    ]
+    for fragment in required_fragments:
+        assert fragment in lowered
+    assert "p_global_limit" not in lowered
+    assert "grant select" not in lowered
+    assert "grant insert" not in lowered
+    assert "grant update" not in lowered
+
+
+def test_protected_rdi_scoring_manifest_matches_authoritative_production() -> None:
+    from scripts.verify_protected_scoring import main
+
+    assert main() == 0
 
 
 def test_web_app_mounts_machine_contract_without_replacing_recovered_routes() -> None:

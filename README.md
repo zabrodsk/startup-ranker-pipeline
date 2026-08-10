@@ -314,7 +314,8 @@ Copy `.env.example` to `.env` and set:
 | `RDI_LEADGEN_AUTOSTART_KEY` | for LeadGen machine routes | Dedicated server-side key for the versioned machine contract |
 | `RDI_LEADGEN_AUTOSTART_ENABLED` | optional | Must be exactly `true` to permit autonomous machine starts; otherwise fail closed |
 | `RDI_LEADGEN_TARGET_ENVIRONMENT` | for LeadGen machine routes | Server deployment target; must be exactly `staging` or `production` and match every machine intake/start request |
-| `RDI_LEADGEN_GLOBAL_START_LIMIT` | optional | Maximum machine starts across campaigns per target environment (default: `20`) |
+| `RDI_LEADGEN_DAILY_START_LIMIT` | optional | Maximum machine starts per Prague business date and target environment (default: `20`) |
+| `RDI_LEADGEN_GLOBAL_START_LIMIT` | deprecated alias | Used only when the daily variable is unset; configuring both fails closed |
 | `RDI_SCORING_VERSION` | for LeadGen machine start | Explicit scoring version persisted with the worker job and returned in terminal results |
 | `SPECTER_WORKER_POLL_SECONDS` | optional | Poll interval for the dedicated Specter worker (code default: `5`; current Railway production override: `10`) |
 | `SPECTER_MCP_URL` | optional | Specter MCP endpoint (default: `https://mcp.tryspecter.com/mcp`) — used for both URL-list intake and pitch-deck augmentation |
