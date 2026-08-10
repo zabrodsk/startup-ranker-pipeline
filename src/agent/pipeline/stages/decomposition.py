@@ -15,7 +15,6 @@ that captures all the sub-questions needed to fully answer the main question.
 
 import asyncio
 import json
-import logging
 from typing import Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -23,11 +22,7 @@ from langgraph.graph import END, START, StateGraph
 
 from agent.common.llm_config import get_llm
 from agent.dataclasses.question_tree import QuestionNode, QuestionTree
-from agent.pipeline.stages.question_portfolio import (
-    QuestionPortfolioValidationError,
-    build_portfolio_instruction,
-    validate_question_portfolio,
-)
+from agent.pipeline.stages.question_portfolio import build_portfolio_instruction
 from agent.pipeline.state.decomposition import (
     DecompositionInput,
     DecompositionOutput,
@@ -38,10 +33,6 @@ from agent.prompt_library.manager import get_prompt
 from agent.run_context import get_current_pipeline_policy, use_stage_context
 from agent.web_search.planner import ROUTE_TAGGING_INSTRUCTION, normalize_route_tag
 
-logger = logging.getLogger(__name__)
-
-QUESTION_PORTFOLIO_MAX_ATTEMPTS = 3
-
 
 def _normalized_route_value(tag: str | None) -> str | None:
     """Normalize an LLM-emitted route tag to a QuestionRoute value or None."""
@@ -51,7 +42,8 @@ def _normalized_route_value(tag: str | None) -> str | None:
 
 def _build_question_tree_from_decomposition_tree(
     decomposition_tree: DecompositionTree,
-    aspect: Literal["general_company", "market", "product", "team"] | None = "general_company",
+    aspect: Literal["general_company", "market", "product", "team"]
+    | None = "general_company",
 ) -> QuestionTree:
     """Build a hierarchical QuestionTree from the flat DecompositionTree.
 
@@ -92,6 +84,58 @@ def _build_question_tree_from_decomposition_tree(
     return QuestionTree(root_node=root_node, aspect=aspect)
 
 
+def _build_bounded_question_tree(
+    decomposition_tree: DecompositionTree,
+    *,
+    root_question: str,
+    aspect: Literal["general_company", "market", "product", "team"],
+    max_nodes: int,
+) -> QuestionTree:
+    """Keep usable questions up to a soft maximum without rejecting LLM output."""
+    root_text = (root_question or "").strip()
+    if not root_text:
+        root_text = next(
+            (
+                node.question.strip()
+                for node in decomposition_tree.nodes
+                if (node.question or "").strip()
+            ),
+            "What is the investment case for this company?",
+        )
+
+    root_node = QuestionNode(
+        question=root_text,
+        sub_nodes=[],
+        aspect=aspect,
+    )
+    seen = {" ".join(root_text.casefold().split())}
+    candidates = [(node.question, node.route) for node in decomposition_tree.nodes] + [
+        (child_question, None)
+        for node in decomposition_tree.nodes
+        for child_question in node.sub_questions
+    ]
+    child_limit = max(max_nodes - 1, 0)
+
+    for question, route in candidates:
+        if len(root_node.sub_nodes) >= child_limit:
+            break
+        question_text = (question or "").strip()
+        question_key = " ".join(question_text.casefold().split())
+        if not question_key or question_key in seen:
+            continue
+        seen.add(question_key)
+        root_node.sub_nodes.append(
+            QuestionNode(
+                question=question_text,
+                sub_nodes=[],
+                aspect=aspect,
+                route=_normalized_route_value(route),
+            )
+        )
+
+    return QuestionTree(root_node=root_node, aspect=aspect)
+
+
 async def decompose_question_async(state: DecompositionInput) -> DecompositionOutput:
     """Decompose a complex question into a hierarchical question tree.
 
@@ -103,7 +147,9 @@ async def decompose_question_async(state: DecompositionInput) -> DecompositionOu
     portfolio_instruction = ""
     if state.question_budget is not None:
         if state.aspect is None:
-            raise ValueError("A question aspect is required when using a portfolio budget")
+            raise ValueError(
+                "A question aspect is required when using a portfolio budget"
+            )
         portfolio_instruction = build_portfolio_instruction(
             state.aspect, state.question_budget
         )
@@ -132,57 +178,24 @@ async def decompose_question_async(state: DecompositionInput) -> DecompositionOu
         with use_stage_context("decomposition"):
             llm = get_llm(temperature=0.5)
             llm_with_structured_output = llm.with_structured_output(DecompositionTree)
-            attempt_messages = list(messages)
-            attempts = (
-                QUESTION_PORTFOLIO_MAX_ATTEMPTS
-                if state.question_budget is not None
-                else 1
-            )
-            for attempt in range(1, attempts + 1):
-                decomposition_tree = await llm_with_structured_output.ainvoke(
-                    attempt_messages
-                )
-                if state.question_budget is None:
-                    return decomposition_tree
-                try:
-                    validate_question_portfolio(
-                        decomposition_tree,
-                        aspect=state.aspect,
-                        root_question=state.question or "",
-                        budget=state.question_budget,
-                    )
-                    return decomposition_tree
-                except QuestionPortfolioValidationError as exc:
-                    if attempt >= attempts:
-                        raise
-                    logger.warning(
-                        "Question portfolio validation failed for %s (attempt %s/%s): %s",
-                        state.aspect,
-                        attempt,
-                        attempts,
-                        exc,
-                    )
-                    attempt_messages = messages + [
-                        HumanMessage(
-                            content=(
-                                "The generated portfolio violated the contract: "
-                                f"{exc}. Regenerate the complete category from scratch. "
-                                "Do not truncate or patch the previous tree. Return "
-                                f"exactly {state.question_budget} nodes and satisfy every "
-                                "structural, coverage, rationale, and priority requirement."
-                            )
-                        )
-                    ]
-            raise RuntimeError("Question portfolio generation ended unexpectedly")
+            return await llm_with_structured_output.ainvoke(messages)
 
     decomposition_tree = await ainvoke_with_phase_fallback(
         policy.decomposition if policy else None,
         _invoke,
     )
 
-    question_tree: QuestionTree = _build_question_tree_from_decomposition_tree(
-        decomposition_tree, state.aspect
-    )
+    if state.question_budget is not None and state.aspect is not None:
+        question_tree = _build_bounded_question_tree(
+            decomposition_tree,
+            root_question=state.question or "",
+            aspect=state.aspect,
+            max_nodes=state.question_budget,
+        )
+    else:
+        question_tree = _build_question_tree_from_decomposition_tree(
+            decomposition_tree, state.aspect
+        )
 
     return {
         "question_tree": question_tree,

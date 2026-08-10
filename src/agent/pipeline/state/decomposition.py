@@ -19,9 +19,8 @@ class DecompositionNode(BaseModel):
     # Web-evidence route tag (see agent.web_search.planner.QuestionRoute).
     # Optional so old cached trees and tag-less LLM outputs still parse.
     route: str | None = None
-    # Portfolio-selection metadata. Optional for backward compatibility with
-    # old caches and direct/legacy decomposition calls; budgeted pipeline calls
-    # validate these fields before accepting the tree.
+    # Legacy portfolio-selection metadata. Retained for old caches and model
+    # outputs; budgeted pipeline calls do not require or validate these fields.
     coverage_tags: list[str] = Field(default_factory=list)
     decision_rationale: str | None = None
     priority: Literal["core", "supporting"] | None = None
@@ -50,10 +49,14 @@ class DecompositionInput(BaseModel):
     """Input state for question decomposition."""
 
     industry: str | None = "AI marketing tools"
-    question: str | None = "What is the current size and forecast growth of the target market?"
-    aspect: Literal["general_company", "market", "product", "team"] | None = "general_company"
-    # Exact number of nodes for this category, root included. None preserves
-    # direct/legacy decomposition behavior outside the full pipeline.
+    question: str | None = (
+        "What is the current size and forecast growth of the target market?"
+    )
+    aspect: Literal["general_company", "market", "product", "team"] | None = (
+        "general_company"
+    )
+    # Soft maximum for this category, root included. Fewer usable questions are
+    # accepted and excess questions are capped. None preserves legacy behavior.
     question_budget: int | None = None
     prompt_overrides: Dict[str, Any] = Field(default_factory=dict)
 
