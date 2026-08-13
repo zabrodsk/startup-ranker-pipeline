@@ -1,4 +1,5 @@
 import asyncio
+import threading
 
 from agent.person_intel.models import PersonIntelSubject, PersonProfileJobRequest
 from agent.person_intel.providers.web_fallback import WebFallbackProvider
@@ -8,11 +9,18 @@ def test_web_fallback_layered_queries_and_dedup(monkeypatch) -> None:
     monkeypatch.setenv("PERSON_INTEL_WEB_ENRICHMENT", "true")
     monkeypatch.setenv("PPLX_API_KEY", "dummy")
 
-    calls: list[tuple[str, tuple[str, ...] | None]] = []
+    calls: list[tuple[str, tuple[str, ...] | None, float | None, int]] = []
 
     class FakeProvider:
-        def search(self, query, domain_filter=None):
-            calls.append((query, tuple(domain_filter) if isinstance(domain_filter, list) else None))
+        def search(self, query, domain_filter=None, deadline_seconds=None):
+            calls.append(
+                (
+                    query,
+                    tuple(domain_filter) if isinstance(domain_filter, list) else None,
+                    deadline_seconds,
+                    threading.get_ident(),
+                )
+            )
             return "\n".join(
                 [
                     "Search results for: foo",
@@ -35,11 +43,20 @@ def test_web_fallback_layered_queries_and_dedup(monkeypatch) -> None:
         role="CEO",
     )
     req = PersonProfileJobRequest(primary_profile_url=subject.primary_profile_url)
+    caller_thread = threading.get_ident()
     records = asyncio.run(provider.collect(req, subject))
 
     assert records
-    assert any(domain_filter is None for _, domain_filter in calls)
-    assert any(domain_filter and "linkedin.com" in domain_filter for _, domain_filter in calls)
+    assert any(domain_filter is None for _, domain_filter, _, _ in calls)
+    assert any(
+        domain_filter and "linkedin.com" in domain_filter
+        for _, domain_filter, _, _ in calls
+    )
+    assert all(
+        deadline_seconds and deadline_seconds <= 15
+        for _, _, deadline_seconds, _ in calls
+    )
+    assert all(thread_id != caller_thread for _, _, _, thread_id in calls)
     assert all(r.snippet_or_field.startswith("web: ") for r in records)
 
 

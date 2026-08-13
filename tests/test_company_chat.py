@@ -394,11 +394,19 @@ def test_company_chat_persists_shared_history_across_users(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("cache_hit", "expected_cost"),
-    [(False, 0.006), (True, 0.0)],
+    ("cache_hit", "provider_name", "attempted_providers", "expected_cost"),
+    [
+        (False, "sonar", ["serper", "sonar"], 0.006),
+        (True, "sonar", [], 0.0),
+        (False, "brave", ["brave"], None),
+    ],
 )
 def test_company_chat_prefers_web_for_competitor_questions(
-    monkeypatch, cache_hit: bool, expected_cost: float
+    monkeypatch,
+    cache_hit: bool,
+    provider_name: str,
+    attempted_providers: list[str],
+    expected_cost: float | None,
 ) -> None:
     monkeypatch.setattr(
         "agent.company_chat.retrieve_chunks",
@@ -430,8 +438,8 @@ def test_company_chat_prefers_web_for_competitor_questions(
         cache_info.update(
             {
                 "hit": cache_hit,
-                "provider": "sonar",
-                "attempted_providers": [] if cache_hit else ["serper", "sonar"],
+                "provider": provider_name,
+                "attempted_providers": attempted_providers,
             }
         )
         return (
@@ -475,5 +483,5 @@ def test_company_chat_prefers_web_for_competitor_questions(
     assert captured["domain_filter"] is None
     assert result["answer"].startswith("Cloudbeds, Mews, and Oracle OPERA")
     assert result["citations"][0]["kind"] == "web"
-    assert result["citations"][0]["web_search_provider"] == "sonar"
+    assert result["citations"][0]["web_search_provider"] == provider_name
     assert result["citations"][0]["web_search_cost_usd"] == expected_cost

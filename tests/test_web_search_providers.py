@@ -18,6 +18,58 @@ class _Response:
         return self._payload
 
 
+def test_brave_search_uses_api_contract_deadline_and_formats_evidence(
+    monkeypatch,
+) -> None:
+    calls: list[dict] = []
+
+    def get(url, **kwargs):  # noqa: ANN001
+        calls.append({"url": url, **kwargs})
+        return _Response(
+            {
+                "web": {
+                    "results": [
+                        {
+                            "title": "Apaleo funding",
+                            "url": "https://example.com/apaleo",
+                            "description": "Apaleo announced a growth funding round.",
+                            "age": "August 1, 2026",
+                        }
+                    ]
+                }
+            }
+        )
+
+    deadlines: list[float | None] = []
+
+    def run_now(callable_, *args, max_elapsed_seconds=None, **kwargs):
+        deadlines.append(max_elapsed_seconds)
+        return callable_(*args, **kwargs)
+
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "brave-key")
+    monkeypatch.setattr(
+        providers.importlib,
+        "import_module",
+        lambda name: SimpleNamespace(get=get) if name == "requests" else None,
+    )
+    monkeypatch.setattr(providers, "run_with_sync_retries", run_now)
+
+    provider = providers.BraveSearchProvider(search_end_date="2026-08-07")
+    result = provider.search(
+        "Apaleo funding",
+        domain_filter=["example.com"],
+        deadline_seconds=7.5,
+    )
+
+    assert calls[0]["url"] == "https://api.search.brave.com/res/v1/web/search"
+    assert calls[0]["headers"]["X-Subscription-Token"] == "brave-key"
+    assert calls[0]["params"]["q"] == "Apaleo funding (site:example.com)"
+    assert calls[0]["params"]["freshness"] == "2025-08-07to2026-08-07"
+    assert deadlines == [7.5]
+    assert "1. Apaleo funding — https://example.com/apaleo" in result
+    assert "Apaleo announced a growth funding round." in result
+
+
 def test_serper_search_uses_api_contract_and_formats_evidence(monkeypatch) -> None:
     calls: list[dict] = []
 

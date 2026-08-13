@@ -417,19 +417,25 @@ async def answer_company_question(
                             attempted_providers = web_search_info.get(
                                 "attempted_providers"
                             ) or []
-                            web_search_cost_usd = 0.0
+                            web_search_cost_usd: float | None = 0.0
                             if not web_search_info.get("hit"):
-                                web_search_cost_usd = round(
-                                    sum(
-                                        SERPER_SEARCH_PRICE_PER_REQUEST_USD
-                                        if provider == "serper"
-                                        else PERPLEXITY_SEARCH_PRICE_PER_REQUEST_USD
-                                        if provider == "sonar"
-                                        else 0.0
-                                        for provider in attempted_providers
-                                    ),
-                                    8,
-                                )
+                                prices = {
+                                    "serper": SERPER_SEARCH_PRICE_PER_REQUEST_USD,
+                                    "sonar": PERPLEXITY_SEARCH_PRICE_PER_REQUEST_USD,
+                                }
+                                if not attempted_providers or any(
+                                    provider not in prices
+                                    for provider in attempted_providers
+                                ):
+                                    web_search_cost_usd = None
+                                else:
+                                    web_search_cost_usd = round(
+                                        sum(
+                                            prices[provider]
+                                            for provider in attempted_providers
+                                        ),
+                                        8,
+                                    )
                             citations.insert(
                                 0,
                                 ChatCitation(

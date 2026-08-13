@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
+import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -14,6 +16,13 @@ from agent.web_search import get_provider
 
 def _today() -> str:
     return datetime.now().strftime("%Y-%m-%d")
+
+
+def _positive_float_env(name: str, default: float) -> float:
+    try:
+        return max(0.001, float(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
 
 
 def _extract_url(line: str) -> str | None:
@@ -57,6 +66,10 @@ class WebFallbackProvider(PersonSourceProvider):
         self.enabled = os.getenv("PERSON_INTEL_WEB_ENRICHMENT", "true").lower() != "false"
         self.max_records = int(os.getenv("PERSON_INTEL_WEB_MAX_RECORDS", "36"))
         self.max_per_query = int(os.getenv("PERSON_INTEL_WEB_MAX_PER_QUERY", "8"))
+        self.timeout_seconds = _positive_float_env("PERSON_INTEL_WEB_TIMEOUT_SEC", 45.0)
+        self.query_timeout_seconds = _positive_float_env(
+            "PERSON_INTEL_WEB_QUERY_TIMEOUT_SEC", 15.0
+        )
 
     async def collect(
         self,
@@ -118,9 +131,18 @@ class WebFallbackProvider(PersonSourceProvider):
 
         records: list[EvidenceRecord] = []
         seen_keys: set[str] = set()
+        deadline = time.monotonic() + self.timeout_seconds
         for query, domain_filter in query_plan:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             try:
-                raw = provider.search(query, domain_filter=domain_filter)
+                raw = await asyncio.to_thread(
+                    provider.search,
+                    query,
+                    domain_filter=domain_filter,
+                    deadline_seconds=min(self.query_timeout_seconds, remaining),
+                )
             except Exception:
                 continue
 

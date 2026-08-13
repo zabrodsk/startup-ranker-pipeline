@@ -52,34 +52,23 @@ class WebSearchProvider(ABC):
 
 
 class BraveSearchProvider(WebSearchProvider):
-    """Wrapper around LangChain's BraveSearch tool."""
+    """Client for Brave's Web Search REST API."""
+
+    BASE_URL = "https://api.search.brave.com/res/v1/web/search"
 
     def __init__(self, search_end_date: str, *, country: str = DEFAULT_COUNTRY):
-        try:
-            BraveSearch = importlib.import_module(
-                "langchain_community.tools.brave_search.tool"
-            ).BraveSearch
-        except (ImportError, AttributeError) as exc:
-            raise ImportError(
-                "langchain_community.tools.brave_search.tool.BraveSearch is required for BraveSearchProvider."
-            ) from exc
-
         api_key = os.getenv("BRAVE_SEARCH_API_KEY")
         if not api_key:
             raise ValueError("BRAVE_SEARCH_API_KEY environment variable is required")
-
-        freshness = self._convert_date_to_freshness(search_end_date)
-        self._brave_search = BraveSearch.from_api_key(
-            api_key=api_key,
-            search_kwargs={
-                "count": DEFAULT_RESULT_COUNT,
-                "country": country,
-                "search_lang": "en",
-                "safesearch": "moderate",
-                "freshness": freshness,
-                "result_filter": "web,news",
-            },
-        )
+        self._api_key = api_key
+        self._country = country or DEFAULT_COUNTRY
+        self._freshness = self._convert_date_to_freshness(search_end_date)
+        try:
+            self._requests = importlib.import_module("requests")
+        except ImportError as exc:
+            raise ImportError(
+                "The 'requests' package is required for BraveSearchProvider."
+            ) from exc
 
     def search(
         self,
@@ -88,7 +77,54 @@ class BraveSearchProvider(WebSearchProvider):
         domain_filter: Optional[List[str]] = None,
         deadline_seconds: float | None = None,
     ) -> str:
-        return self._brave_search.run(query)
+        search_query = SerperSearchProvider._apply_domain_filter(query, domain_filter)
+        response = run_with_sync_retries(
+            self._requests.get,
+            self.BASE_URL,
+            headers={
+                "Accept": "application/json",
+                "X-Subscription-Token": self._api_key,
+            },
+            params={
+                "q": search_query,
+                "count": DEFAULT_RESULT_COUNT,
+                "country": self._country,
+                "search_lang": "en",
+                "safesearch": "moderate",
+                "freshness": self._freshness,
+            },
+            timeout=30,
+            max_elapsed_seconds=deadline_seconds,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ValueError("Unexpected Brave response format: root is not an object")
+        web = data.get("web") or {}
+        results = web.get("results") if isinstance(web, dict) else None
+        if results is None:
+            results = []
+        if not isinstance(results, list):
+            raise ValueError("Unexpected Brave response format: 'web.results' is not a list")
+
+        lines: List[str] = [f"Search Results for: {query}", ""]
+        if not results:
+            lines.append("No search results returned.")
+            return "\n".join(lines)
+        for index, item in enumerate(results, start=1):
+            if not isinstance(item, dict):
+                continue
+            title = item.get("title") or "No title"
+            url = item.get("url") or "No URL provided"
+            description = item.get("description") or ""
+            age = item.get("age") or item.get("page_age")
+            lines.append(f"{index}. {title} — {url}")
+            if age:
+                lines.append(f"   Date: {age}")
+            if description:
+                lines.append(f"   {description}")
+            lines.append("")
+        return "\n".join(lines).rstrip()
 
     @staticmethod
     def _convert_date_to_freshness(search_end_date: str) -> str:

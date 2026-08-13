@@ -486,6 +486,7 @@ def _run_web_search(
                 "hybrid",
                 "serper",
                 "sonar",
+                "brave",
             }:
                 result = provider.search(
                     search_query,
