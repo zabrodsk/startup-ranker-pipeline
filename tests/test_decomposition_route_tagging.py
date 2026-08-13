@@ -83,8 +83,9 @@ def test_route_tagging_instruction_lists_all_routes():
         assert f'"{route.value}"' in ROUTE_TAGGING_INSTRUCTION
 
 
-def test_decomposition_cache_name_bumped_for_route_tags():
-    assert tree_cache.CACHE_NAME == "question_trees_v2.json"
+def test_decomposition_cache_name_covers_bounded_tree_post_processing():
+    assert tree_cache.CACHE_NAME == "question_trees_v3.json"
+    assert tree_cache.ANSWERED_CACHE_NAME == "answered_question_trees_v2.json"
 
 
 # --- Prompt registry -----------------------------------------------------------
