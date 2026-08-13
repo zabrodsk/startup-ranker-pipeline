@@ -45,9 +45,11 @@ class WebSearchProvider(ABC):
     """Minimal interface for search providers."""
 
     request_attempted = False
+    request_attempt_count = 0
 
     def _mark_request_attempted(self) -> None:
         self.request_attempted = True
+        self.request_attempt_count += 1
 
     @abstractmethod
     def search(
@@ -90,6 +92,7 @@ class BraveSearchProvider(WebSearchProvider):
         deadline_seconds: float | None = None,
     ) -> str:
         self.request_attempted = False
+        self.request_attempt_count = 0
         search_query = SerperSearchProvider._apply_domain_filter(query, domain_filter)
         response = run_with_sync_retries(
             _request_with_status_check,
@@ -185,6 +188,7 @@ class SerperSearchProvider(WebSearchProvider):
         deadline_seconds: float | None = None,
     ) -> str:
         self.request_attempted = False
+        self.request_attempt_count = 0
         search_query = self._apply_domain_filter(query, domain_filter)
         search_query = self._apply_date_filter(search_query, self._search_end_date)
         payload = {
@@ -316,6 +320,7 @@ class SonarSearchProvider(WebSearchProvider):
         deadline_seconds: float | None = None,
     ) -> str:
         self.request_attempted = False
+        self.request_attempt_count = 0
         payload = {
             "query": query,
             "max_results": self._max_results,
@@ -528,15 +533,23 @@ class HybridSearchProvider(WebSearchProvider):
                     domain_filter=domain_filter,
                     deadline_seconds=remaining,
                 )
-                if getattr(provider, "request_attempted", True):
-                    self.attempted_provider_names.append(provider_name)
+                request_count = getattr(provider, "request_attempt_count", None)
+                if request_count is None:
+                    request_count = int(getattr(provider, "request_attempted", True))
+                self.attempted_provider_names.extend(
+                    [provider_name] * max(0, int(request_count))
+                )
                 if self._is_usable(query, last_result):
                     self.last_provider_name = provider_name
                     return last_result
                 failures.append(f"{type(provider).__name__}: unusable result")
             except Exception as exc:
-                if getattr(provider, "request_attempted", True):
-                    self.attempted_provider_names.append(provider_name)
+                request_count = getattr(provider, "request_attempt_count", None)
+                if request_count is None:
+                    request_count = int(getattr(provider, "request_attempted", True))
+                self.attempted_provider_names.extend(
+                    [provider_name] * max(0, int(request_count))
+                )
                 failures.append(f"{type(provider).__name__}: {exc}")
         raise RuntimeError(
             "All hybrid web search providers failed or returned unusable results: "

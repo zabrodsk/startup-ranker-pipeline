@@ -236,6 +236,53 @@ def test_locally_rejected_provider_is_not_metered_or_counted(monkeypatch) -> Non
     assert recorded == []
 
 
+def test_retried_requests_are_each_metered_and_counted(monkeypatch) -> None:
+    recorded: list[str] = []
+    expected = (
+        "Search Results for: Apaleo funding\n\n"
+        "1. Apaleo funding evidence — https://example.com/apaleo\n"
+        "   Apaleo funding evidence with sufficient detail for the quality gate."
+    )
+
+    class _RetriedProvider:
+        request_attempt_count = 2
+        last_provider_name = "serper"
+
+        def search(self, *_args, **_kwargs):
+            return expected
+
+    class _Collector:
+        def record_web_search(self, *, provider, **_kwargs):  # noqa: ANN001
+            recorded.append(provider)
+
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "hybrid")
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    monkeypatch.setattr(
+        web_search_module,
+        "get_provider",
+        lambda **_kwargs: _RetriedProvider(),
+    )
+    monkeypatch.setattr(result_cache, "lookup", lambda *_args: None)
+    monkeypatch.setattr(result_cache, "store", lambda *_args: None)
+    monkeypatch.setattr(ea, "get_current_collector", lambda: _Collector())
+    cache_info: dict = {}
+
+    result = ea._run_web_search(
+        "Apaleo funding",
+        cache_info=cache_info,
+        provider_override="serper",
+    )
+
+    assert result == expected
+    assert cache_info["attempted_providers"] == ["serper", "serper"]
+    assert recorded == ["serper", "serper"]
+
+    state = {"count": [1], "lock": asyncio.Lock(), "max": 12}
+    asyncio.run(ea._reconcile_web_search_slots(state, cache_info))
+    assert state["count"] == [2]
+
+
 def test_portfolio_refunds_slot_when_provider_request_never_started(monkeypatch) -> None:
     def locally_rejected(*args, **_kwargs):
         cache_info = args[7]
@@ -794,3 +841,42 @@ def test_shared_portfolio_concurrency_never_exceeds_provider_throttle(monkeypatc
     asyncio.run(run())
 
     assert peak == 1
+
+
+def test_shared_portfolio_uses_one_wall_clock_deadline(monkeypatch) -> None:
+    attempts = 0
+    deadlines: list[float | None] = []
+
+    async def slow_routed_search(*, deadline=None, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        deadlines.append(deadline)
+        await asyncio.sleep(0.02)
+        return None
+
+    trees = {
+        "market": QuestionTree(
+            aspect="market",
+            root_node=QuestionNode(
+                question="How large is the hospitality software market?",
+                route="sector_market",
+                sub_nodes=[
+                    QuestionNode(question="Who are the competitors?", route="competitors"),
+                    QuestionNode(question="What drives demand?", route="customer_need"),
+                ],
+            ),
+        )
+    }
+    monkeypatch.setattr(ea, "WEB_SEARCH_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(ea, "_run_quality_routed_search", slow_routed_search)
+
+    asyncio.run(
+        ea._prepare_shared_web_evidence(
+            trees,
+            Company(name="Apaleo", domain="apaleo.com", industry="hospitality software"),
+            {"count": [0], "lock": asyncio.Lock(), "max": 12},
+        )
+    )
+
+    assert attempts == 1
+    assert len({deadline for deadline in deadlines if deadline is not None}) == 1

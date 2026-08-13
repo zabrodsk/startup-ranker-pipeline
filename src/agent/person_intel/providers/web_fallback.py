@@ -154,7 +154,9 @@ class WebFallbackProvider(PersonSourceProvider):
             pending_result_url: str | None = None
             for line in lines:
                 line_url = _extract_url(line)
-                if re.match(r"^\d+\.\s*", line):
+                if re.match(r"^\d+\.\s*", line) or line.lower().startswith(
+                    "answer box:"
+                ):
                     pending_result_url = line_url
                     continue
                 if _is_low_quality_line(line):

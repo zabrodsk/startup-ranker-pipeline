@@ -186,12 +186,14 @@ def test_serper_retries_retryable_http_status(monkeypatch) -> None:
         ),
     )
 
-    result = providers.SerperSearchProvider("2026-08-07").search(
+    provider = providers.SerperSearchProvider("2026-08-07")
+    result = provider.search(
         "Apaleo market",
         deadline_seconds=1,
     )
 
     assert calls == 2
+    assert provider.request_attempt_count == 2
     assert "Apaleo evidence" in result
 
 
