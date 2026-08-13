@@ -391,14 +391,12 @@ async def answer_company_question(
                     web_search_query = _build_web_search_query(company, question)
                     web_search_info: dict[str, Any] = {}
                     try:
-                        raw_web_results = await asyncio.wait_for(
-                            asyncio.to_thread(
-                                _run_web_search,
-                                web_search_query,
-                                _web_search_domain_filter(company, question),
-                                cache_info=web_search_info,
-                            ),
-                            timeout=WEB_SEARCH_TIMEOUT_SEC,
+                        raw_web_results = await asyncio.to_thread(
+                            _run_web_search,
+                            web_search_query,
+                            _web_search_domain_filter(company, question),
+                            cache_info=web_search_info,
+                            provider_deadline_seconds=WEB_SEARCH_TIMEOUT_SEC,
                         )
                         useful, reason = _web_results_add_value(question, company.name, raw_web_results)
                         if useful or (prefers_web and raw_web_results and not str(raw_web_results).lower().startswith("web search failed")):

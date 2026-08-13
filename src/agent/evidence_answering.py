@@ -1436,6 +1436,7 @@ async def answer_question_from_evidence(
                     heavy_mode,
                     cache_info=cache_info,
                     provider_attempt_limit=provider_attempt_limit,
+                    provider_deadline_seconds=WEB_SEARCH_TIMEOUT_SEC,
                 )
                 if provider_attempt_limit is not None
                 else asyncio.to_thread(
@@ -1445,12 +1446,10 @@ async def answer_question_from_evidence(
                     search_reason,
                     heavy_mode,
                     cache_info=cache_info,
+                    provider_deadline_seconds=WEB_SEARCH_TIMEOUT_SEC,
                 )
             )
-            web_results = await asyncio.wait_for(
-                search_call,
-                timeout=WEB_SEARCH_TIMEOUT_SEC,
-            )
+            web_results = await search_call
             # W13: a cache hit consumed no provider call — refund the cap slot
             # acquired above so cached answers don't shrink the budget.
             legacy_cache_hit = bool(cache_info.get("hit"))

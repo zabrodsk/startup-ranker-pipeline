@@ -204,7 +204,7 @@ class _FakeCollector:
 
 def _patch_provider(monkeypatch, calls: list):
     class _FakeProvider:
-        def search(self, query, domain_filter=None):
+        def search(self, query, domain_filter=None, **_kwargs):
             calls.append(query)
             return COMPANY_RESULT
 
@@ -271,7 +271,7 @@ def test_run_web_search_miss_calls_provider_stores_and_keeps_legacy_metadata(mon
 
 def test_run_web_search_does_not_store_failed_results(monkeypatch):
     class _FailingProvider:
-        def search(self, query, domain_filter=None):
+        def search(self, query, domain_filter=None, **_kwargs):
             return "Web search failed: provider exploded"
 
     monkeypatch.setenv("WEB_SEARCH_PROVIDER", "sonar")

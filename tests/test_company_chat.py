@@ -424,7 +424,7 @@ def test_company_chat_prefers_web_for_competitor_questions(
 
     captured: dict[str, object] = {}
 
-    def fake_run_web_search(query: str, domain_filter, cache_info=None):
+    def fake_run_web_search(query: str, domain_filter, cache_info=None, **_kwargs):
         captured["query"] = query
         captured["domain_filter"] = domain_filter
         cache_info.update(

@@ -32,6 +32,15 @@ def test_sync_retry_deadline_stops_before_an_unbounded_retry(monkeypatch) -> Non
     calls: list[float] = []
     monkeypatch.setattr(
         rate_limit,
+        "web_search_throttle",
+        lambda: InvocationThrottle(
+            max_concurrent=1,
+            min_interval_sec=0.0,
+            start_jitter_sec=0.0,
+        ),
+    )
+    monkeypatch.setattr(
+        rate_limit,
         "web_search_retry_policy",
         lambda: RetryPolicy(
             max_retries=5,
