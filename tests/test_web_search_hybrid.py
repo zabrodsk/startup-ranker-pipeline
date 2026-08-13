@@ -161,6 +161,43 @@ def test_failed_hybrid_attempts_remain_in_cap_metadata_and_telemetry(monkeypatch
     assert recorded == ["serper", "perplexity"]
 
 
+def test_failed_concrete_provider_attempt_remains_in_metadata_and_telemetry(
+    monkeypatch,
+) -> None:
+    recorded: list[str] = []
+
+    class _FailingProvider:
+        def search(self, *_args, **_kwargs):
+            raise TimeoutError("serper timed out")
+
+    class _Collector:
+        def record_web_search(self, *, provider, **_kwargs):  # noqa: ANN001
+            recorded.append(provider)
+
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "hybrid")
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    monkeypatch.setattr(
+        web_search_module,
+        "get_provider",
+        lambda **_kwargs: _FailingProvider(),
+    )
+    monkeypatch.setattr(result_cache, "lookup", lambda *_args: None)
+    monkeypatch.setattr(ea, "get_current_collector", lambda: _Collector())
+    cache_info: dict = {}
+
+    result = ea._run_web_search(
+        "Apaleo funding",
+        cache_info=cache_info,
+        provider_override="serper",
+    )
+
+    assert result.startswith("Web search failed:")
+    assert cache_info["attempted_providers"] == ["serper"]
+    assert cache_info["provider"] == "serper"
+    assert recorded == ["serper"]
+
+
 def test_hybrid_falls_back_when_primary_has_only_one_thin_result(monkeypatch) -> None:
     attempts: list[str] = []
 
@@ -211,6 +248,33 @@ def test_hybrid_respects_provider_attempt_limit(monkeypatch) -> None:
 
     provider.search("q", max_provider_attempts=1)
 
+    assert attempts == ["serper"]
+    assert provider.attempted_provider_names == ["serper"]
+
+
+def test_hybrid_does_not_count_fallback_that_deadline_prevents(monkeypatch) -> None:
+    attempts: list[str] = []
+    clock = iter([0.0, 0.0, 2.0])
+
+    class _ThinPrimary:
+        def search(self, *_args, **_kwargs):
+            attempts.append("serper")
+            return "Search Results for: q\n\nNo search results returned."
+
+    class _Fallback:
+        def search(self, *_args, **_kwargs):
+            attempts.append("sonar")
+            return "Search Results for: q\n\n1. Useful fallback evidence"
+
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    monkeypatch.setattr("agent.web_search.providers.time.monotonic", lambda: next(clock))
+    provider = HybridSearchProvider("2026-08-13")
+    provider._providers = [("serper", _ThinPrimary()), ("sonar", _Fallback())]
+
+    result = provider.search("q", deadline_seconds=1.0)
+
+    assert result.startswith("Search Results for: q")
     assert attempts == ["serper"]
     assert provider.attempted_provider_names == ["serper"]
 

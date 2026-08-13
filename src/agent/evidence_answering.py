@@ -461,6 +461,7 @@ def _run_web_search(
     provider_name = (provider_override or configured_provider).strip().lower()
 
     provider: Any | None = None
+    provider_request_started = False
     try:
         from agent.web_search import get_provider, result_cache
 
@@ -473,6 +474,7 @@ def _run_web_search(
         else:
             search_date = datetime.now().strftime("%Y-%m-%d")
             provider = get_provider(search_end_date=search_date, provider_name=provider_name)
+            provider_request_started = True
             if provider_name == "hybrid" and provider_attempt_limit is not None:
                 result = provider.search(
                     search_query,
@@ -567,6 +569,12 @@ def _run_web_search(
         attempted_provider_names = list(
             getattr(provider, "attempted_provider_names", None) or []
         )
+        if (
+            not attempted_provider_names
+            and provider_request_started
+            and provider_name in {"serper", "sonar", "brave"}
+        ):
+            attempted_provider_names = [provider_name]
         if cache_info is not None and attempted_provider_names:
             cache_info["attempted_providers"] = attempted_provider_names
             cache_info["provider"] = (

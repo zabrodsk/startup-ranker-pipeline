@@ -465,11 +465,11 @@ class HybridSearchProvider(WebSearchProvider):
             else None
         )
         for provider_name, provider in providers:
+            remaining = deadline - time.monotonic() if deadline is not None else None
+            if remaining is not None and remaining <= 0:
+                break
             self.attempted_provider_names.append(provider_name)
             try:
-                remaining = deadline - time.monotonic() if deadline is not None else None
-                if remaining is not None and remaining <= 0:
-                    break
                 last_result = provider.search(
                     query,
                     domain_filter=domain_filter,
