@@ -120,3 +120,35 @@ def test_company_plan_is_deterministic_and_deduplicates_queries() -> None:
     assert first == second
     queries = [objective.query.query for objective in first.objectives]
     assert len(queries) == len(set(queries))
+
+
+def test_company_plan_reuses_one_query_across_every_matching_bucket() -> None:
+    plan = build_company_web_evidence_plan(
+        questions=[
+            PortfolioQuestion(
+                question="Who are the founders?",
+                route_tag="company_specific",
+                aspect="general_company",
+                is_root=True,
+            ),
+            PortfolioQuestion(
+                question="Who are the founders?",
+                route_tag="company_specific",
+                aspect="team",
+                is_root=True,
+            ),
+        ],
+        company_name="Apaleo",
+        company_domain="apaleo.com",
+        industry_hint=None,
+        geo_hint=None,
+        current_year=2026,
+        core_budget=10,
+        reserve_budget=0,
+    )
+
+    assert len(plan.objectives) == 1
+    assert plan.objectives[0].bucket_keys == (
+        "company_specific:general_company",
+        "company_specific:team",
+    )

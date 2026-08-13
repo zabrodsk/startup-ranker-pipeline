@@ -760,7 +760,7 @@ async def _prepare_shared_web_evidence(
     concurrency = max(1, int(os.getenv("WEB_SEARCH_PREFETCH_CONCURRENCY", "4")))
     semaphore = asyncio.Semaphore(concurrency)
 
-    async def fetch(objective: Any) -> tuple[str, dict[str, Any] | None]:
+    async def fetch(objective: Any) -> tuple[tuple[str, ...], dict[str, Any] | None]:
         async with semaphore:
             evidence = await _run_quality_routed_search(
                 query=objective.query.query,
@@ -776,13 +776,14 @@ async def _prepare_shared_web_evidence(
                 web_search_state=web_search_state,
                 on_cooperate=on_cooperate,
             )
-            return objective.bucket_key, evidence
+            return objective.bucket_keys, evidence
 
     fetched = await asyncio.gather(*(fetch(objective) for objective in plan.objectives))
     evidence_by_bucket: dict[str, list[dict[str, Any]]] = {}
-    for bucket_key, evidence in fetched:
+    for bucket_keys, evidence in fetched:
         if evidence is not None:
-            evidence_by_bucket.setdefault(bucket_key, []).append(evidence)
+            for bucket_key in bucket_keys:
+                evidence_by_bucket.setdefault(bucket_key, []).append(evidence)
 
     return {
         "portfolio_plan": plan,

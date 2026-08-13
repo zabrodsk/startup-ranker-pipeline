@@ -9,7 +9,7 @@ query before any category gets a second one.
 from __future__ import annotations
 
 from collections import OrderedDict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Iterable
 
 from .planner import (
@@ -36,6 +36,7 @@ class PortfolioObjective:
 
     key: str
     bucket_key: str
+    bucket_keys: tuple[str, ...]
     route: QuestionRoute
     relevance_policy: RelevancePolicy
     representative_question: str
@@ -76,7 +77,7 @@ def build_company_web_evidence_plan(
         str,
         deque[tuple[QuestionRoute, RelevancePolicy, str, SearchQuerySpec]],
     ] = OrderedDict()
-    seen_queries: set[str] = set()
+    seen_by_bucket: dict[str, set[str]] = {}
 
     # Roots are deliberately considered before descendants within the caller's
     # stable aspect order: they tend to express the broadest evidence objective.
@@ -100,16 +101,18 @@ def build_company_web_evidence_plan(
             continue
         bucket_key = evidence_bucket_key(plan.route, item.aspect)
         bucket = buckets.setdefault(bucket_key, deque())
+        bucket_queries = seen_by_bucket.setdefault(bucket_key, set())
         for query in plan.queries:
             normalized_query = " ".join(query.query.lower().split())
-            if not normalized_query or normalized_query in seen_queries:
+            if not normalized_query or normalized_query in bucket_queries:
                 continue
-            seen_queries.add(normalized_query)
+            bucket_queries.add(normalized_query)
             bucket.append(
                 (plan.route, plan.relevance_policy, item.question, query)
             )
 
     objectives: list[PortfolioObjective] = []
+    objective_index_by_query: dict[str, int] = {}
     active = list(buckets.items())
     while active and len(objectives) < normalized_core_budget:
         next_active: list[
@@ -124,16 +127,28 @@ def build_company_web_evidence_plan(
             if not queue:
                 continue
             route, policy, representative_question, query = queue.popleft()
-            objectives.append(
-                PortfolioObjective(
-                    key=f"core-{len(objectives) + 1:02d}",
-                    bucket_key=bucket_key,
-                    route=route,
-                    relevance_policy=policy,
-                    representative_question=representative_question,
-                    query=query,
+            normalized_query = " ".join(query.query.lower().split())
+            existing_index = objective_index_by_query.get(normalized_query)
+            if existing_index is not None:
+                existing = objectives[existing_index]
+                if bucket_key not in existing.bucket_keys:
+                    objectives[existing_index] = replace(
+                        existing,
+                        bucket_keys=(*existing.bucket_keys, bucket_key),
+                    )
+            else:
+                objective_index_by_query[normalized_query] = len(objectives)
+                objectives.append(
+                    PortfolioObjective(
+                        key=f"core-{len(objectives) + 1:02d}",
+                        bucket_key=bucket_key,
+                        bucket_keys=(bucket_key,),
+                        route=route,
+                        relevance_policy=policy,
+                        representative_question=representative_question,
+                        query=query,
+                    )
                 )
-            )
             if queue:
                 next_active.append((bucket_key, queue))
         active = next_active

@@ -21,6 +21,16 @@ from agent.rate_limit import run_with_sync_retries
 DEFAULT_RESULT_COUNT = 3
 DEFAULT_COUNTRY = "US"
 DEFAULT_MAX_TOKENS_PER_PAGE = 200
+_DOCUMENTED_PLACEHOLDER_KEYS = {
+    "your_serper_api_key_here",
+    "your_perplexity_api_key_here",
+}
+
+
+def _has_live_api_key(value: str | None) -> bool:
+    """Return whether a configured key is non-empty and not a documented placeholder."""
+    normalized = (value or "").strip()
+    return bool(normalized and normalized.lower() not in _DOCUMENTED_PLACEHOLDER_KEYS)
 
 
 class WebSearchProvider(ABC):
@@ -90,7 +100,7 @@ class SerperSearchProvider(WebSearchProvider):
         max_results: int = 5,
     ):
         api_key = os.getenv("SERPER_API_KEY")
-        if not api_key:
+        if not _has_live_api_key(api_key):
             raise ValueError("Serper requires SERPER_API_KEY environment variable.")
 
         self._api_key = api_key
@@ -303,7 +313,7 @@ class HybridSearchProvider(WebSearchProvider):
         """Build available providers without letting one broken setup disable others."""
         candidates: list[tuple[str, WebSearchProvider]] = []
         initialization_failures: list[str] = []
-        if os.getenv("SERPER_API_KEY"):
+        if _has_live_api_key(os.getenv("SERPER_API_KEY")):
             try:
                 candidates.append(
                     ("serper", SerperSearchProvider(search_end_date=search_end_date))
@@ -311,7 +321,7 @@ class HybridSearchProvider(WebSearchProvider):
             except Exception as exc:
                 initialization_failures.append(f"SerperSearchProvider: {exc}")
         pplx_key = os.getenv("PPLX_API_KEY") or os.getenv("PERPLEXITY_API_KEY")
-        if pplx_key and pplx_key != "your_perplexity_api_key_here":
+        if _has_live_api_key(pplx_key):
             try:
                 candidates.append(
                     ("sonar", SonarSearchProvider(search_end_date=search_end_date))
@@ -337,8 +347,8 @@ class HybridSearchProvider(WebSearchProvider):
         self.attempted_provider_names: list[str] = []
 
     @staticmethod
-    def _is_usable(result: str) -> bool:
-        """Require enough evidence to avoid accepting a thin primary response."""
+    def _is_usable(query: str, result: str) -> bool:
+        """Require substantive evidence that also overlaps the requested topic."""
         text = (result or "").strip()
         normalized = text.lower()
         if (
@@ -349,9 +359,42 @@ class HybridSearchProvider(WebSearchProvider):
             return False
         result_count = len(re.findall(r"(?m)^\d+\.\s+", text))
         substantive_chars = len(re.sub(r"\s+", " ", text))
-        return (result_count >= 2 and substantive_chars >= 160) or (
+        substantive = (result_count >= 2 and substantive_chars >= 160) or (
             "answer box:" in normalized and substantive_chars >= 120
         )
+        if not substantive:
+            return False
+
+        # Formatted providers echo the query in their first line. Exclude that
+        # line so it cannot make unrelated results appear relevant.
+        result_body = re.sub(
+            r"(?im)^search results for:\s*[^\n]*(?:\n|$)", "", text, count=1
+        ).lower()
+        stop_words = {
+            "after",
+            "before",
+            "company",
+            "from",
+            "into",
+            "market",
+            "search",
+            "site",
+            "software",
+            "that",
+            "their",
+            "this",
+            "what",
+            "when",
+            "where",
+            "which",
+            "with",
+        }
+        query_terms = {
+            token
+            for token in re.findall(r"[a-z0-9]+", query.lower())
+            if len(token) >= 3 and token not in stop_words and not token.isdigit()
+        }
+        return not query_terms or any(term in result_body for term in query_terms)
 
     def search(
         self,
@@ -373,7 +416,7 @@ class HybridSearchProvider(WebSearchProvider):
             try:
                 last_result = provider.search(query, domain_filter=domain_filter)
                 self.last_provider_name = provider_name
-                if self._is_usable(last_result):
+                if self._is_usable(query, last_result):
                     return last_result
             except Exception as exc:
                 failures.append(f"{type(provider).__name__}: {exc}")
@@ -388,8 +431,8 @@ def resolve_provider_name(provider_name: str | None = None) -> str | None:
     """Resolve configured search strategy against the API keys actually available."""
     configured = (provider_name or os.getenv("WEB_SEARCH_PROVIDER", "sonar")).strip().lower()
     pplx_key = os.getenv("PPLX_API_KEY") or os.getenv("PERPLEXITY_API_KEY")
-    has_pplx = bool(pplx_key and pplx_key != "your_perplexity_api_key_here")
-    has_serper = bool(os.getenv("SERPER_API_KEY"))
+    has_pplx = _has_live_api_key(pplx_key)
+    has_serper = _has_live_api_key(os.getenv("SERPER_API_KEY"))
     has_brave = bool(os.getenv("BRAVE_SEARCH_API_KEY"))
 
     if configured == "hybrid":

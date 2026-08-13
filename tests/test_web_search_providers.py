@@ -84,6 +84,16 @@ def test_serper_requires_api_key(monkeypatch) -> None:
         providers.SerperSearchProvider(search_end_date="2026-08-07")
 
 
+def test_serper_rejects_documented_placeholder_key(monkeypatch) -> None:
+    monkeypatch.setenv("SERPER_API_KEY", "your_serper_api_key_here")
+    monkeypatch.delenv("PPLX_API_KEY", raising=False)
+    monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
+
+    assert providers.resolve_provider_name("hybrid") is None
+    with pytest.raises(ValueError, match="SERPER_API_KEY"):
+        providers.SerperSearchProvider(search_end_date="2026-08-07")
+
+
 def test_provider_factory_supports_serper(monkeypatch) -> None:
     monkeypatch.setenv("SERPER_API_KEY", "test-key")
     monkeypatch.setattr(
@@ -153,6 +163,43 @@ def test_hybrid_provider_falls_back_when_serper_fails(monkeypatch) -> None:
     )
 
     assert "Useful fallback evidence" in provider.search("q")
+    assert attempts == ["serper", "sonar"]
+
+
+def test_hybrid_provider_falls_back_when_primary_results_are_unrelated(monkeypatch) -> None:
+    attempts: list[str] = []
+
+    class _UnrelatedSerper:
+        def search(self, *_args, **_kwargs):
+            attempts.append("serper")
+            return (
+                "Search Results for: Apaleo funding\n\n"
+                "1. Banana cultivation — https://example.com/banana\n"
+                "   Banana soil harvest irrigation tropical fruit agriculture guide.\n\n"
+                "2. Mango recipes — https://example.com/mango\n"
+                "   Mango kitchen recipes fruit desserts cooking and nutrition guide."
+            )
+
+    class _RelevantSonar:
+        def search(self, *_args, **_kwargs):
+            attempts.append("sonar")
+            return (
+                "Search Results for: Apaleo funding\n\n"
+                "1. Apaleo funding round — https://example.com/apaleo-round\n"
+                "   Apaleo raised growth funding for its hospitality platform.\n\n"
+                "2. Apaleo investors — https://example.com/apaleo-investors\n"
+                "   The financing included existing and new investors in Apaleo."
+            )
+
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    provider = providers.HybridSearchProvider(search_end_date="2026-08-07")
+    provider._providers = [("serper", _UnrelatedSerper()), ("sonar", _RelevantSonar())]
+
+    result = provider.search("Apaleo funding")
+
+    assert "Apaleo raised growth funding" in result
+    assert provider.last_provider_name == "sonar"
     assert attempts == ["serper", "sonar"]
 
 
