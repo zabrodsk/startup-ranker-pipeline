@@ -36,9 +36,9 @@ except Exception:
     FEEDBACK_MAX_SCREENSHOT_BYTES = 3_000_000
 FEEDBACK_SCREENSHOT_CONTENT_TYPES = {"image/webp"}
 WORKER_ACTIVE_STATUSES = {"queued", "claimed", "running", "finalizing"}
+WORKER_CLAIMABLE_STATUSES = {"queued", "claimed", "running"}
 WORKER_TERMINAL_STATUSES = {"done", "error", "interrupted", "stopped"}
 WORKER_EXECUTION_STALE_SECONDS = int(os.getenv("SPECTER_WORKER_STALE_SECONDS", "120"))
-WORKER_QUEUE_STALE_SECONDS = int(os.getenv("SPECTER_WORKER_QUEUE_STALE_SECONDS", "900"))
 SPECTER_PROFILE_BASE_URL = "https://app.tryspecter.com/signals/company/feed/"
 
 
@@ -993,13 +993,18 @@ def is_configured() -> bool:
 def _serialize(obj: Any) -> Any:
     """Convert Pydantic/objects to JSON-serializable dict."""
     if hasattr(obj, "model_dump"):
-        return obj.model_dump()
+        return _serialize(obj.model_dump())
     if hasattr(obj, "__dict__") and not isinstance(obj, type):
         return {k: _serialize(v) for k, v in obj.__dict__.items()}
     if isinstance(obj, list):
         return [_serialize(x) for x in obj]
     if isinstance(obj, dict):
         return {k: _serialize(v) for k, v in obj.items()}
+    if isinstance(obj, str):
+        # PostgreSQL text and jsonb reject U+0000. Model/provider text is
+        # otherwise usable, so strip only the incompatible code point instead
+        # of failing the completed analysis during persistence.
+        return obj.replace("\x00", "")
     return obj
 
 
@@ -1063,8 +1068,12 @@ def _worker_state_timeout_seconds(worker_state: dict[str, Any]) -> int | None:
     status = str(worker_state.get("status") or "").strip().lower()
     if status not in WORKER_ACTIVE_STATUSES:
         return None
+    # Queued jobs do not have a worker heartbeat yet. Queue age therefore says
+    # nothing about worker health and must not turn valid backlog into a false
+    # terminal interruption. Once claimed, the execution heartbeat remains the
+    # fail-safe for a genuinely lost worker.
     if status == "queued":
-        return max(WORKER_QUEUE_STALE_SECONDS, 1)
+        return None
     return max(WORKER_EXECUTION_STALE_SECONDS, 1)
 
 
@@ -1084,8 +1093,6 @@ def _resolved_worker_state(worker_state: dict[str, Any]) -> tuple[str, str | Non
     if status not in WORKER_ACTIVE_STATUSES:
         return status, progress, False
     if _worker_state_is_stale(worker_state):
-        if status == "queued":
-            return "interrupted", "Worker queue stalled before processing started.", False
         return "interrupted", "Worker interrupted before completion.", False
     return status, progress, True
 
@@ -1094,6 +1101,23 @@ def _worker_state_terminal_timestamp(worker_state: dict[str, Any]) -> datetime |
     return _parse_timestamp(worker_state.get("run_finished_at")) or _parse_timestamp(
         worker_state.get("last_heartbeat_at")
     )
+
+
+def _terminal_history_overrides_active_worker(
+    latest_status: dict[str, Any],
+    worker_state: dict[str, Any],
+) -> bool:
+    worker_status = str(worker_state.get("status") or "").strip().lower()
+    if worker_status not in WORKER_ACTIVE_STATUSES:
+        return False
+    status = str(latest_status.get("status") or "").strip().lower()
+    if status not in WORKER_TERMINAL_STATUSES:
+        return False
+    status_at = _parse_timestamp(latest_status.get("created_at"))
+    if status_at is None:
+        return False
+    heartbeat_at = _parse_timestamp(worker_state.get("last_heartbeat_at"))
+    return heartbeat_at is None or status_at >= heartbeat_at
 
 
 def _merge_worker_state(
@@ -1905,15 +1929,17 @@ def load_machine_lifecycle(intake_id: str) -> dict[str, Any] | None:
 
 def list_claimable_specter_worker_jobs(limit: int = 10) -> list[dict[str, Any]]:
     client = _get_client()
-    if not client:
+    requested_limit = max(int(limit), 0)
+    if not client or requested_limit == 0:
         return []
     try:
         rows = (
             client.table("jobs")
             .select("job_id_legacy, input_mode, use_web_search, created_at, run_config")
             .eq("input_mode", "specter")
-            .order("created_at", desc=True)
-            .limit(max(limit * 10, 50))
+            .in_("run_config->worker_state->>status", sorted(WORKER_CLAIMABLE_STATUSES))
+            .order("created_at", desc=False)
+            .limit(requested_limit)
             .execute()
         )
     except Exception as exc:
@@ -1924,7 +1950,7 @@ def list_claimable_specter_worker_jobs(limit: int = 10) -> list[dict[str, Any]]:
     for row in rows.data or []:
         worker_state = _extract_worker_state(row.get("run_config") or {})
         status = str(worker_state.get("status") or "").strip().lower()
-        if status in {"queued", "claimed", "running", "finalizing"}:
+        if status in WORKER_CLAIMABLE_STATUSES:
             claimable.append(
                 {
                     "job_id": row.get("job_id_legacy"),
@@ -1935,7 +1961,7 @@ def list_claimable_specter_worker_jobs(limit: int = 10) -> list[dict[str, Any]]:
                     "worker_state": worker_state,
                 }
             )
-        if len(claimable) >= limit:
+        if len(claimable) >= requested_limit:
             break
     return claimable
 
@@ -3049,7 +3075,11 @@ def load_job_status(job_id_legacy: str) -> dict[str, Any] | None:
     if isinstance(snapshot_payload, dict) and not progress:
         progress = snapshot_payload.get("job_message")
 
-    if worker_active and analysis_status not in {"done", "error", "stopped"}:
+    if _terminal_history_overrides_active_worker(latest_status, worker_state):
+        status = str(latest_status.get("status") or status).strip().lower()
+        progress = latest_status.get("progress") or progress
+        worker_active = False
+    elif worker_active and analysis_status not in {"done", "error", "stopped"}:
         status = worker_status if worker_status != "claimed" else "running"
         progress = worker_progress or progress
     elif analysis_status in {"done", "error", "stopped"} and (
@@ -3253,7 +3283,11 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
             status = latest_status.get("status") or analysis_status or worker_status or "pending"
             progress = latest_status.get("progress") or worker_progress
             snapshot_payload = latest_analysis.get("results_payload")
-            if worker_active and analysis_status not in {"done", "error", "stopped"}:
+            if _terminal_history_overrides_active_worker(latest_status, worker_state):
+                status = str(latest_status.get("status") or status).strip().lower()
+                progress = latest_status.get("progress") or progress
+                worker_active = False
+            elif worker_active and analysis_status not in {"done", "error", "stopped"}:
                 status = worker_status if worker_status != "claimed" else "running"
                 progress = worker_progress or progress
             elif analysis_status in {"done", "error", "stopped"} and (

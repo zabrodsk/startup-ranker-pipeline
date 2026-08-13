@@ -21,6 +21,7 @@ from agent.dataclasses.question_tree import QuestionNode
 from agent.ingest.store import Chunk
 from agent.pipeline.stages import cache as tree_cache
 from agent.pipeline.stages.decomposition import (
+    _build_bounded_question_tree,
     _build_question_tree_from_decomposition_tree,
 )
 from agent.pipeline.state.decomposition import DecompositionNode, DecompositionTree
@@ -76,6 +77,26 @@ def test_tree_builder_orphan_children_get_no_route():
     assert qt.root_node.sub_nodes[0].route is None
 
 
+def test_tree_builder_coalesces_valid_route_from_normalized_duplicate():
+    tree = DecompositionTree(
+        nodes=[
+            DecompositionNode(question="Root?", sub_questions=["Who are competitors?"], route="sector_market"),
+            DecompositionNode(question="Who are competitors?", sub_questions=[], route="not_a_route"),
+            DecompositionNode(question="Who are competitors!", sub_questions=[], route="competitors"),
+        ]
+    )
+
+    qt = _build_bounded_question_tree(
+        tree,
+        root_question="Root?",
+        aspect="market",
+        max_nodes=10,
+    )
+
+    assert [node.question for node in qt.root_node.sub_nodes] == ["Who are competitors?"]
+    assert qt.root_node.sub_nodes[0].route == "competitors"
+
+
 def test_route_tagging_instruction_lists_all_routes():
     from agent.web_search.planner import ROUTE_TAGGING_INSTRUCTION, QuestionRoute
 
@@ -83,8 +104,9 @@ def test_route_tagging_instruction_lists_all_routes():
         assert f'"{route.value}"' in ROUTE_TAGGING_INSTRUCTION
 
 
-def test_decomposition_cache_name_bumped_for_route_tags():
-    assert tree_cache.CACHE_NAME == "question_trees_v2.json"
+def test_decomposition_cache_name_covers_bounded_tree_post_processing():
+    assert tree_cache.CACHE_NAME == "question_trees_v3.json"
+    assert tree_cache.ANSWERED_CACHE_NAME == "answered_question_trees_v2.json"
 
 
 # --- Prompt registry -----------------------------------------------------------

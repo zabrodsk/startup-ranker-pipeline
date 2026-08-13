@@ -7423,7 +7423,7 @@ function renderInfoScreen(page = activeInfoPage) {
       <div class="info-card">
         <h3>Outputs</h3>
         <ul>
-          <li>Runs produce rankings, dimension scores, decision labels, summaries, and saved analysis records.</li>
+          <li>Runs produce authoritative scores and buckets, dimension scores, advisory recommendation labels, summaries, and saved analysis records.</li>
           <li>Saved runs are visible in Analysis history and can be reopened later.</li>
           <li>Companies view groups all historical runs under each company for side-by-side review.</li>
         </ul>
@@ -11733,6 +11733,7 @@ function parseAuditDimensions(value) {
 }
 
 function formatAuditNumber(value, digits = 1) {
+  if (value == null || String(value).trim() === '') return '—';
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric.toFixed(digits) : '—';
 }
@@ -11906,13 +11907,21 @@ function renderFullAuditModal(context, query) {
   const argRows = context.argRows.filter((arg) => matchesAuditQuery(getArgumentSearchText(arg), query));
   const avgPro = context.summary?.avg_pro ?? context.payload?.avg_pro ?? 0;
   const avgContra = context.summary?.avg_contra ?? context.payload?.avg_contra ?? 0;
-  const totalScore = context.summary?.total_score ?? context.payload?.total_score ?? context.summary?.composite_score ?? context.ranking?.composite_score ?? 0;
+  const argumentBalance = context.summary?.total_score ?? context.payload?.total_score ?? 0;
+  const compositeScore = context.summary?.composite_score ?? context.ranking?.composite_score ?? null;
+  const bucket = context.summary?.bucket ?? context.ranking?.bucket ?? '';
+  const advisoryDecision = context.summary?.decision ?? context.payload?.decision ?? '';
+  const bucketLabel = String(bucket || 'unavailable').replaceAll('_', ' ');
 
   let html = renderAuditSearch(query, `Search audit evidence for ${context.companyName}`);
-  html += `<div class="audit-section"><div class="audit-section-title">Decision</div><div class="audit-section-body">`;
-  html += SHOW_AVG_PRO_CONTRA_SCORES
-    ? `<div class="audit-decision-reason">Avg pro: ${formatAuditNumber(avgPro)} · Avg contra: ${formatAuditNumber(avgContra)} → total score ${formatAuditNumber(totalScore)}.</div>`
-    : `<div class="audit-decision-reason">Total score ${formatAuditNumber(totalScore)}.</div>`;
+  html += `<div class="audit-section"><div class="audit-section-title">Authoritative assessment</div><div class="audit-section-body">`;
+  html += `<div class="audit-decision-reason"><strong>Composite score:</strong> ${formatAuditNumber(compositeScore)} · <strong>Bucket:</strong> ${escapeHtml(bucketLabel)}. Score and bucket are authoritative.</div>`;
+  if (advisoryDecision) {
+    html += `<div class="audit-note"><strong>Advisory recommendation:</strong> ${escapeHtml(String(advisoryDecision).replaceAll('_', ' '))}. This model-generated label is advisory and may vary across runs.</div>`;
+  }
+  if (SHOW_AVG_PRO_CONTRA_SCORES) {
+    html += `<div class="audit-note">Advisory argument balance: avg pro ${formatAuditNumber(avgPro)} · avg contra ${formatAuditNumber(avgContra)} · difference ${formatAuditNumber(argumentBalance)}.</div>`;
+  }
   html += `</div></div>`;
 
   html += `<div class="audit-section"><div class="audit-section-title">Evidence Used</div><div class="audit-section-body">`;

@@ -2971,6 +2971,8 @@ def _safe_evidence_log(results_payload: dict, state: dict | None = None) -> dict
         "qa_pairs": deduped_qa,
         "arguments": safe_args,
         "decision": results_payload.get("decision"),
+        "decision_authority": "advisory",
+        "authoritative_outcome": "score_and_bucket",
         "scores": {
             "composite_score": ranking.get("composite_score"),
             "strategy_fit_score": ranking.get("strategy_fit_score"),
@@ -2994,7 +2996,15 @@ async def startup_evidence_log(user: CurrentUser = Depends(_require_startup)) ->
     company_id = await asyncio.to_thread(_first_linked_company_id, user)
     analysis = await asyncio.to_thread(db.get_latest_analysis_full, company_id)
     if not analysis:
-        return {"qa_pairs": [], "arguments": [], "decision": None, "scores": {}, "analyzed_at": None}
+        return {
+            "qa_pairs": [],
+            "arguments": [],
+            "decision": None,
+            "decision_authority": "advisory",
+            "authoritative_outcome": "score_and_bucket",
+            "scores": {},
+            "analyzed_at": None,
+        }
 
     results_payload = analysis.get("results_payload") or {}
     state = analysis.get("state")
@@ -5178,6 +5188,8 @@ async def _run_re_evaluation(
             "qa_provenance_rows": qa_provenance_rows,
             "argument_rows": argument_rows,
             "decision": final_state.get("final_decision"),
+            "decision_authority": "advisory",
+            "authoritative_outcome": "score_and_bucket",
             "run_costs": run_costs,
         }
 
@@ -5419,6 +5431,8 @@ async def _run_full_analysis(company_id: str) -> None:
             "qa_provenance_rows": qa_provenance_rows,
             "argument_rows": argument_rows,
             "decision": final_state.get("final_decision"),
+            "decision_authority": "advisory",
+            "authoritative_outcome": "score_and_bucket",
         }
 
         state_snapshot = {
@@ -7728,6 +7742,8 @@ def _compose_results_payload(
             "about": company.about or "",
             **company_metadata,
             "decision": final_state.get("final_decision", "unknown"),
+            "decision_authority": "advisory",
+            "authoritative_outcome": "score_and_bucket",
             "total_score": round(total_score, 2),
             "avg_pro": round(avg_pro, 2),
             "avg_contra": round(avg_contra, 2),

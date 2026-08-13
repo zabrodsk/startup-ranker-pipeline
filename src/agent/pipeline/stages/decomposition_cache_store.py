@@ -34,7 +34,9 @@ _STORE_MODES = ("local", "supabase")
 _DEFAULT_STORE_MODE = "local"
 _WARNED_INVALID_STORE_MODE: set[str] = set()
 
-_KEY_VERSION_PREFIX = "dtree-v4"
+# v5 invalidates trees created before bounded post-processing preserved root
+# routes and normalized punctuation/Unicode variants.
+_KEY_VERSION_PREFIX = "dtree-v5"
 
 
 def _store_mode() -> str:

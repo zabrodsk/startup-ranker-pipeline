@@ -15,6 +15,7 @@ import pytest
 
 import web.app as web_app
 from agent.company_chat import answer_company_question
+from agent.company_chat import _build_history_summary
 from agent.ingest.store import Chunk
 
 
@@ -38,6 +39,18 @@ def _login(client: TestClient) -> None:
     response = client.post("/api/login", json={"password": "9876"})
     assert response.status_code == 200
     client.cookies.set("session_id", response.json()["session_id"])
+
+
+def test_company_chat_history_marks_binary_recommendation_as_advisory() -> None:
+    summary = _build_history_summary([{
+        "created_at": "2026-08-13T12:00:00Z",
+        "job_id": "job-1",
+        "company_name": "Acme",
+        "decision": "invest",
+    }])
+
+    assert "advisory recommendation invest" in summary
+    assert " · decision invest" not in summary
 
 
 def test_company_chat_response_model_is_fully_defined() -> None:
