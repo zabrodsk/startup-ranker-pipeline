@@ -4397,6 +4397,32 @@ def get_web_search_cache_entry(query_hash: str, *, ttl_days: int) -> str | None:
         return None
 
 
+def get_web_search_cache_provider(query_hash: str, *, ttl_days: int) -> str | None:
+    """Return the actual provider recorded for a live cache entry."""
+    client = _get_client()
+    if not client:
+        return None
+    normalized_hash = (query_hash or "").strip()
+    if not normalized_hash:
+        return None
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=ttl_days)).isoformat()
+        rows = (
+            client.table("web_search_cache")
+            .select("provider, created_at")
+            .eq("query_hash", normalized_hash)
+            .gte("created_at", cutoff)
+            .limit(1)
+            .execute()
+        )
+        if not rows.data:
+            return None
+        return str((rows.data[0] or {}).get("provider") or "").strip() or None
+    except Exception as exc:
+        _log_supabase_error("get_web_search_cache_provider", "web_search_cache", exc)
+        return None
+
+
 def upsert_web_search_cache_entry(
     *,
     query_hash: str,

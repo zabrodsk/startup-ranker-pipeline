@@ -92,8 +92,33 @@ def lookup(provider: str, query: str, domain_filter: list[str] | None) -> str | 
         return None
 
 
+def lookup_provider(
+    provider: str, query: str, domain_filter: list[str] | None
+) -> str | None:
+    """Return the actual provider stored with a cache entry, when available."""
+    if not is_web_search_cache_enabled():
+        return None
+    try:
+        from web import db
+
+        return db.get_web_search_cache_provider(
+            compute_query_hash(provider, query, domain_filter),
+            ttl_days=cache_ttl_days(),
+        )
+    except Exception:
+        logger.warning(
+            "web-search cache provider lookup failed; provider is unknown",
+            exc_info=True,
+        )
+        return None
+
+
 def store(
-    provider: str, query: str, domain_filter: list[str] | None, results: str
+    provider: str,
+    query: str,
+    domain_filter: list[str] | None,
+    results: str,
+    actual_provider: str | None = None,
 ) -> None:
     """Best-effort store of a provider result; failures are swallowed."""
     if not is_web_search_cache_enabled():
@@ -103,7 +128,7 @@ def store(
 
         db.upsert_web_search_cache_entry(
             query_hash=compute_query_hash(provider, query, domain_filter),
-            provider=provider,
+            provider=actual_provider or provider,
             query=query,
             domain_filter=sorted(domain_filter or []),
             results=results,

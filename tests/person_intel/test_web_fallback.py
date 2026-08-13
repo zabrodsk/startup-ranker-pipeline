@@ -41,3 +41,40 @@ def test_web_fallback_layered_queries_and_dedup(monkeypatch) -> None:
     assert any(domain_filter is None for _, domain_filter in calls)
     assert any(domain_filter and "linkedin.com" in domain_filter for _, domain_filter in calls)
     assert all(r.snippet_or_field.startswith("web: ") for r in records)
+
+
+def test_serper_fallback_preserves_organic_source_url(monkeypatch) -> None:
+    monkeypatch.setenv("PERSON_INTEL_WEB_ENRICHMENT", "true")
+    monkeypatch.setenv("SERPER_API_KEY", "dummy")
+    monkeypatch.delenv("PPLX_API_KEY", raising=False)
+    monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
+
+    class FakeProvider:
+        def search(self, *_args, **_kwargs):
+            return (
+                "Search Results for: Jane Doe\n\n"
+                "1. Jane Doe profile — https://example.com/jane\n"
+                "   Jane Doe previously led operations and scaled the business across international markets."
+            )
+
+    monkeypatch.setattr(
+        "agent.person_intel.providers.web_fallback.get_provider",
+        lambda **_kwargs: FakeProvider(),
+    )
+    subject = PersonIntelSubject(
+        primary_profile_url="https://www.linkedin.com/in/example",
+        normalized_profile_url="https://www.linkedin.com/in/example",
+        full_name="Jane Doe",
+        current_company="Atomika",
+        role="CEO",
+    )
+
+    records = asyncio.run(
+        WebFallbackProvider().collect(
+            PersonProfileJobRequest(primary_profile_url=subject.primary_profile_url),
+            subject,
+        )
+    )
+
+    assert records
+    assert records[0].url == "https://example.com/jane"

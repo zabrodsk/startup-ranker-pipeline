@@ -484,11 +484,19 @@ def _run_web_search(
                 getattr(provider, "attempted_provider_names", None)
                 or [metered_provider_name]
             )
-            if cache_info is not None and provider_name == "hybrid":
+            if cache_info is not None:
                 cache_info["attempted_providers"] = metered_provider_names
         if cache_hit:
-            metered_provider_name = provider_name
+            metered_provider_name = (
+                result_cache.lookup_provider(provider_name, search_query, domain_filter)
+                or provider_name
+            )
             metered_provider_names = []
+            if cache_info is not None:
+                cache_info["provider"] = metered_provider_name
+                cache_info["attempted_providers"] = []
+        elif cache_info is not None:
+            cache_info["provider"] = metered_provider_name
         result_is_valid = bool(
             result and not str(result).lower().startswith("web search failed")
         )
@@ -531,7 +539,16 @@ def _run_web_search(
                         metadata=attempt_metadata,
                     )
         if not cache_hit and result_is_valid:
-            result_cache.store(provider_name, search_query, domain_filter, result)
+            if provider_name == "hybrid":
+                result_cache.store(
+                    provider_name,
+                    search_query,
+                    domain_filter,
+                    result,
+                    metered_provider_name,
+                )
+            else:
+                result_cache.store(provider_name, search_query, domain_filter, result)
         return result
     except Exception as exc:
         return f"Web search failed: {exc}"
@@ -577,11 +594,14 @@ async def _run_quality_routed_search(
     company: Company,
     trigger_reason: str,
     web_search_state: dict[str, Any] | None = None,
+    on_cooperate: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any] | None:
     """Run Serper first and use Perplexity only after a failed quality gate."""
     strategy = _resolve_web_search_provider_name()
     if not strategy:
         return None
+    if on_cooperate:
+        await on_cooperate()
     if not await _acquire_web_search_slot(web_search_state):
         return None
     primary_provider = "serper" if strategy == "hybrid" else None
@@ -606,6 +626,8 @@ async def _run_quality_routed_search(
         raw = "Web search failed: timeout"
     if cache_info.get("hit"):
         await _refund_cached_web_search_slot(web_search_state)
+    if on_cooperate:
+        await on_cooperate()
     useful, reason = evaluate_web_result_relevance(
         policy=relevance_policy,
         route=route,
@@ -621,6 +643,8 @@ async def _run_quality_routed_search(
         and strategy == "hybrid"
         and await _acquire_web_search_slot(web_search_state)
     ):
+        if on_cooperate:
+            await on_cooperate()
         fallback_cache_info: dict[str, Any] = {}
         try:
             fallback_raw = await asyncio.wait_for(
@@ -643,6 +667,8 @@ async def _run_quality_routed_search(
             fallback_raw = "Web search failed: timeout"
         if fallback_cache_info.get("hit"):
             await _refund_cached_web_search_slot(web_search_state)
+        if on_cooperate:
+            await on_cooperate()
         fallback_useful, fallback_reason = evaluate_web_result_relevance(
             policy=relevance_policy,
             route=route,
@@ -696,6 +722,7 @@ async def _prepare_shared_web_evidence(
     company: Company,
     web_search_state: dict[str, Any],
     web_search_mode: str | None = None,
+    on_cooperate: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Plan and fetch the bounded company-level evidence portfolio."""
     from datetime import datetime
@@ -747,6 +774,7 @@ async def _prepare_shared_web_evidence(
                 company=company,
                 trigger_reason="portfolio core",
                 web_search_state=web_search_state,
+                on_cooperate=on_cooperate,
             )
             return objective.bucket_key, evidence
 
@@ -1555,6 +1583,7 @@ async def answer_all_trees_from_evidence(
                     company,
                     web_search_state,
                     web_search_mode,
+                    on_cooperate,
                 )
             )
 

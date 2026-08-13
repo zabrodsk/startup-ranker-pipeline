@@ -129,10 +129,16 @@ class WebFallbackProvider(PersonSourceProvider):
 
             lines = [line.strip() for line in raw.splitlines() if line.strip()]
             kept = 0
+            pending_result_url: str | None = None
             for line in lines:
+                line_url = _extract_url(line)
+                if re.match(r"^\d+\.\s*", line):
+                    pending_result_url = line_url
+                    continue
                 if _is_low_quality_line(line):
                     continue
-                url = _extract_url(line) or subject.normalized_profile_url
+                url = line_url or pending_result_url or subject.normalized_profile_url
+                pending_result_url = None
                 domain = _domain_of(url)
                 clean = " ".join(line.split())
                 dedupe_key = f"{domain}|{clean.lower()}"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import pytest
 
 import agent.evidence_answering as ea
 import agent.web_search as web_search_module
@@ -408,3 +409,43 @@ def test_shared_portfolio_honors_global_provider_call_cap(monkeypatch) -> None:
     )
 
     assert attempts == ["serper"]
+
+
+def test_shared_portfolio_checks_job_control_before_paid_prefetch(monkeypatch) -> None:
+    attempts: list[str] = []
+
+    def fake_search(*_args, **_kwargs):
+        attempts.append("search")
+        return "Search Results for: q\n\n1. Evidence — https://example.com\n   Evidence."
+
+    async def stop_requested() -> None:
+        raise RuntimeError("job stopped")
+
+    trees = {
+        "market": QuestionTree(
+            aspect="market",
+            root_node=QuestionNode(
+                question="How large is the hospitality software market?",
+                route="sector_market",
+            ),
+        )
+    }
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "hybrid")
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    monkeypatch.setenv("RDI_WEB_EVIDENCE_PLANNER", "on")
+    monkeypatch.setenv("RDI_SHARED_WEB_EVIDENCE", "on")
+    monkeypatch.setattr(ea, "_run_web_search", fake_search)
+
+    with pytest.raises(RuntimeError, match="job stopped"):
+        asyncio.run(
+            ea.answer_all_trees_from_evidence(
+                trees,
+                Company(name="Apaleo", domain="apaleo.com"),
+                store=object(),
+                use_web_search=True,
+                on_cooperate=stop_requested,
+            )
+        )
+
+    assert attempts == []
