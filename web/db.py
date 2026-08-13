@@ -36,6 +36,7 @@ except Exception:
     FEEDBACK_MAX_SCREENSHOT_BYTES = 3_000_000
 FEEDBACK_SCREENSHOT_CONTENT_TYPES = {"image/webp"}
 WORKER_ACTIVE_STATUSES = {"queued", "claimed", "running", "finalizing"}
+WORKER_CLAIMABLE_STATUSES = {"queued", "claimed", "running"}
 WORKER_TERMINAL_STATUSES = {"done", "error", "interrupted", "stopped"}
 WORKER_EXECUTION_STALE_SECONDS = int(os.getenv("SPECTER_WORKER_STALE_SECONDS", "120"))
 SPECTER_PROFILE_BASE_URL = "https://app.tryspecter.com/signals/company/feed/"
@@ -1911,15 +1912,17 @@ def load_machine_lifecycle(intake_id: str) -> dict[str, Any] | None:
 
 def list_claimable_specter_worker_jobs(limit: int = 10) -> list[dict[str, Any]]:
     client = _get_client()
-    if not client:
+    requested_limit = max(int(limit), 0)
+    if not client or requested_limit == 0:
         return []
     try:
         rows = (
             client.table("jobs")
             .select("job_id_legacy, input_mode, use_web_search, created_at, run_config")
             .eq("input_mode", "specter")
-            .order("created_at", desc=True)
-            .limit(max(limit * 10, 50))
+            .in_("run_config->worker_state->>status", sorted(WORKER_CLAIMABLE_STATUSES))
+            .order("created_at", desc=False)
+            .limit(requested_limit)
             .execute()
         )
     except Exception as exc:
@@ -1930,7 +1933,7 @@ def list_claimable_specter_worker_jobs(limit: int = 10) -> list[dict[str, Any]]:
     for row in rows.data or []:
         worker_state = _extract_worker_state(row.get("run_config") or {})
         status = str(worker_state.get("status") or "").strip().lower()
-        if status in {"queued", "claimed", "running", "finalizing"}:
+        if status in WORKER_CLAIMABLE_STATUSES:
             claimable.append(
                 {
                     "job_id": row.get("job_id_legacy"),
@@ -1941,7 +1944,7 @@ def list_claimable_specter_worker_jobs(limit: int = 10) -> list[dict[str, Any]]:
                     "worker_state": worker_state,
                 }
             )
-        if len(claimable) >= limit:
+        if len(claimable) >= requested_limit:
             break
     return claimable
 

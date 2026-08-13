@@ -1869,7 +1869,7 @@ def test_list_saved_jobs_keeps_recent_queued_worker_job_active(monkeypatch) -> N
     ]
 
 
-def test_list_claimable_specter_worker_jobs_prefers_newest_rows(monkeypatch) -> None:
+def test_list_claimable_specter_worker_jobs_keeps_oldest_active_rows_claimable(monkeypatch) -> None:
     import web.db as web_db
 
     class FakeResponse:
@@ -1878,7 +1878,9 @@ def test_list_claimable_specter_worker_jobs_prefers_newest_rows(monkeypatch) -> 
 
     class FakeQuery:
         def __init__(self):
+            self.active_statuses: tuple[str, ...] | None = None
             self.order_kwargs: dict[str, object] = {}
+            self.limit_value: int | None = None
 
         def select(self, *_args, **_kwargs):
             return self
@@ -1886,33 +1888,54 @@ def test_list_claimable_specter_worker_jobs_prefers_newest_rows(monkeypatch) -> 
         def eq(self, *_args, **_kwargs):
             return self
 
+        def in_(self, column, values):
+            assert column == "run_config->worker_state->>status"
+            self.active_statuses = tuple(values)
+            return self
+
         def order(self, *_args, **kwargs):
             self.order_kwargs = kwargs
             return self
 
         def limit(self, *_args, **_kwargs):
+            self.limit_value = int(_args[0])
             return self
 
         def execute(self):
-            assert self.order_kwargs == {"desc": True}
-            return FakeResponse(
-                [
-                    {
-                        "job_id_legacy": "job-new",
-                        "input_mode": "specter",
-                        "use_web_search": False,
-                        "created_at": "2026-03-14T10:00:00Z",
-                        "run_config": {"worker_state": {"status": "queued", "progress": "Queued for worker..."}},
-                    },
-                    {
-                        "job_id_legacy": "job-old",
-                        "input_mode": "specter",
-                        "use_web_search": False,
-                        "created_at": "2026-03-01T10:00:00Z",
-                        "run_config": {"worker_state": {"status": "done", "progress": "Analysis complete"}},
-                    },
+            rows = [
+                {
+                    "job_id_legacy": f"job-terminal-{idx}",
+                    "input_mode": "specter",
+                    "use_web_search": False,
+                    "created_at": f"2026-03-{(idx % 28) + 1:02d}T12:00:00Z",
+                    "run_config": {"worker_state": {"status": "done"}},
+                }
+                for idx in range(60)
+            ] + [
+                {
+                    "job_id_legacy": "job-oldest-active",
+                    "input_mode": "specter",
+                    "use_web_search": False,
+                    "created_at": "2026-01-01T10:00:00Z",
+                    "run_config": {"worker_state": {"status": "queued", "progress": "Queued first"}},
+                },
+                {
+                    "job_id_legacy": "job-newer-active",
+                    "input_mode": "specter",
+                    "use_web_search": False,
+                    "created_at": "2026-02-01T10:00:00Z",
+                    "run_config": {"worker_state": {"status": "queued", "progress": "Queued second"}},
+                },
+            ]
+            if self.active_statuses is not None:
+                rows = [
+                    row for row in rows
+                    if row["run_config"]["worker_state"]["status"] in self.active_statuses
                 ]
-            )
+            rows.sort(key=lambda row: row["created_at"], reverse=bool(self.order_kwargs.get("desc")))
+            if self.limit_value is not None:
+                rows = rows[: self.limit_value]
+            return FakeResponse(rows)
 
     class FakeClient:
         def table(self, table_name: str):
@@ -1921,17 +1944,25 @@ def test_list_claimable_specter_worker_jobs_prefers_newest_rows(monkeypatch) -> 
 
     monkeypatch.setattr(web_db, "_get_client", lambda: FakeClient())
 
-    rows = web_db.list_claimable_specter_worker_jobs(limit=5)
+    rows = web_db.list_claimable_specter_worker_jobs(limit=2)
 
     assert rows == [
         {
-            "job_id": "job-new",
+            "job_id": "job-oldest-active",
             "input_mode": "specter",
             "use_web_search": False,
-            "created_at": "2026-03-14T10:00:00Z",
-            "run_config": {"worker_state": {"status": "queued", "progress": "Queued for worker..."}},
-            "worker_state": {"status": "queued", "progress": "Queued for worker..."},
-        }
+            "created_at": "2026-01-01T10:00:00Z",
+            "run_config": {"worker_state": {"status": "queued", "progress": "Queued first"}},
+            "worker_state": {"status": "queued", "progress": "Queued first"},
+        },
+        {
+            "job_id": "job-newer-active",
+            "input_mode": "specter",
+            "use_web_search": False,
+            "created_at": "2026-02-01T10:00:00Z",
+            "run_config": {"worker_state": {"status": "queued", "progress": "Queued second"}},
+            "worker_state": {"status": "queued", "progress": "Queued second"},
+        },
     ]
 
 
