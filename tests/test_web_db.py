@@ -12,6 +12,20 @@ if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
 
+def test_serialize_removes_postgres_incompatible_nul_characters() -> None:
+    import web.db as web_db
+
+    payload = {
+        "summary": "before\x00after",
+        "nested": ["clean", {"answer": "\x00usable\x00"}],
+    }
+
+    assert web_db._serialize(payload) == {
+        "summary": "beforeafter",
+        "nested": ["clean", {"answer": "usable"}],
+    }
+
+
 def test_web_db_reads_supabase_config_from_environment(monkeypatch) -> None:
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-role-key")
@@ -1054,6 +1068,28 @@ def test_load_job_status_marks_stale_worker_execution_interrupted(monkeypatch) -
         "progress": "Worker interrupted before completion.",
         "worker_active": False,
     }
+
+
+def test_load_job_status_keeps_old_unclaimed_job_queued(monkeypatch) -> None:
+    """Queue age alone must not turn valid backlog into a false interruption."""
+    import web.db as web_db
+
+    worker_state = {
+        "status": "queued",
+        "progress": "Queued for worker...",
+        "last_heartbeat_at": "2026-03-14T18:00:00+00:00",
+    }
+    monkeypatch.setattr(
+        web_db,
+        "_utcnow",
+        lambda: datetime(2026, 3, 14, 19, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert web_db._resolved_worker_state(worker_state) == (
+        "queued",
+        "Queued for worker...",
+        True,
+    )
 
 
 def test_load_job_status_promotes_terminal_worker_state_over_stale_running_status(monkeypatch) -> None:

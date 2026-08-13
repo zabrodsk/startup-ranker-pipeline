@@ -38,7 +38,6 @@ FEEDBACK_SCREENSHOT_CONTENT_TYPES = {"image/webp"}
 WORKER_ACTIVE_STATUSES = {"queued", "claimed", "running", "finalizing"}
 WORKER_TERMINAL_STATUSES = {"done", "error", "interrupted", "stopped"}
 WORKER_EXECUTION_STALE_SECONDS = int(os.getenv("SPECTER_WORKER_STALE_SECONDS", "120"))
-WORKER_QUEUE_STALE_SECONDS = int(os.getenv("SPECTER_WORKER_QUEUE_STALE_SECONDS", "900"))
 SPECTER_PROFILE_BASE_URL = "https://app.tryspecter.com/signals/company/feed/"
 
 
@@ -993,13 +992,18 @@ def is_configured() -> bool:
 def _serialize(obj: Any) -> Any:
     """Convert Pydantic/objects to JSON-serializable dict."""
     if hasattr(obj, "model_dump"):
-        return obj.model_dump()
+        return _serialize(obj.model_dump())
     if hasattr(obj, "__dict__") and not isinstance(obj, type):
         return {k: _serialize(v) for k, v in obj.__dict__.items()}
     if isinstance(obj, list):
         return [_serialize(x) for x in obj]
     if isinstance(obj, dict):
         return {k: _serialize(v) for k, v in obj.items()}
+    if isinstance(obj, str):
+        # PostgreSQL text and jsonb reject U+0000. Model/provider text is
+        # otherwise usable, so strip only the incompatible code point instead
+        # of failing the completed analysis during persistence.
+        return obj.replace("\x00", "")
     return obj
 
 
@@ -1063,8 +1067,12 @@ def _worker_state_timeout_seconds(worker_state: dict[str, Any]) -> int | None:
     status = str(worker_state.get("status") or "").strip().lower()
     if status not in WORKER_ACTIVE_STATUSES:
         return None
+    # Queued jobs do not have a worker heartbeat yet. Queue age therefore says
+    # nothing about worker health and must not turn valid backlog into a false
+    # terminal interruption. Once claimed, the execution heartbeat remains the
+    # fail-safe for a genuinely lost worker.
     if status == "queued":
-        return max(WORKER_QUEUE_STALE_SECONDS, 1)
+        return None
     return max(WORKER_EXECUTION_STALE_SECONDS, 1)
 
 
@@ -1084,8 +1092,6 @@ def _resolved_worker_state(worker_state: dict[str, Any]) -> tuple[str, str | Non
     if status not in WORKER_ACTIVE_STATUSES:
         return status, progress, False
     if _worker_state_is_stale(worker_state):
-        if status == "queued":
-            return "interrupted", "Worker queue stalled before processing started.", False
         return "interrupted", "Worker interrupted before completion.", False
     return status, progress, True
 
