@@ -9,7 +9,12 @@ from .planner import (  # noqa: F401
     evaluate_web_result_relevance,
     normalize_route_tag,
 )
-from .providers import BraveSearchProvider, SonarSearchProvider, WebSearchProvider, get_provider  # noqa: F401
+from .providers import (  # noqa: F401
+    BraveSearchProvider,
+    SerperSearchProvider,
+    SonarSearchProvider,
+    WebSearchProvider,
+    get_provider,
+)
 from .unanswerable import predict_search_unanswerable, skip_unanswerable_mode  # noqa: F401
-
 
