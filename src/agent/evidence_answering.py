@@ -1011,6 +1011,8 @@ async def answer_question_from_evidence(
                         web_search_state["count"][0] += 1
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    if web_search_state is not None:
+                        await _refund_cached_web_search_slot(web_search_state)
                     break
                 strategy = _resolve_web_search_provider_name()
                 primary_provider = "serper" if strategy == "hybrid" else None
@@ -1067,13 +1069,19 @@ async def answer_question_from_evidence(
                 # own provider-call slot and shares the same wall-clock budget.
                 if not useful and strategy == "hybrid":
                     fallback_allowed = True
-                    if web_search_state is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        fallback_allowed = False
+                    elif web_search_state is not None:
                         async with web_search_state["lock"]:
                             if web_search_state["count"][0] >= web_search_state["max"]:
                                 fallback_allowed = False
                             else:
                                 web_search_state["count"][0] += 1
                     remaining = deadline - time.monotonic()
+                    if fallback_allowed and remaining <= 0:
+                        await _refund_cached_web_search_slot(web_search_state)
+                        fallback_allowed = False
                     if fallback_allowed and remaining > 0:
                         fallback_cache_info: dict[str, Any] = {}
                         try:

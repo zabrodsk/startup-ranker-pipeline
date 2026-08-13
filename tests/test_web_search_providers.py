@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import agent.rate_limit as rate_limit
 from agent.web_search import providers
 
 
@@ -127,6 +128,71 @@ def test_serper_search_uses_api_contract_and_formats_evidence(monkeypatch) -> No
     assert "An open hospitality platform." in result
     assert "1. Apaleo platform — https://apaleo.com/platform" in result
     assert "2. Apaleo funding — https://tech.eu/apaleo-funding" in result
+
+
+def test_serper_retries_retryable_http_status(monkeypatch) -> None:
+    calls = 0
+
+    class RetryableResponse(_Response):
+        status_code = 429
+        headers: dict = {}
+        text = "rate limit"
+
+        def raise_for_status(self) -> None:
+            error = RuntimeError("429 rate limit")
+            error.response = self
+            raise error
+
+    def post(_url, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return RetryableResponse({})
+        return _Response(
+            {
+                "organic": [
+                    {
+                        "title": "Apaleo evidence",
+                        "link": "https://example.com/apaleo",
+                        "snippet": "Relevant market evidence.",
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setenv("SERPER_API_KEY", "test-key")
+    monkeypatch.setattr(
+        providers.importlib,
+        "import_module",
+        lambda name: SimpleNamespace(post=post) if name == "requests" else None,
+    )
+    monkeypatch.setattr(
+        rate_limit,
+        "web_search_throttle",
+        lambda: rate_limit.InvocationThrottle(
+            max_concurrent=1,
+            min_interval_sec=0,
+            start_jitter_sec=0,
+        ),
+    )
+    monkeypatch.setattr(
+        rate_limit,
+        "web_search_retry_policy",
+        lambda: rate_limit.RetryPolicy(
+            max_retries=1,
+            base_delay_sec=0,
+            max_delay_sec=0,
+            jitter_sec=0,
+        ),
+    )
+
+    result = providers.SerperSearchProvider("2026-08-07").search(
+        "Apaleo market",
+        deadline_seconds=1,
+    )
+
+    assert calls == 2
+    assert "Apaleo evidence" in result
 
 
 def test_serper_requires_api_key(monkeypatch) -> None:

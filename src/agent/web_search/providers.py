@@ -34,6 +34,13 @@ def _has_live_api_key(value: str | None) -> bool:
     return bool(normalized and normalized.lower() not in _DOCUMENTED_PLACEHOLDER_KEYS)
 
 
+def _request_with_status_check(callable_, *args, **kwargs):  # noqa: ANN001, ANN202
+    """Execute one HTTP request and raise retryable status errors in-loop."""
+    response = callable_(*args, **kwargs)
+    response.raise_for_status()
+    return response
+
+
 class WebSearchProvider(ABC):
     """Minimal interface for search providers."""
 
@@ -79,6 +86,7 @@ class BraveSearchProvider(WebSearchProvider):
     ) -> str:
         search_query = SerperSearchProvider._apply_domain_filter(query, domain_filter)
         response = run_with_sync_retries(
+            _request_with_status_check,
             self._requests.get,
             self.BASE_URL,
             headers={
@@ -96,7 +104,6 @@ class BraveSearchProvider(WebSearchProvider):
             timeout=30,
             max_elapsed_seconds=deadline_seconds,
         )
-        response.raise_for_status()
         data = response.json()
         if not isinstance(data, dict):
             raise ValueError("Unexpected Brave response format: root is not an object")
@@ -179,6 +186,7 @@ class SerperSearchProvider(WebSearchProvider):
             "num": self._max_results,
         }
         response = run_with_sync_retries(
+            _request_with_status_check,
             self._requests.post,
             self.BASE_URL,
             headers={
@@ -189,7 +197,6 @@ class SerperSearchProvider(WebSearchProvider):
             timeout=30,
             max_elapsed_seconds=deadline_seconds,
         )
-        response.raise_for_status()
         data = response.json()
         if not isinstance(data, dict):
             raise ValueError("Unexpected Serper response format: root is not an object")
@@ -314,6 +321,7 @@ class SonarSearchProvider(WebSearchProvider):
             payload["search_domain_filter"] = domain_filter[:20]
 
         response = run_with_sync_retries(
+            _request_with_status_check,
             self._requests.post,
             self.BASE_URL,
             headers={
@@ -324,7 +332,6 @@ class SonarSearchProvider(WebSearchProvider):
             timeout=30,
             max_elapsed_seconds=deadline_seconds,
         )
-        response.raise_for_status()
         data = response.json()
 
         results = data.get("results", [])

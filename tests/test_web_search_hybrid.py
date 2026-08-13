@@ -347,6 +347,57 @@ def test_portfolio_primary_and_fallback_share_one_deadline(monkeypatch) -> None:
     assert state["count"] == [1]
 
 
+def test_planner_does_not_reserve_fallback_after_deadline(monkeypatch) -> None:
+    attempts: list[str] = []
+
+    def fake_search(*_args, provider_override=None, **_kwargs):
+        attempts.append(provider_override or "configured")
+        time.sleep(0.02)
+        return "No search results returned."
+
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "hybrid")
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    monkeypatch.setenv("RDI_WEB_EVIDENCE_PLANNER", "on")
+    monkeypatch.setattr(ea, "WEB_SEARCH_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(ea, "_run_web_search", fake_search)
+    monkeypatch.setattr(ea, "create_llm", lambda temperature=0.2: _HybridAnswerLLM())
+    monkeypatch.setattr(ea, "retrieve_chunks", lambda *_args, **_kwargs: [])
+    state = {"count": [0], "lock": asyncio.Lock(), "max": 2}
+
+    asyncio.run(
+        ea.answer_question_from_evidence(
+            "What funding has Acme raised?",
+            Company(name="Acme"),
+            store=object(),
+            use_web_search=True,
+            web_search_state=state,
+            route="company_specific",
+        )
+    )
+
+    assert attempts == ["serper"]
+    assert state["count"] == [1]
+
+
+def test_tool_search_passes_bounded_deadline(monkeypatch) -> None:
+    deadlines: list[float | None] = []
+
+    class FakeProvider:
+        def search(self, _query, *, deadline_seconds=None, **_kwargs):
+            deadlines.append(deadline_seconds)
+            return "Search Results for: q\n\nNo search results returned."
+
+    from agent.pipeline.stages.answering import with_tool
+
+    monkeypatch.setattr(with_tool, "get_provider", lambda **_kwargs: FakeProvider())
+    tool = with_tool.IntelligentWebSearchTool(search_end_date="2026-08-07")
+
+    tool._run("Apaleo market")
+
+    assert deadlines == [with_tool.WEB_SEARCH_TIMEOUT_SEC]
+
+
 class _HybridAnswerLLM:
     async def ainvoke(self, messages):  # noqa: ANN001
         from types import SimpleNamespace

@@ -17,7 +17,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 
 from agent.common.llm_config import get_llm
 from agent.dataclasses.company import Company
-from agent.evidence_answering import _coerce_text
+from agent.evidence_answering import WEB_SEARCH_TIMEOUT_SEC, _coerce_text
 from agent.pipeline.state.answer import AnswerState
 from agent.pipeline.utils.helpers import generate_context_block
 from agent.run_context import use_stage_context
@@ -76,7 +76,10 @@ Avoid: repetition, excessive keywords, quotation marks unless needed for exact p
             if not query or len(query.strip()) < 2:
                 return "Search query too short. Please provide a more specific query."
 
-            raw_results = self._provider.search(query)
+            raw_results = self._provider.search(
+                query,
+                deadline_seconds=WEB_SEARCH_TIMEOUT_SEC,
+            )
 
             if not raw_results or raw_results.strip() == "":
                 return "No search results found. Consider using broader industry terms rather than specific company names."
