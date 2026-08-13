@@ -58,6 +58,7 @@ class WebSearchProvider(ABC):
         *,
         domain_filter: Optional[List[str]] = None,
         deadline_seconds: float | None = None,
+        request_attempt_limit: int | None = None,
     ) -> str:
         """Execute a query and return a formatted string.
 
@@ -90,6 +91,7 @@ class BraveSearchProvider(WebSearchProvider):
         *,
         domain_filter: Optional[List[str]] = None,
         deadline_seconds: float | None = None,
+        request_attempt_limit: int | None = None,
     ) -> str:
         self.request_attempted = False
         self.request_attempt_count = 0
@@ -112,6 +114,7 @@ class BraveSearchProvider(WebSearchProvider):
             },
             timeout=30,
             max_elapsed_seconds=deadline_seconds,
+            max_attempts=request_attempt_limit,
             on_attempt_started=self._mark_request_attempted,
         )
         data = response.json()
@@ -186,6 +189,7 @@ class SerperSearchProvider(WebSearchProvider):
         *,
         domain_filter: Optional[List[str]] = None,
         deadline_seconds: float | None = None,
+        request_attempt_limit: int | None = None,
     ) -> str:
         self.request_attempted = False
         self.request_attempt_count = 0
@@ -208,6 +212,7 @@ class SerperSearchProvider(WebSearchProvider):
             json=payload,
             timeout=30,
             max_elapsed_seconds=deadline_seconds,
+            max_attempts=request_attempt_limit,
             on_attempt_started=self._mark_request_attempted,
         )
         data = response.json()
@@ -318,6 +323,7 @@ class SonarSearchProvider(WebSearchProvider):
         *,
         domain_filter: Optional[List[str]] = None,
         deadline_seconds: float | None = None,
+        request_attempt_limit: int | None = None,
     ) -> str:
         self.request_attempted = False
         self.request_attempt_count = 0
@@ -346,6 +352,7 @@ class SonarSearchProvider(WebSearchProvider):
             json=payload,
             timeout=30,
             max_elapsed_seconds=deadline_seconds,
+            max_attempts=request_attempt_limit,
             on_attempt_started=self._mark_request_attempted,
         )
         data = response.json()
@@ -509,6 +516,7 @@ class HybridSearchProvider(WebSearchProvider):
         domain_filter: Optional[List[str]] = None,
         max_provider_attempts: int | None = None,
         deadline_seconds: float | None = None,
+        request_attempt_limit: int | None = None,
     ) -> str:
         """Return the first usable result, trying configured fallbacks in order."""
         last_result = ""
@@ -524,15 +532,25 @@ class HybridSearchProvider(WebSearchProvider):
             else None
         )
         for provider_name, provider in providers:
+            attempts_used = len(self.attempted_provider_names)
+            remaining_attempts = (
+                max(0, request_attempt_limit - attempts_used)
+                if request_attempt_limit is not None
+                else None
+            )
+            if remaining_attempts == 0:
+                break
             remaining = deadline - time.monotonic() if deadline is not None else None
             if remaining is not None and remaining <= 0:
                 break
             try:
-                last_result = provider.search(
-                    query,
-                    domain_filter=domain_filter,
-                    deadline_seconds=remaining,
-                )
+                search_kwargs = {
+                    "domain_filter": domain_filter,
+                    "deadline_seconds": remaining,
+                }
+                if remaining_attempts is not None:
+                    search_kwargs["request_attempt_limit"] = remaining_attempts
+                last_result = provider.search(query, **search_kwargs)
                 request_count = getattr(provider, "request_attempt_count", None)
                 if request_count is None:
                     request_count = int(getattr(provider, "request_attempted", True))

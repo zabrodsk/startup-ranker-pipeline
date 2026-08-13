@@ -441,6 +441,7 @@ def _run_web_search(
     provider_override: str | None = None,
     fallback_from: str | None = None,
     provider_attempt_limit: int | None = None,
+    request_attempt_limit: int | None = None,
     provider_deadline_seconds: float | None = None,
 ) -> str:
     """Run a web search using the configured provider.
@@ -476,26 +477,19 @@ def _run_web_search(
         else:
             search_date = datetime.now().strftime("%Y-%m-%d")
             provider = get_provider(search_end_date=search_date, provider_name=provider_name)
+            search_kwargs: dict[str, Any] = {"domain_filter": domain_filter}
+            if provider_deadline_seconds is not None:
+                search_kwargs["deadline_seconds"] = provider_deadline_seconds
+            if request_attempt_limit is not None:
+                search_kwargs["request_attempt_limit"] = request_attempt_limit
             if provider_name == "hybrid" and provider_attempt_limit is not None:
+                search_kwargs["max_provider_attempts"] = provider_attempt_limit
                 result = provider.search(
                     search_query,
-                    domain_filter=domain_filter,
-                    max_provider_attempts=provider_attempt_limit,
-                    deadline_seconds=provider_deadline_seconds,
-                )
-            elif provider_deadline_seconds is not None and provider_name in {
-                "hybrid",
-                "serper",
-                "sonar",
-                "brave",
-            }:
-                result = provider.search(
-                    search_query,
-                    domain_filter=domain_filter,
-                    deadline_seconds=provider_deadline_seconds,
+                    **search_kwargs,
                 )
             else:
-                result = provider.search(search_query, domain_filter=domain_filter)
+                result = provider.search(search_query, **search_kwargs)
             metered_provider_name = getattr(provider, "last_provider_name", None) or provider_name
             metered_provider_names = list(
                 getattr(provider, "attempted_provider_names", None) or []
@@ -559,6 +553,10 @@ def _run_web_search(
                         provider=attempted_provider,
                         metadata=attempt_metadata,
                     )
+                elif attempted_provider == "brave":
+                    collector.record_web_search(
+                        provider="brave", metadata=attempt_metadata
+                    )
         if not cache_hit and result_is_valid:
             if provider_name == "hybrid":
                 result_cache.store(
@@ -607,6 +605,10 @@ def _run_web_search(
                     collector.record_web_search(
                         provider="serper", metadata=failure_metadata
                     )
+                elif attempted_provider == "brave":
+                    collector.record_web_search(
+                        provider="brave", metadata=failure_metadata
+                    )
         return f"Web search failed: {exc}"
 
 
@@ -629,6 +631,20 @@ async def _acquire_web_search_slot(web_search_state: dict[str, Any] | None) -> b
             return False
         web_search_state["count"][0] += 1
         return True
+
+
+async def _remaining_web_search_slots(
+    web_search_state: dict[str, Any] | None,
+    *,
+    reserved_slots: int = 1,
+) -> int | None:
+    if web_search_state is None:
+        return None
+    async with web_search_state["lock"]:
+        return max(
+            1,
+            web_search_state["max"] - web_search_state["count"][0] + reserved_slots,
+        )
 
 
 async def _refund_web_search_slot(web_search_state: dict[str, Any] | None) -> None:
@@ -695,6 +711,7 @@ async def _run_quality_routed_search(
         return None
     primary_provider = "serper" if strategy == "hybrid" else None
     cache_info: dict[str, Any] = {}
+    request_attempt_limit = await _remaining_web_search_slots(web_search_state)
     raw = await asyncio.to_thread(
         _run_web_search,
         query,
@@ -707,6 +724,7 @@ async def _run_quality_routed_search(
         cache_info,
         provider_override=primary_provider,
         provider_deadline_seconds=max(0.001, objective_deadline - time.monotonic()),
+        request_attempt_limit=request_attempt_limit,
     )
     await _reconcile_web_search_slots(web_search_state, cache_info)
     if on_cooperate:
@@ -733,6 +751,7 @@ async def _run_quality_routed_search(
             await _refund_web_search_slot(web_search_state)
             return None
         fallback_cache_info: dict[str, Any] = {}
+        fallback_attempt_limit = await _remaining_web_search_slots(web_search_state)
         fallback_raw = await asyncio.to_thread(
             _run_web_search,
             query,
@@ -746,6 +765,7 @@ async def _run_quality_routed_search(
             provider_override="sonar",
             fallback_from="serper",
             provider_deadline_seconds=fallback_budget,
+            request_attempt_limit=fallback_attempt_limit,
         )
         await _reconcile_web_search_slots(web_search_state, fallback_cache_info)
         if on_cooperate:
@@ -1070,18 +1090,23 @@ async def answer_question_from_evidence(
                         spec.purpose,
                         cache_info,
                     )
+                    request_attempt_limit = await _remaining_web_search_slots(
+                        web_search_state
+                    )
                     search_call = (
                         asyncio.to_thread(
                             _run_web_search,
                             *search_args,
                             provider_override=primary_provider,
                             provider_deadline_seconds=remaining,
+                            request_attempt_limit=request_attempt_limit,
                         )
                         if primary_provider
                         else asyncio.to_thread(
                             _run_web_search,
                             *search_args,
                             provider_deadline_seconds=remaining,
+                            request_attempt_limit=request_attempt_limit,
                         )
                     )
                     raw = await search_call
@@ -1124,6 +1149,9 @@ async def answer_question_from_evidence(
                         fallback_allowed = False
                     if fallback_allowed and remaining > 0:
                         fallback_cache_info: dict[str, Any] = {}
+                        fallback_attempt_limit = await _remaining_web_search_slots(
+                            web_search_state
+                        )
                         try:
                             fallback_raw = await asyncio.to_thread(
                                 _run_web_search,
@@ -1140,6 +1168,7 @@ async def answer_question_from_evidence(
                                 provider_override="sonar",
                                 fallback_from="serper",
                                 provider_deadline_seconds=remaining,
+                                request_attempt_limit=fallback_attempt_limit,
                             )
                         except TimeoutError:
                             fallback_raw = "Web search failed: timeout"
@@ -1467,6 +1496,7 @@ async def answer_question_from_evidence(
             cache_info: dict[str, Any] = {}
             reserved_slots = 1 if web_search_state is not None else 0
             provider_attempt_limit: int | None = None
+            request_attempt_limit: int | None = None
             if (
                 web_search_state is not None
                 and _resolve_web_search_provider_name() == "hybrid"
@@ -1476,6 +1506,10 @@ async def answer_question_from_evidence(
                         web_search_state["count"][0] += 1
                         reserved_slots += 1
                 provider_attempt_limit = reserved_slots
+            request_attempt_limit = await _remaining_web_search_slots(
+                web_search_state,
+                reserved_slots=reserved_slots,
+            )
             search_call = (
                 asyncio.to_thread(
                     _run_web_search,
@@ -1486,6 +1520,7 @@ async def answer_question_from_evidence(
                     cache_info=cache_info,
                     provider_attempt_limit=provider_attempt_limit,
                     provider_deadline_seconds=WEB_SEARCH_TIMEOUT_SEC,
+                    request_attempt_limit=request_attempt_limit,
                 )
                 if provider_attempt_limit is not None
                 else asyncio.to_thread(
@@ -1496,6 +1531,7 @@ async def answer_question_from_evidence(
                     heavy_mode,
                     cache_info=cache_info,
                     provider_deadline_seconds=WEB_SEARCH_TIMEOUT_SEC,
+                    request_attempt_limit=request_attempt_limit,
                 )
             )
             web_results = await search_call

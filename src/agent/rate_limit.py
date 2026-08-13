@@ -400,6 +400,7 @@ def run_with_sync_retries(
     callable_: Any,
     *args: Any,
     max_elapsed_seconds: float | None = None,
+    max_attempts: int | None = None,
     on_attempt_started: Callable[[], None] | None = None,
     **kwargs: Any,
 ) -> Any:
@@ -435,15 +436,20 @@ def run_with_sync_retries(
                 on_attempt_started()
             return callable_(*args, **call_kwargs)
         except Exception as exc:
-            if attempt >= retry_policy.max_retries or not is_retryable_api_error(exc):
+            attempts_used = attempt + 1
+            if (
+                attempt >= retry_policy.max_retries
+                or (max_attempts is not None and attempts_used >= max(1, max_attempts))
+                or not is_retryable_api_error(exc)
+            ):
                 raise
             delay = compute_retry_delay(exc, attempt, retry_policy)
+            if is_rate_limit_error(exc):
+                throttle.impose_sync_cooldown(delay)
             if deadline is not None:
                 remaining = deadline - time.monotonic()
                 if remaining <= delay:
                     raise TimeoutError("Web search deadline exceeded during retries.") from exc
-            if is_rate_limit_error(exc):
-                throttle.impose_sync_cooldown(delay)
         finally:
             throttle.release_sync()
 

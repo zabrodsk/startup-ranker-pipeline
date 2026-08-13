@@ -15,9 +15,10 @@ if TYPE_CHECKING:
 
 PERPLEXITY_SEARCH_PRICE_PER_REQUEST_USD = 0.005
 SERPER_SEARCH_PRICE_PER_REQUEST_USD = 0.001
-_WEB_SEARCH_PRICE_PER_REQUEST_USD = {
+_WEB_SEARCH_PRICE_PER_REQUEST_USD: dict[str, float | None] = {
     "perplexity": PERPLEXITY_SEARCH_PRICE_PER_REQUEST_USD,
     "serper": SERPER_SEARCH_PRICE_PER_REQUEST_USD,
+    "brave": None,
 }
 
 _llm_selection_var: ContextVar[dict[str, Any] | None] = ContextVar("llm_selection", default=None)
@@ -327,9 +328,12 @@ def build_run_costs_from_model_executions(
     llm_cost_rows_seen = False
     llm_events_seen = False
 
-    search_requests = {"perplexity": 0, "serper": 0}
-    search_costs = {"perplexity": 0.0, "serper": 0.0}
-    search_by_reason: dict[str, dict[str, int]] = {"perplexity": {}, "serper": {}}
+    search_requests = {"perplexity": 0, "serper": 0, "brave": 0}
+    search_costs = {"perplexity": 0.0, "serper": 0.0, "brave": 0.0}
+    search_by_reason: dict[str, dict[str, int]] = {
+        "perplexity": {}, "serper": {}, "brave": {}
+    }
+    search_cost_known = True
 
     grouped: dict[tuple[str, str], dict[str, Any]] = {}
     for row in model_executions:
@@ -379,11 +383,15 @@ def build_run_costs_from_model_executions(
                 llm_cost_rows_seen = True
                 grouped[key]["has_known_cost"] = True
                 grouped[key]["usd"] += float(estimated_cost_usd)
-        elif service in {"perplexity_search", "serper_search"}:
-            provider = "serper" if service == "serper_search" else "perplexity"
+        elif service in {"perplexity_search", "serper_search", "brave_search"}:
+            provider = service.removesuffix("_search")
             request_count = int(row.get("request_count") or 1)
             search_requests[provider] += request_count
-            search_costs[provider] += float(row.get("estimated_cost_usd") or 0.0)
+            estimated_search_cost = row.get("estimated_cost_usd")
+            if estimated_search_cost is None:
+                search_cost_known = False
+            else:
+                search_costs[provider] += float(estimated_search_cost)
             metadata = row.get("metadata") or {}
             reason = str(metadata.get("trigger_reason") or "unspecified")
             by_reason = search_by_reason[provider]
@@ -393,7 +401,7 @@ def build_run_costs_from_model_executions(
     total_search_cost = sum(search_costs.values())
     if not llm_events_seen and total_search_requests == 0:
         status = "unavailable"
-    elif missing_llm_usage or not llm_cost_known:
+    elif missing_llm_usage or not llm_cost_known or not search_cost_known:
         status = "partial"
     else:
         status = "complete"
@@ -412,7 +420,7 @@ def build_run_costs_from_model_executions(
     total_usd = None
     if llm_usd is not None:
         total_usd = round(llm_usd + total_search_cost, 8)
-    elif total_search_requests > 0:
+    elif total_search_requests > 0 and search_cost_known:
         total_usd = round(total_search_cost, 8)
 
     return {
@@ -422,6 +430,7 @@ def build_run_costs_from_model_executions(
         "llm_usd": llm_usd,
         "perplexity_usd": round(search_costs["perplexity"], 8),
         "serper_usd": round(search_costs["serper"], 8),
+        "brave_usd": None if search_requests["brave"] else 0.0,
         "llm_tokens": {
             "prompt": llm_prompt_tokens,
             "completion": llm_completion_tokens,
@@ -436,6 +445,11 @@ def build_run_costs_from_model_executions(
             "requests": search_requests["serper"],
             "by_reason": search_by_reason["serper"],
             "total_usd": round(search_costs["serper"], 8),
+        },
+        "brave_search": {
+            "requests": search_requests["brave"],
+            "by_reason": search_by_reason["brave"],
+            "total_usd": None if search_requests["brave"] else 0.0,
         },
         "web_search": {
             "requests": total_search_requests,
@@ -498,10 +512,14 @@ def build_stage_costs_from_model_executions(
             else:
                 stage["usd"] += float(estimated_cost_usd)
                 stage["has_known_cost"] = True
-        elif service in {"perplexity_search", "serper_search"}:
+        elif service in {"perplexity_search", "serper_search", "brave_search"}:
             stage["search_requests"] += int(row.get("request_count") or 1)
-            stage["usd"] += float(row.get("estimated_cost_usd") or 0.0)
-            stage["has_known_cost"] = True
+            if row.get("estimated_cost_usd") is None:
+                stage["pricing_available"] = False
+                stage["partial"] = True
+            else:
+                stage["usd"] += float(row["estimated_cost_usd"])
+                stage["has_known_cost"] = True
 
     results: list[dict[str, Any]] = []
     for stage in stages.values():

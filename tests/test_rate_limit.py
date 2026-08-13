@@ -88,3 +88,55 @@ def test_sync_retry_deadline_includes_throttle_wait(monkeypatch) -> None:
 
     assert calls == []
     assert attempts == []
+
+
+def test_rate_limit_cooldown_survives_short_call_deadline(monkeypatch) -> None:
+    throttle = InvocationThrottle(
+        max_concurrent=1,
+        min_interval_sec=0.0,
+        start_jitter_sec=0.0,
+    )
+    monkeypatch.setattr(rate_limit, "web_search_throttle", lambda: throttle)
+    monkeypatch.setattr(
+        rate_limit,
+        "web_search_retry_policy",
+        lambda: RetryPolicy(
+            max_retries=2,
+            base_delay_sec=1.0,
+            max_delay_sec=1.0,
+            jitter_sec=0.0,
+        ),
+    )
+
+    error = RuntimeError("429 rate limit")
+    error.status_code = 429
+    with pytest.raises(TimeoutError, match="during retries"):
+        rate_limit.run_with_sync_retries(
+            lambda: (_ for _ in ()).throw(error),
+            max_elapsed_seconds=0.01,
+        )
+
+    assert throttle._next_allowed_at > rate_limit.time.monotonic()
+
+
+def test_sync_retry_attempt_limit_is_preventive(monkeypatch) -> None:
+    monkeypatch.setattr(
+        rate_limit,
+        "web_search_throttle",
+        lambda: InvocationThrottle(
+            max_concurrent=1,
+            min_interval_sec=0.0,
+            start_jitter_sec=0.0,
+        ),
+    )
+    calls = 0
+
+    def fail() -> None:
+        nonlocal calls
+        calls += 1
+        raise TimeoutError("provider timed out")
+
+    with pytest.raises(TimeoutError, match="provider timed out"):
+        rate_limit.run_with_sync_retries(fail, max_attempts=1)
+
+    assert calls == 1

@@ -994,6 +994,26 @@ def test_run_telemetry_collector_builds_provider_aware_web_search_costs() -> Non
     assert costs["total_usd"] == 0.006
 
 
+def test_run_telemetry_counts_brave_with_unknown_price() -> None:
+    collector = RunTelemetryCollector()
+    collector.record_web_search(
+        provider="brave",
+        metadata={"query": "market size", "trigger_reason": "portfolio core"},
+    )
+
+    costs = collector.build_run_costs()
+
+    assert costs["status"] == "partial"
+    assert costs["brave_search"] == {
+        "requests": 1,
+        "by_reason": {"portfolio core": 1},
+        "total_usd": None,
+    }
+    assert costs["web_search"]["requests"] == 1
+    assert costs["web_search"]["by_provider"] == {"brave": 1}
+    assert costs["total_usd"] is None
+
+
 def test_run_telemetry_collector_marks_partial_when_usage_missing() -> None:
     collector = RunTelemetryCollector()
     collector.record_llm_usage(
