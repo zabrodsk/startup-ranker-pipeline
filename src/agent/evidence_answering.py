@@ -477,7 +477,12 @@ def _run_web_search(
             result and not str(result).lower().startswith("web search failed")
         )
         collector = get_current_collector()
-        if collector and provider_name in {"sonar", "serper"} and result_is_valid:
+        if (
+            collector
+            and provider_name in {"sonar", "serper"}
+            and result_is_valid
+            and not cache_hit
+        ):
             metadata: dict[str, Any] = {
                 "query": search_query,
                 "domain_filter": domain_filter or [],
@@ -496,10 +501,6 @@ def _run_web_search(
                 metadata["query_purpose"] = query_purpose
             if fallback_from:
                 metadata["fallback_from"] = fallback_from
-            # Cache telemetry: only present on hits so cache-off metadata
-            # stays byte-identical (and dashboards can net out provider spend).
-            if cache_hit:
-                metadata["cache_hit"] = True
             if provider_name == "sonar":
                 collector.record_perplexity_search(metadata=metadata)
             else:

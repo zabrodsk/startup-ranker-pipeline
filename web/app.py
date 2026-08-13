@@ -1515,6 +1515,29 @@ def _merge_run_cost_summaries(base: dict[str, Any] | None, delta: dict[str, Any]
         merged["serper_search"]["total_usd"] += float((side.get("serper_search") or {}).get("total_usd") or 0.0)
         merged["serper_usd"] += float(side.get("serper_usd") or 0.0)
         web_search = side.get("web_search") or {}
+        if "web_search" not in side:
+            legacy_perplexity = side.get("perplexity_search") or {}
+            legacy_serper = side.get("serper_search") or {}
+            perplexity_requests = int(legacy_perplexity.get("requests") or 0)
+            serper_requests = int(legacy_serper.get("requests") or 0)
+            perplexity_cost = float(
+                legacy_perplexity.get("total_usd") or side.get("perplexity_usd") or 0.0
+            )
+            serper_cost = float(
+                legacy_serper.get("total_usd") or side.get("serper_usd") or 0.0
+            )
+            web_search = {
+                "requests": perplexity_requests + serper_requests,
+                "by_provider": {
+                    provider: requests
+                    for provider, requests in (
+                        ("sonar", perplexity_requests),
+                        ("serper", serper_requests),
+                    )
+                    if requests
+                },
+                "total_usd": perplexity_cost + serper_cost,
+            }
         merged["web_search"]["requests"] += int(web_search.get("requests") or 0)
         merged["web_search"]["total_usd"] += float(web_search.get("total_usd") or 0.0)
         for provider, requests in (web_search.get("by_provider") or {}).items():

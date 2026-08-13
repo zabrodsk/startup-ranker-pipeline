@@ -183,7 +183,7 @@ def _patch_provider(monkeypatch, calls: list):
     monkeypatch.setattr(web_search_module, "get_provider", lambda **_k: _FakeProvider())
 
 
-def test_run_web_search_hit_skips_provider_and_marks_telemetry(monkeypatch):
+def test_run_web_search_hit_skips_provider_and_billable_telemetry(monkeypatch):
     provider_calls: list = []
     _patch_provider(monkeypatch, provider_calls)
     collector = _FakeCollector()
@@ -199,8 +199,7 @@ def test_run_web_search_hit_skips_provider_and_marks_telemetry(monkeypatch):
     assert provider_calls == []
     assert cache_info == {"hit": True}
     assert stored == []  # hits are not re-stored
-    assert len(collector.metadata) == 1
-    assert collector.metadata[0]["cache_hit"] is True
+    assert collector.metadata == []
 
 
 def test_run_web_search_miss_calls_provider_stores_and_keeps_legacy_metadata(monkeypatch):

@@ -652,6 +652,32 @@ def test_merge_run_cost_summaries_prefers_available_status() -> None:
     assert merged["by_model"][0]["provider"] == "gemini"
 
 
+def test_merge_run_cost_summaries_backfills_legacy_web_search_totals() -> None:
+    merged = web_app._merge_run_cost_summaries(
+        {
+            "status": "complete",
+            "perplexity_usd": 0.015,
+            "perplexity_search": {"requests": 3, "total_usd": 0.015},
+        },
+        {
+            "status": "complete",
+            "serper_usd": 0.002,
+            "serper_search": {"requests": 2, "total_usd": 0.002},
+            "web_search": {
+                "requests": 2,
+                "by_provider": {"serper": 2},
+                "total_usd": 0.002,
+            },
+        },
+    )
+
+    assert merged["web_search"] == {
+        "requests": 5,
+        "by_provider": {"sonar": 3, "serper": 2},
+        "total_usd": 0.017,
+    }
+
+
 def test_append_progress_updates_cached_results_metadata() -> None:
     job_id = "job-progress-sync"
     web_app._jobs[job_id] = web_app.AnalysisStatus(

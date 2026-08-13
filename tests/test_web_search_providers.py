@@ -66,6 +66,8 @@ def test_serper_search_uses_api_contract_and_formats_evidence(monkeypatch) -> No
     assert calls[0]["headers"]["X-API-KEY"] == "test-key"
     assert calls[0]["json"]["q"].startswith("Apaleo hotel software (")
     assert "site:apaleo.com" in calls[0]["json"]["q"]
+    assert "after:2025-08-07" in calls[0]["json"]["q"]
+    assert "before:2026-08-08" in calls[0]["json"]["q"]
     assert calls[0]["json"]["gl"] == "us"
     assert calls[0]["json"]["hl"] == "en"
     assert calls[0]["json"]["num"] == 5
@@ -98,3 +100,59 @@ def test_provider_factory_supports_serper(monkeypatch) -> None:
     )
 
     assert isinstance(provider, providers.SerperSearchProvider)
+
+
+def test_hybrid_provider_falls_back_when_serper_fails(monkeypatch) -> None:
+    attempts: list[str] = []
+
+    class _FailingSerper:
+        def __init__(self, **_kwargs):
+            return None
+
+        def search(self, *_args, **_kwargs):
+            attempts.append("serper")
+            raise RuntimeError("Serper unavailable")
+
+    class _WorkingSonar:
+        def __init__(self, **_kwargs):
+            return None
+
+        def search(self, *_args, **_kwargs):
+            attempts.append("sonar")
+            return "Search Results for: q\n\n1. Useful fallback evidence"
+
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    monkeypatch.setattr(providers, "SerperSearchProvider", _FailingSerper)
+    monkeypatch.setattr(providers, "SonarSearchProvider", _WorkingSonar)
+
+    provider = providers.get_provider(
+        search_end_date="2026-08-07", provider_name="hybrid"
+    )
+
+    assert "Useful fallback evidence" in provider.search("q")
+    assert attempts == ["serper", "sonar"]
+
+
+def test_hybrid_provider_survives_serper_initialization_failure(monkeypatch) -> None:
+    class _BrokenSerper:
+        def __init__(self, **_kwargs):
+            raise RuntimeError("Serper client unavailable")
+
+    class _WorkingSonar:
+        def __init__(self, **_kwargs):
+            return None
+
+        def search(self, *_args, **_kwargs):
+            return "Search Results for: q\n\n1. Sonar evidence"
+
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    monkeypatch.setattr(providers, "SerperSearchProvider", _BrokenSerper)
+    monkeypatch.setattr(providers, "SonarSearchProvider", _WorkingSonar)
+
+    provider = providers.get_provider(
+        search_end_date="2026-08-07", provider_name="hybrid"
+    )
+
+    assert "Sonar evidence" in provider.search("q")

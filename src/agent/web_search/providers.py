@@ -105,6 +105,7 @@ class SerperSearchProvider(WebSearchProvider):
 
     def search(self, query: str, *, domain_filter: Optional[List[str]] = None) -> str:
         search_query = self._apply_domain_filter(query, domain_filter)
+        search_query = self._apply_date_filter(search_query, self._search_end_date)
         payload = {
             "q": search_query,
             "gl": self._country,
@@ -138,6 +139,21 @@ class SerperSearchProvider(WebSearchProvider):
             return query
         clauses = " OR ".join(f"site:{domain}" for domain in domains)
         return f"{query} ({clauses})"
+
+    @staticmethod
+    def _apply_date_filter(query: str, search_end_date: str) -> str:
+        """Constrain Google results to the year ending on the requested date."""
+        if not search_end_date:
+            return query
+        if "T" in search_end_date:
+            end = datetime.fromisoformat(search_end_date.replace("Z", "+00:00"))
+        else:
+            end = datetime.strptime(search_end_date, "%Y-%m-%d")
+        start = end - timedelta(days=365)
+        # Google's before operator is exclusive, so use the next day to make
+        # the analysis cutoff inclusive.
+        before = end + timedelta(days=1)
+        return f"{query} after:{start:%Y-%m-%d} before:{before:%Y-%m-%d}"
 
     @staticmethod
     def _format_results(query: str, data: dict) -> str:
@@ -279,13 +295,74 @@ class SonarSearchProvider(WebSearchProvider):
         return "\n".join(lines).rstrip()
 
 
+class HybridSearchProvider(WebSearchProvider):
+    """Serper-first search with automatic fallback to another configured provider."""
+
+    def __init__(self, search_end_date: str):
+        """Build available providers without letting one broken setup disable others."""
+        candidates: list[WebSearchProvider] = []
+        initialization_failures: list[str] = []
+        if os.getenv("SERPER_API_KEY"):
+            try:
+                candidates.append(SerperSearchProvider(search_end_date=search_end_date))
+            except Exception as exc:
+                initialization_failures.append(f"SerperSearchProvider: {exc}")
+        pplx_key = os.getenv("PPLX_API_KEY") or os.getenv("PERPLEXITY_API_KEY")
+        if pplx_key and pplx_key != "your_perplexity_api_key_here":
+            try:
+                candidates.append(SonarSearchProvider(search_end_date=search_end_date))
+            except Exception as exc:
+                initialization_failures.append(f"SonarSearchProvider: {exc}")
+        if os.getenv("BRAVE_SEARCH_API_KEY"):
+            try:
+                candidates.append(BraveSearchProvider(search_end_date=search_end_date))
+            except Exception as exc:
+                initialization_failures.append(f"BraveSearchProvider: {exc}")
+        if not candidates:
+            detail = "; ".join(initialization_failures)
+            raise ValueError(
+                "Hybrid web search requires at least one working configured provider."
+                + (f" Initialization failures: {detail}" if detail else "")
+            )
+        self._providers = candidates
+        self._initialization_failures = initialization_failures
+
+    @staticmethod
+    def _is_usable(result: str) -> bool:
+        normalized = (result or "").strip().lower()
+        return bool(
+            normalized
+            and "no search results returned" not in normalized
+            and not normalized.startswith(("web search failed", "search failed"))
+        )
+
+    def search(self, query: str, *, domain_filter: Optional[List[str]] = None) -> str:
+        """Return the first usable result, trying configured fallbacks in order."""
+        last_result = ""
+        failures = list(self._initialization_failures)
+        for provider in self._providers:
+            try:
+                last_result = provider.search(query, domain_filter=domain_filter)
+                if self._is_usable(last_result):
+                    return last_result
+            except Exception as exc:
+                failures.append(f"{type(provider).__name__}: {exc}")
+        if last_result:
+            return last_result
+        raise RuntimeError(
+            "All hybrid web search providers failed: " + "; ".join(failures)
+        )
+
+
 def get_provider(search_end_date: str, *, provider_name: str) -> WebSearchProvider:
     """Factory to instantiate the requested provider."""
     provider = provider_name.lower()
     if provider == "sonar":
         return SonarSearchProvider(search_end_date=search_end_date)
-    if provider in {"serper", "hybrid"}:
+    if provider == "serper":
         return SerperSearchProvider(search_end_date=search_end_date)
+    if provider == "hybrid":
+        return HybridSearchProvider(search_end_date=search_end_date)
     if provider == "brave":
         return BraveSearchProvider(search_end_date=search_end_date)
     raise ValueError(f"Unsupported web search provider '{provider_name}'.")
