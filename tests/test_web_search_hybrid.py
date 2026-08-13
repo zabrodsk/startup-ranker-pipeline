@@ -359,7 +359,14 @@ class _HybridAnswerLLM:
 def _run_planner_hybrid(monkeypatch, serper_result: str) -> tuple[dict, list[str]]:
     provider_attempts: list[str] = []
 
-    def fake_search(*_args, provider_override=None, **_kwargs):  # noqa: ANN001
+    def fake_search(
+        *_args,
+        provider_override=None,
+        provider_deadline_seconds=None,
+        **_kwargs,
+    ):  # noqa: ANN001
+        assert provider_deadline_seconds is not None
+        assert provider_deadline_seconds > 0
         provider = provider_override or "configured"
         provider_attempts.append(provider)
         if provider == "serper":

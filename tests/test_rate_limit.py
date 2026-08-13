@@ -54,3 +54,25 @@ def test_sync_retry_deadline_stops_before_an_unbounded_retry(monkeypatch) -> Non
 
     assert len(calls) == 1
     assert 0 < calls[0] <= 0.1
+
+
+def test_sync_retry_deadline_includes_throttle_wait(monkeypatch) -> None:
+    throttle = InvocationThrottle(
+        max_concurrent=1,
+        min_interval_sec=0.0,
+        start_jitter_sec=0.0,
+    )
+    assert throttle.acquire_sync()
+    monkeypatch.setattr(rate_limit, "web_search_throttle", lambda: throttle)
+    calls: list[str] = []
+
+    try:
+        with pytest.raises(TimeoutError, match="waiting for capacity"):
+            rate_limit.run_with_sync_retries(
+                lambda: calls.append("called"),
+                max_elapsed_seconds=0.01,
+            )
+    finally:
+        throttle.release_sync()
+
+    assert calls == []

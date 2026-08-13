@@ -999,6 +999,9 @@ async def answer_question_from_evidence(
             deadline = time.monotonic() + WEB_SEARCH_TIMEOUT_SEC
             total = len(active_plan.queries)
             for position, spec in enumerate(active_plan.queries, start=1):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
                 if web_search_state is not None:
                     async with web_search_state["lock"]:
                         if web_search_state["count"][0] >= web_search_state["max"]:
@@ -1027,15 +1030,17 @@ async def answer_question_from_evidence(
                             _run_web_search,
                             *search_args,
                             provider_override=primary_provider,
+                            provider_deadline_seconds=remaining,
                         )
                         if primary_provider
-                        else asyncio.to_thread(_run_web_search, *search_args)
+                        else asyncio.to_thread(
+                            _run_web_search,
+                            *search_args,
+                            provider_deadline_seconds=remaining,
+                        )
                     )
-                    raw = await asyncio.wait_for(
-                        search_call,
-                        timeout=remaining,
-                    )
-                except asyncio.TimeoutError:
+                    raw = await search_call
+                except TimeoutError:
                     break
                 # W13: a cache hit consumed no provider call — refund the cap
                 # slot acquired above so cached answers don't shrink the budget.
@@ -1071,25 +1076,23 @@ async def answer_question_from_evidence(
                     if fallback_allowed and remaining > 0:
                         fallback_cache_info: dict[str, Any] = {}
                         try:
-                            fallback_raw = await asyncio.wait_for(
-                                asyncio.to_thread(
-                                    _run_web_search,
-                                    spec.query,
-                                    list(spec.domain_filter)
-                                    if spec.domain_filter is not None
-                                    else None,
-                                    "quality fallback",
-                                    heavy_mode,
-                                    active_plan.route.value,
-                                    planner_mode,
-                                    spec.purpose,
-                                    fallback_cache_info,
-                                    provider_override="sonar",
-                                    fallback_from="serper",
-                                ),
-                                timeout=remaining,
+                            fallback_raw = await asyncio.to_thread(
+                                _run_web_search,
+                                spec.query,
+                                list(spec.domain_filter)
+                                if spec.domain_filter is not None
+                                else None,
+                                "quality fallback",
+                                heavy_mode,
+                                active_plan.route.value,
+                                planner_mode,
+                                spec.purpose,
+                                fallback_cache_info,
+                                provider_override="sonar",
+                                fallback_from="serper",
+                                provider_deadline_seconds=remaining,
                             )
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             fallback_raw = "Web search failed: timeout"
                         if fallback_cache_info.get("hit"):
                             cache_hits += 1

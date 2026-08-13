@@ -87,12 +87,23 @@ class InvocationThrottle:
     def release_async(self) -> None:
         self._sync_semaphore.release()
 
-    def acquire_sync(self) -> None:
-        self._sync_semaphore.acquire()
+    def acquire_sync(self, *, deadline: float | None = None) -> bool:
+        if deadline is None:
+            self._sync_semaphore.acquire()
+        else:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not self._sync_semaphore.acquire(timeout=remaining):
+                return False
         while True:
+            if deadline is not None and deadline <= time.monotonic():
+                self._sync_semaphore.release()
+                return False
             delay = self._reserve_slot()
             if delay <= 0:
-                return
+                return True
+            if deadline is not None and delay >= deadline - time.monotonic():
+                self._sync_semaphore.release()
+                return False
             time.sleep(delay)
 
     def release_sync(self) -> None:
@@ -393,20 +404,23 @@ def run_with_sync_retries(
 ) -> Any:
     """Run a throttled sync call with retries inside an enforceable deadline.
 
-    The deadline starts after the first throttle acquisition. Per-attempt HTTP
+    The deadline includes throttle acquisition and pacing. Per-attempt HTTP
     timeouts are capped to the remaining budget, so callers never need to
     abandon an uncancellable ``asyncio.to_thread`` operation.
     """
     throttle = web_search_throttle()
     retry_policy = web_search_retry_policy()
     attempt = 0
-    deadline: float | None = None
+    deadline = (
+        time.monotonic() + max(0.001, max_elapsed_seconds)
+        if max_elapsed_seconds is not None
+        else None
+    )
 
     while True:
-        throttle.acquire_sync()
+        if not throttle.acquire_sync(deadline=deadline):
+            raise TimeoutError("Web search deadline exceeded waiting for capacity.")
         try:
-            if deadline is None and max_elapsed_seconds is not None:
-                deadline = time.monotonic() + max(0.001, max_elapsed_seconds)
             call_kwargs = kwargs
             if deadline is not None:
                 remaining = deadline - time.monotonic()
