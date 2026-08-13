@@ -200,6 +200,78 @@ def test_failed_concrete_provider_attempt_remains_in_metadata_and_telemetry(
     assert recorded == ["serper"]
 
 
+def test_locally_rejected_provider_is_not_metered_or_counted(monkeypatch) -> None:
+    recorded: list[str] = []
+
+    class _LocallyRejectedProvider:
+        request_attempted = False
+
+        def search(self, *_args, **_kwargs):
+            raise TimeoutError("deadline exceeded waiting for capacity")
+
+    class _Collector:
+        def record_web_search(self, *, provider, **_kwargs):  # noqa: ANN001
+            recorded.append(provider)
+
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "hybrid")
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    monkeypatch.setattr(
+        web_search_module,
+        "get_provider",
+        lambda **_kwargs: _LocallyRejectedProvider(),
+    )
+    monkeypatch.setattr(result_cache, "lookup", lambda *_args: None)
+    monkeypatch.setattr(ea, "get_current_collector", lambda: _Collector())
+    cache_info: dict = {}
+
+    result = ea._run_web_search(
+        "Apaleo funding",
+        cache_info=cache_info,
+        provider_override="serper",
+    )
+
+    assert result.startswith("Web search failed:")
+    assert cache_info["attempted_providers"] == []
+    assert recorded == []
+
+
+def test_portfolio_refunds_slot_when_provider_request_never_started(monkeypatch) -> None:
+    def locally_rejected(*args, **_kwargs):
+        cache_info = args[7]
+        cache_info["hit"] = False
+        cache_info["attempted_providers"] = []
+        return "Web search failed: deadline exceeded waiting for capacity"
+
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "hybrid")
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    monkeypatch.setattr(ea, "_run_web_search", locally_rejected)
+    monkeypatch.setattr(
+        ea,
+        "evaluate_web_result_relevance",
+        lambda **_kwargs: (False, "not useful"),
+    )
+    state = {"count": [0], "lock": asyncio.Lock(), "max": 1}
+
+    result = asyncio.run(
+        ea._run_quality_routed_search(
+            query="Apaleo funding",
+            domain_filter=None,
+            purpose="funding",
+            route=SimpleNamespace(value="company_specific"),
+            relevance_policy=object(),
+            representative_question="What funding has Apaleo raised?",
+            company=Company(name="Apaleo"),
+            trigger_reason="portfolio core",
+            web_search_state=state,
+        )
+    )
+
+    assert result is None
+    assert state["count"] == [0]
+
+
 def test_hybrid_falls_back_when_primary_has_only_one_thin_result(monkeypatch) -> None:
     attempts: list[str] = []
 
@@ -311,8 +383,9 @@ def test_hybrid_does_not_return_unusable_primary_after_fallback_failure(
 def test_portfolio_primary_and_fallback_share_one_deadline(monkeypatch) -> None:
     attempts: list[tuple[str | None, float | None]] = []
 
-    def fake_search(*_args, provider_override=None, provider_deadline_seconds=None, **_kwargs):
+    def fake_search(*args, provider_override=None, provider_deadline_seconds=None, **_kwargs):
         attempts.append((provider_override, provider_deadline_seconds))
+        args[7]["attempted_providers"] = [provider_override or "configured"]
         time.sleep(0.02)
         return "No search results returned."
 
@@ -350,8 +423,9 @@ def test_portfolio_primary_and_fallback_share_one_deadline(monkeypatch) -> None:
 def test_planner_does_not_reserve_fallback_after_deadline(monkeypatch) -> None:
     attempts: list[str] = []
 
-    def fake_search(*_args, provider_override=None, **_kwargs):
+    def fake_search(*args, provider_override=None, **_kwargs):
         attempts.append(provider_override or "configured")
+        args[7]["attempted_providers"] = [provider_override or "configured"]
         time.sleep(0.02)
         return "No search results returned."
 
@@ -494,8 +568,9 @@ def test_planner_does_not_call_perplexity_when_serper_passes_quality_gate(monkey
 def test_shared_portfolio_bounds_search_objectives_before_answering(monkeypatch) -> None:
     attempts: list[str] = []
 
-    def fake_search(query, *_args, provider_override=None, **_kwargs):  # noqa: ANN001
+    def fake_search(query, *args, provider_override=None, **_kwargs):  # noqa: ANN001
         attempts.append(provider_override or "configured")
+        args[6]["attempted_providers"] = [provider_override or "configured"]
         return (
             f"Search Results for: {query}\n\n"
             f"1. Hospitality market evidence — https://example.com/{len(attempts)}\n"
@@ -550,8 +625,9 @@ def test_shared_portfolio_bounds_search_objectives_before_answering(monkeypatch)
 def test_shared_portfolio_honors_targeted_mode_before_prefetch(monkeypatch) -> None:
     attempts: list[str] = []
 
-    def fake_search(query, *_args, provider_override=None, **_kwargs):  # noqa: ANN001
+    def fake_search(query, *args, provider_override=None, **_kwargs):  # noqa: ANN001
         attempts.append(provider_override or "configured")
+        args[6]["attempted_providers"] = [provider_override or "configured"]
         return (
             f"Search Results for: {query}\n\n"
             "1. Apaleo leadership — https://example.com/team\n"
@@ -595,8 +671,9 @@ def test_shared_portfolio_honors_targeted_mode_before_prefetch(monkeypatch) -> N
 def test_shared_portfolio_honors_global_provider_call_cap(monkeypatch) -> None:
     attempts: list[str] = []
 
-    def fake_search(query, *_args, provider_override=None, **_kwargs):  # noqa: ANN001
+    def fake_search(query, *args, provider_override=None, **_kwargs):  # noqa: ANN001
         attempts.append(provider_override or "configured")
+        args[6]["attempted_providers"] = [provider_override or "configured"]
         return (
             f"Search Results for: {query}\n\n"
             "1. Hospitality software evidence — https://example.com/market\n"

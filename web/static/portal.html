@@ -3984,7 +3984,7 @@ function AdminPortal({ user, onSignOut }) {
                   <span style={{color:"var(--text-muted)",marginRight:6}}>Web:</span>
                   <span style={{fontFamily:"monospace"}}>{fmtUsd((rc.perplexity_usd || 0) + (rc.serper_usd || 0))}</span>
                   <span style={{color:"var(--text-muted)",marginLeft:4,fontSize:".72rem"}}>
-                    (Serper {fmtInt(serper.requests || 0)} · fallback {fmtInt(ppx.requests || 0)})
+                    (Serper {fmtInt(serper.requests || 0)} · Perplexity {fmtInt(ppx.requests || 0)})
                   </span>
                 </div>
               </React.Fragment>

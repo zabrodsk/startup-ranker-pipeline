@@ -11332,7 +11332,7 @@ function renderRunCostStrip(runCosts, fallbackLlmLabel = '') {
         <div class="run-cost-card-glow"></div>
         <div class="run-cost-card-label">Web Search</div>
         <div class="run-cost-card-value">${formatUsd(webSearchCost)}</div>
-        <div class="run-cost-card-sub">${requestCount.toLocaleString()} request${requestCount === 1 ? '' : 's'} · Serper ${serperRequests.toLocaleString()} · Perplexity fallback ${perplexityRequests.toLocaleString()}</div>
+        <div class="run-cost-card-sub">${requestCount.toLocaleString()} request${requestCount === 1 ? '' : 's'} · Serper ${serperRequests.toLocaleString()} · Perplexity ${perplexityRequests.toLocaleString()}</div>
       </div>
     </div>
   `;

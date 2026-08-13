@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from threading import Lock, Semaphore
-from typing import Any, Awaitable, Iterable
+from typing import Any, Awaitable, Callable, Iterable
 
 from agent.run_context import (
     get_current_collector,
@@ -400,6 +400,7 @@ def run_with_sync_retries(
     callable_: Any,
     *args: Any,
     max_elapsed_seconds: float | None = None,
+    on_attempt_started: Callable[[], None] | None = None,
     **kwargs: Any,
 ) -> Any:
     """Run a throttled sync call with retries inside an enforceable deadline.
@@ -430,6 +431,8 @@ def run_with_sync_retries(
                 if isinstance(configured_timeout, (int, float)):
                     call_kwargs = dict(kwargs)
                     call_kwargs["timeout"] = max(0.001, min(float(configured_timeout), remaining))
+            if on_attempt_started is not None:
+                on_attempt_started()
             return callable_(*args, **call_kwargs)
         except Exception as exc:
             if attempt >= retry_policy.max_retries or not is_retryable_api_error(exc):

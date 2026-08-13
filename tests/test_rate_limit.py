@@ -74,14 +74,17 @@ def test_sync_retry_deadline_includes_throttle_wait(monkeypatch) -> None:
     assert throttle.acquire_sync()
     monkeypatch.setattr(rate_limit, "web_search_throttle", lambda: throttle)
     calls: list[str] = []
+    attempts: list[str] = []
 
     try:
         with pytest.raises(TimeoutError, match="waiting for capacity"):
             rate_limit.run_with_sync_retries(
                 lambda: calls.append("called"),
                 max_elapsed_seconds=0.01,
+                on_attempt_started=lambda: attempts.append("started"),
             )
     finally:
         throttle.release_sync()
 
     assert calls == []
+    assert attempts == []

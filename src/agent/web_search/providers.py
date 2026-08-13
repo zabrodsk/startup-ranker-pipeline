@@ -44,6 +44,11 @@ def _request_with_status_check(callable_, *args, **kwargs):  # noqa: ANN001, ANN
 class WebSearchProvider(ABC):
     """Minimal interface for search providers."""
 
+    request_attempted = False
+
+    def _mark_request_attempted(self) -> None:
+        self.request_attempted = True
+
     @abstractmethod
     def search(
         self,
@@ -84,6 +89,7 @@ class BraveSearchProvider(WebSearchProvider):
         domain_filter: Optional[List[str]] = None,
         deadline_seconds: float | None = None,
     ) -> str:
+        self.request_attempted = False
         search_query = SerperSearchProvider._apply_domain_filter(query, domain_filter)
         response = run_with_sync_retries(
             _request_with_status_check,
@@ -103,6 +109,7 @@ class BraveSearchProvider(WebSearchProvider):
             },
             timeout=30,
             max_elapsed_seconds=deadline_seconds,
+            on_attempt_started=self._mark_request_attempted,
         )
         data = response.json()
         if not isinstance(data, dict):
@@ -177,6 +184,7 @@ class SerperSearchProvider(WebSearchProvider):
         domain_filter: Optional[List[str]] = None,
         deadline_seconds: float | None = None,
     ) -> str:
+        self.request_attempted = False
         search_query = self._apply_domain_filter(query, domain_filter)
         search_query = self._apply_date_filter(search_query, self._search_end_date)
         payload = {
@@ -196,6 +204,7 @@ class SerperSearchProvider(WebSearchProvider):
             json=payload,
             timeout=30,
             max_elapsed_seconds=deadline_seconds,
+            on_attempt_started=self._mark_request_attempted,
         )
         data = response.json()
         if not isinstance(data, dict):
@@ -306,6 +315,7 @@ class SonarSearchProvider(WebSearchProvider):
         domain_filter: Optional[List[str]] = None,
         deadline_seconds: float | None = None,
     ) -> str:
+        self.request_attempted = False
         payload = {
             "query": query,
             "max_results": self._max_results,
@@ -331,6 +341,7 @@ class SonarSearchProvider(WebSearchProvider):
             json=payload,
             timeout=30,
             max_elapsed_seconds=deadline_seconds,
+            on_attempt_started=self._mark_request_attempted,
         )
         data = response.json()
 
@@ -511,18 +522,21 @@ class HybridSearchProvider(WebSearchProvider):
             remaining = deadline - time.monotonic() if deadline is not None else None
             if remaining is not None and remaining <= 0:
                 break
-            self.attempted_provider_names.append(provider_name)
             try:
                 last_result = provider.search(
                     query,
                     domain_filter=domain_filter,
                     deadline_seconds=remaining,
                 )
+                if getattr(provider, "request_attempted", True):
+                    self.attempted_provider_names.append(provider_name)
                 if self._is_usable(query, last_result):
                     self.last_provider_name = provider_name
                     return last_result
                 failures.append(f"{type(provider).__name__}: unusable result")
             except Exception as exc:
+                if getattr(provider, "request_attempted", True):
+                    self.attempted_provider_names.append(provider_name)
                 failures.append(f"{type(provider).__name__}: {exc}")
         raise RuntimeError(
             "All hybrid web search providers failed or returned unusable results: "

@@ -455,13 +455,15 @@ def _run_web_search(
     """
     from datetime import datetime
 
+    if cache_info is not None:
+        cache_info.setdefault("attempted_providers", [])
+
     configured_provider = _resolve_web_search_provider_name()
     if not configured_provider:
         return "No web search API key configured."
     provider_name = (provider_override or configured_provider).strip().lower()
 
     provider: Any | None = None
-    provider_request_started = False
     try:
         from agent.web_search import get_provider, result_cache
 
@@ -474,7 +476,6 @@ def _run_web_search(
         else:
             search_date = datetime.now().strftime("%Y-%m-%d")
             provider = get_provider(search_end_date=search_date, provider_name=provider_name)
-            provider_request_started = True
             if provider_name == "hybrid" and provider_attempt_limit is not None:
                 result = provider.search(
                     search_query,
@@ -572,7 +573,8 @@ def _run_web_search(
         )
         if (
             not attempted_provider_names
-            and provider_request_started
+            and provider is not None
+            and getattr(provider, "request_attempted", True)
             and provider_name in {"serper", "sonar", "brave"}
         ):
             attempted_provider_names = [provider_name]
@@ -623,8 +625,8 @@ async def _acquire_web_search_slot(web_search_state: dict[str, Any] | None) -> b
         return True
 
 
-async def _refund_cached_web_search_slot(web_search_state: dict[str, Any] | None) -> None:
-    """Cached evidence does not consume a provider-call slot."""
+async def _refund_web_search_slot(web_search_state: dict[str, Any] | None) -> None:
+    """Release a slot when no provider request was sent."""
     if web_search_state is None:
         return
     async with web_search_state["lock"]:
@@ -668,8 +670,8 @@ async def _run_quality_routed_search(
         provider_override=primary_provider,
         provider_deadline_seconds=max(0.001, objective_deadline - time.monotonic()),
     )
-    if cache_info.get("hit"):
-        await _refund_cached_web_search_slot(web_search_state)
+    if cache_info.get("hit") or cache_info.get("attempted_providers") == []:
+        await _refund_web_search_slot(web_search_state)
     if on_cooperate:
         await on_cooperate()
     useful, reason = evaluate_web_result_relevance(
@@ -691,7 +693,7 @@ async def _run_quality_routed_search(
             await on_cooperate()
         fallback_budget = objective_deadline - time.monotonic()
         if fallback_budget <= 0:
-            await _refund_cached_web_search_slot(web_search_state)
+            await _refund_web_search_slot(web_search_state)
             return None
         fallback_cache_info: dict[str, Any] = {}
         fallback_raw = await asyncio.to_thread(
@@ -708,8 +710,11 @@ async def _run_quality_routed_search(
             fallback_from="serper",
             provider_deadline_seconds=fallback_budget,
         )
-        if fallback_cache_info.get("hit"):
-            await _refund_cached_web_search_slot(web_search_state)
+        if (
+            fallback_cache_info.get("hit")
+            or fallback_cache_info.get("attempted_providers") == []
+        ):
+            await _refund_web_search_slot(web_search_state)
         if on_cooperate:
             await on_cooperate()
         fallback_useful, fallback_reason = evaluate_web_result_relevance(
@@ -1012,7 +1017,7 @@ async def answer_question_from_evidence(
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     if web_search_state is not None:
-                        await _refund_cached_web_search_slot(web_search_state)
+                        await _refund_web_search_slot(web_search_state)
                     break
                 strategy = _resolve_web_search_provider_name()
                 primary_provider = "serper" if strategy == "hybrid" else None
@@ -1049,6 +1054,10 @@ async def answer_question_from_evidence(
                 # slot acquired above so cached answers don't shrink the budget.
                 if cache_info.get("hit"):
                     cache_hits += 1
+                if (
+                    cache_info.get("hit")
+                    or cache_info.get("attempted_providers") == []
+                ):
                     if web_search_state is not None:
                         async with web_search_state["lock"]:
                             web_search_state["count"][0] -= 1
@@ -1080,7 +1089,7 @@ async def answer_question_from_evidence(
                                 web_search_state["count"][0] += 1
                     remaining = deadline - time.monotonic()
                     if fallback_allowed and remaining <= 0:
-                        await _refund_cached_web_search_slot(web_search_state)
+                        await _refund_web_search_slot(web_search_state)
                         fallback_allowed = False
                     if fallback_allowed and remaining > 0:
                         fallback_cache_info: dict[str, Any] = {}
@@ -1105,6 +1114,10 @@ async def answer_question_from_evidence(
                             fallback_raw = "Web search failed: timeout"
                         if fallback_cache_info.get("hit"):
                             cache_hits += 1
+                        if (
+                            fallback_cache_info.get("hit")
+                            or fallback_cache_info.get("attempted_providers") == []
+                        ):
                             if web_search_state is not None:
                                 async with web_search_state["lock"]:
                                     web_search_state["count"][0] -= 1
@@ -1463,7 +1476,7 @@ async def answer_question_from_evidence(
             # acquired above so cached answers don't shrink the budget.
             legacy_cache_hit = bool(cache_info.get("hit"))
             attempts_used = len(cache_info.get("attempted_providers") or [])
-            if not legacy_cache_hit and attempts_used == 0:
+            if not legacy_cache_hit and "attempted_providers" not in cache_info:
                 attempts_used = 1
             refundable_slots = (
                 reserved_slots if legacy_cache_hit else max(0, reserved_slots - attempts_used)
