@@ -3,14 +3,14 @@
 These operate on the ``get_job_cost_by_stage`` shape::
 
     {"job_id": str, "stages": [{"stage": str, "llm_calls": int,
-        "prompt_tokens": int, ...}], "totals": {"perplexity_search": {"requests": int}}}
+        "prompt_tokens": int, ...}], "totals": {"web_search": {"requests": int}}}
 
 Cost-observable features only:
   - w3  (PIPELINE_EVIDENCE_DIGEST): an ``evidence_digest`` stage appears and
         critique+refinement prompt tokens drop vs the off baseline.
   - w9  (PIPELINE_FINAL_SCORE_MODE=reuse): fewer ``evaluation`` LLM calls.
   - w11 (RDI_DECOMP_CACHE_STORE=supabase): fewer ``decomposition`` LLM calls.
-  - w13 (RDI_WEB_SEARCH_CACHE): fewer Perplexity requests on the repeat run.
+  - w13 (RDI_WEB_SEARCH_CACHE): fewer web-search requests on the repeat run.
 
 w7 (Specter identity reuse) and dup_gate are NOT cost-observable — verify them
 from MCP logs and the reused badge per docs/handoffs/sprint4-validation-runbook.md.
@@ -45,9 +45,14 @@ def has_stage(cost: dict[str, Any], stage: str) -> bool:
     return any(s.get("stage") == stage for s in (cost.get("stages") or []))
 
 
-def perplexity_requests(cost: dict[str, Any]) -> int:
-    pplx = (cost.get("totals") or {}).get("perplexity_search") or {}
-    return int(pplx.get("requests") or 0)
+def web_search_requests(cost: dict[str, Any]) -> int:
+    totals = cost.get("totals") or {}
+    aggregate = totals.get("web_search")
+    if isinstance(aggregate, dict):
+        return int(aggregate.get("requests") or 0)
+    perplexity = totals.get("perplexity_search") or {}
+    serper = totals.get("serper_search") or {}
+    return int(perplexity.get("requests") or 0) + int(serper.get("requests") or 0)
 
 
 def verify_feature(
@@ -88,9 +93,9 @@ def verify_feature(
 
     if feature == "w13":
         if baseline_cost is None:
-            return (False, "w13 needs --baseline-job-id (compares Perplexity requests)")
-        base = perplexity_requests(baseline_cost)
-        feat = perplexity_requests(feature_cost)
-        return (feat < base, f"perplexity requests baseline={base} feature={feat}")
+            return (False, "w13 needs --baseline-job-id (compares web-search requests)")
+        base = web_search_requests(baseline_cost)
+        feat = web_search_requests(feature_cost)
+        return (feat < base, f"web-search requests baseline={base} feature={feat}")
 
     return (False, f"unknown or non-cost-observable feature {feature!r}; see the runbook")
