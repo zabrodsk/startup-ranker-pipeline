@@ -15,6 +15,8 @@ that captures all the sub-questions needed to fully answer the main question.
 
 import asyncio
 import json
+import re
+import unicodedata
 from typing import Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -38,6 +40,12 @@ def _normalized_route_value(tag: str | None) -> str | None:
     """Normalize an LLM-emitted route tag to a QuestionRoute value or None."""
     normalized = normalize_route_tag(tag)
     return normalized.value if normalized else None
+
+
+def _normalized_question_key(value: str) -> str:
+    """Normalize superficial model variations for portfolio deduplication."""
+    normalized = unicodedata.normalize("NFKC", value or "").casefold().strip()
+    return re.sub(r"[^\w]+", " ", normalized).strip()
 
 
 def _build_question_tree_from_decomposition_tree(
@@ -103,12 +111,23 @@ def _build_bounded_question_tree(
             "What is the investment case for this company?",
         )
 
+    root_key = _normalized_question_key(root_text)
+    root_route = next(
+        (
+            _normalized_route_value(node.route)
+            for node in decomposition_tree.nodes
+            if _normalized_question_key(node.question) == root_key
+        ),
+        None,
+    )
+
     root_node = QuestionNode(
         question=root_text,
         sub_nodes=[],
         aspect=aspect,
+        route=root_route,
     )
-    seen = {" ".join(root_text.casefold().split())}
+    seen = {root_key}
     candidates = [(node.question, node.route) for node in decomposition_tree.nodes] + [
         (child_question, None)
         for node in decomposition_tree.nodes
@@ -120,7 +139,7 @@ def _build_bounded_question_tree(
         if len(root_node.sub_nodes) >= child_limit:
             break
         question_text = (question or "").strip()
-        question_key = " ".join(question_text.casefold().split())
+        question_key = _normalized_question_key(question_text)
         if not question_key or question_key in seen:
             continue
         seen.add(question_key)

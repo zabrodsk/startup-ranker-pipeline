@@ -164,3 +164,43 @@ def test_decomposition_uses_the_known_root_when_generation_is_empty(
         "Does the company fit the investment strategy?"
     )
     assert result["question_tree"].root_node.sub_nodes == []
+
+
+def test_bounded_tree_preserves_the_generated_root_route() -> None:
+    output = DecompositionTree(
+        nodes=[
+            DecompositionNode(
+                question="What is the TAM",
+                sub_questions=[],
+                route="Sector-Market",
+            )
+        ]
+    )
+
+    tree = decomposition._build_bounded_question_tree(
+        output,
+        root_question="What is the TAM?",
+        aspect="market",
+        max_nodes=24,
+    )
+
+    assert tree.root_node.route == "sector_market"
+
+
+def test_bounded_tree_deduplicates_punctuation_and_unicode_variants() -> None:
+    output = DecompositionTree(
+        nodes=[
+            DecompositionNode(question="What is the TAM", sub_questions=[]),
+            DecompositionNode(question="What is the TＡM?", sub_questions=[]),
+            DecompositionNode(question="What is the SAM?", sub_questions=[]),
+        ]
+    )
+
+    tree = decomposition._build_bounded_question_tree(
+        output,
+        root_question="What is the TAM?",
+        aspect="market",
+        max_nodes=24,
+    )
+
+    assert [node.question for node in tree.root_node.sub_nodes] == ["What is the SAM?"]
