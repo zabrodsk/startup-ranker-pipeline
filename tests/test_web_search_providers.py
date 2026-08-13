@@ -151,7 +151,13 @@ def test_hybrid_provider_falls_back_when_serper_fails(monkeypatch) -> None:
 
         def search(self, *_args, **_kwargs):
             attempts.append("sonar")
-            return "Search Results for: q\n\n1. Useful fallback evidence"
+            return (
+                "Search Results for: q\n\n"
+                "1. Useful fallback evidence q — https://example.com/one\n"
+                "   Detailed q market demand, customer adoption, and growth evidence.\n\n"
+                "2. Independent q benchmark — https://example.com/two\n"
+                "   Additional q competition, funding, and customer evidence."
+            )
 
     monkeypatch.setenv("SERPER_API_KEY", "serper-key")
     monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
@@ -213,7 +219,13 @@ def test_hybrid_provider_survives_serper_initialization_failure(monkeypatch) -> 
             return None
 
         def search(self, *_args, **_kwargs):
-            return "Search Results for: q\n\n1. Sonar evidence"
+            return (
+                "Search Results for: q\n\n"
+                "1. Sonar evidence q — https://example.com/one\n"
+                "   Detailed q market demand, customer adoption, and growth evidence.\n\n"
+                "2. Independent q benchmark — https://example.com/two\n"
+                "   Additional q competition, funding, and customer evidence."
+            )
 
     monkeypatch.setenv("SERPER_API_KEY", "serper-key")
     monkeypatch.setenv("PPLX_API_KEY", "pplx-key")

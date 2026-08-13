@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from types import SimpleNamespace
 import pytest
 
 import agent.evidence_answering as ea
@@ -246,7 +248,8 @@ def test_hybrid_respects_provider_attempt_limit(monkeypatch) -> None:
     provider = HybridSearchProvider("2026-08-13")
     provider._providers = [("serper", _Provider("serper")), ("sonar", _Provider("sonar"))]
 
-    provider.search("q", max_provider_attempts=1)
+    with pytest.raises(RuntimeError, match="unusable"):
+        provider.search("q", max_provider_attempts=1)
 
     assert attempts == ["serper"]
     assert provider.attempted_provider_names == ["serper"]
@@ -272,11 +275,76 @@ def test_hybrid_does_not_count_fallback_that_deadline_prevents(monkeypatch) -> N
     provider = HybridSearchProvider("2026-08-13")
     provider._providers = [("serper", _ThinPrimary()), ("sonar", _Fallback())]
 
-    result = provider.search("q", deadline_seconds=1.0)
+    with pytest.raises(RuntimeError, match="unusable"):
+        provider.search("q", deadline_seconds=1.0)
 
-    assert result.startswith("Search Results for: q")
     assert attempts == ["serper"]
     assert provider.attempted_provider_names == ["serper"]
+
+
+def test_hybrid_does_not_return_unusable_primary_after_fallback_failure(
+    monkeypatch,
+) -> None:
+    class _ThinPrimary:
+        def search(self, *_args, **_kwargs):
+            return "Search Results for: Acme funding\n\nNo search results returned."
+
+    class _FailingFallback:
+        def search(self, *_args, **_kwargs):
+            raise RuntimeError("fallback unavailable")
+
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    provider = HybridSearchProvider("2026-08-13")
+    provider._providers = [
+        ("serper", _ThinPrimary()),
+        ("sonar", _FailingFallback()),
+    ]
+
+    with pytest.raises(RuntimeError, match="failed or returned unusable"):
+        provider.search("Acme funding")
+
+    assert provider.last_provider_name is None
+    assert provider.attempted_provider_names == ["serper", "sonar"]
+
+
+def test_portfolio_primary_and_fallback_share_one_deadline(monkeypatch) -> None:
+    attempts: list[tuple[str | None, float | None]] = []
+
+    def fake_search(*_args, provider_override=None, provider_deadline_seconds=None, **_kwargs):
+        attempts.append((provider_override, provider_deadline_seconds))
+        time.sleep(0.02)
+        return "No search results returned."
+
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "hybrid")
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    monkeypatch.setattr(ea, "WEB_SEARCH_TIMEOUT_SEC", 0.01)
+    monkeypatch.setattr(ea, "_run_web_search", fake_search)
+    monkeypatch.setattr(
+        ea,
+        "evaluate_web_result_relevance",
+        lambda **_kwargs: (False, "not useful"),
+    )
+    state = {"count": [0], "lock": asyncio.Lock(), "max": 2}
+
+    result = asyncio.run(
+        ea._run_quality_routed_search(
+            query="Acme funding",
+            domain_filter=None,
+            purpose="funding",
+            route=SimpleNamespace(value="company_specific"),
+            relevance_policy=object(),
+            representative_question="What funding has Acme raised?",
+            company=Company(name="Acme"),
+            trigger_reason="portfolio core",
+            web_search_state=state,
+        )
+    )
+
+    assert result is None
+    assert [provider for provider, _deadline in attempts] == ["serper"]
+    assert state["count"] == [1]
 
 
 class _HybridAnswerLLM:

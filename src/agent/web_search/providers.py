@@ -475,15 +475,15 @@ class HybridSearchProvider(WebSearchProvider):
                     domain_filter=domain_filter,
                     deadline_seconds=remaining,
                 )
-                self.last_provider_name = provider_name
                 if self._is_usable(query, last_result):
+                    self.last_provider_name = provider_name
                     return last_result
+                failures.append(f"{type(provider).__name__}: unusable result")
             except Exception as exc:
                 failures.append(f"{type(provider).__name__}: {exc}")
-        if last_result:
-            return last_result
         raise RuntimeError(
-            "All hybrid web search providers failed: " + "; ".join(failures)
+            "All hybrid web search providers failed or returned unusable results: "
+            + "; ".join(failures)
         )
 
 

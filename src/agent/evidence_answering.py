@@ -644,6 +644,7 @@ async def _run_quality_routed_search(
     on_cooperate: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any] | None:
     """Run Serper first and use Perplexity only after a failed quality gate."""
+    objective_deadline = time.monotonic() + WEB_SEARCH_TIMEOUT_SEC
     strategy = _resolve_web_search_provider_name()
     if not strategy:
         return None
@@ -664,7 +665,7 @@ async def _run_quality_routed_search(
         purpose,
         cache_info,
         provider_override=primary_provider,
-        provider_deadline_seconds=WEB_SEARCH_TIMEOUT_SEC,
+        provider_deadline_seconds=max(0.001, objective_deadline - time.monotonic()),
     )
     if cache_info.get("hit"):
         await _refund_cached_web_search_slot(web_search_state)
@@ -680,13 +681,17 @@ async def _run_quality_routed_search(
     )
     accepted_provider = primary_provider or strategy
 
-    if (
-        not useful
-        and strategy == "hybrid"
-        and await _acquire_web_search_slot(web_search_state)
-    ):
+    fallback_budget = objective_deadline - time.monotonic()
+    fallback_slot_acquired = False
+    if not useful and strategy == "hybrid" and fallback_budget > 0:
+        fallback_slot_acquired = await _acquire_web_search_slot(web_search_state)
+    if fallback_slot_acquired:
         if on_cooperate:
             await on_cooperate()
+        fallback_budget = objective_deadline - time.monotonic()
+        if fallback_budget <= 0:
+            await _refund_cached_web_search_slot(web_search_state)
+            return None
         fallback_cache_info: dict[str, Any] = {}
         fallback_raw = await asyncio.to_thread(
             _run_web_search,
@@ -700,7 +705,7 @@ async def _run_quality_routed_search(
             fallback_cache_info,
             provider_override="sonar",
             fallback_from="serper",
-            provider_deadline_seconds=WEB_SEARCH_TIMEOUT_SEC,
+            provider_deadline_seconds=fallback_budget,
         )
         if fallback_cache_info.get("hit"):
             await _refund_cached_web_search_slot(web_search_state)
