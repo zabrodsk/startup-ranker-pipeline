@@ -1330,7 +1330,7 @@ const REEVAL_STAGES = [
   { key: "loading",   label: "Loading evidence",        hint: "Fetching all uploaded chunks for your company" },
   { key: "answering", label: "Re-answering questions",  hint: "The AI re-asks every investment question against the new evidence" },
   { key: "arguing",   label: "Generating arguments",    hint: "Building pro/contra arguments and stress-testing them with a critic" },
-  { key: "scoring",   label: "Scoring & decision",      hint: "Composite score, dimension scores, and final invest/pass decision" },
+  { key: "scoring",   label: "Scoring & assessment",    hint: "Authoritative composite score and bucket, plus an advisory invest/pass recommendation" },
   { key: "saving",    label: "Saving results",          hint: "Persisting the new analysis row and cost telemetry" },
   { key: "matching",  label: "Updating VC matches",     hint: "Re-scoring your matches with the new analysis (matches are preserved, scores refresh)" },
 ];
@@ -1606,11 +1606,16 @@ function AnalysisEvidenceLog({ data }) {
 
   return (
     <div>
-      {/* Decision summary */}
+      {/* Authoritative assessment and advisory recommendation */}
       {scores.composite_score != null && (
         <div className="elog-decision">
-          <strong>Decision:</strong> {data.decision || "N/A"} &mdash; Composite Score: {scores.composite_score}
-          {scores.bucket && <span> ({scores.bucket.replace("_", " ")})</span>}
+          <div>
+            <strong>Authoritative assessment:</strong> Composite Score: {scores.composite_score}
+            {scores.bucket && <span> ({scores.bucket.replaceAll("_", " ")})</span>}
+          </div>
+          <div>
+            <strong>Advisory recommendation:</strong> {data.decision || "N/A"}. Score and bucket are authoritative; this label is advisory and may vary across runs.
+          </div>
         </div>
       )}
 

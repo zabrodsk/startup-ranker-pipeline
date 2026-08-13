@@ -63,6 +63,14 @@ def test_summary_row_contains_coverage_keys():
         assert key in row
 
 
+def test_summary_row_marks_binary_decision_as_advisory():
+    row = build_summary_rows([_result([])])[0]
+
+    assert row["decision"] == "invest"
+    assert row["decision_authority"] == "advisory"
+    assert row["authoritative_outcome"] == "score_and_bucket"
+
+
 def test_scoring_fields_unchanged_by_coverage_metric():
     # Identical arguments, different QA pairs -> identical scoring outputs.
     row_no_qa = build_summary_rows([_result([])])[0]

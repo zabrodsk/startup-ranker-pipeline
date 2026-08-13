@@ -167,7 +167,7 @@ def _build_history_summary(runs: list[dict[str, Any]]) -> str:
         lines.append(
             f"- {run.get('created_at') or 'unknown date'} · job {run.get('job_id') or 'unknown'}"
             f" · {run.get('company_name') or 'Unknown company'}"
-            f" · decision {run.get('decision') or 'unknown'}"
+            f" · advisory recommendation {run.get('decision') or 'unknown'}"
         )
     return "\n".join(lines) or "- No persisted run history available."
 

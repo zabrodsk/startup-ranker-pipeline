@@ -40,6 +40,23 @@ def test_scoring_signals_are_summarized_not_dumped() -> None:
     assert "signals.specter_highlights.map(h => h.label || h).join(', ')" not in html
 
 
+def test_score_and_bucket_are_authoritative_and_binary_decision_is_advisory() -> None:
+    root = Path(__file__).resolve().parents[1]
+    index_html = (root / "web" / "static" / "index.html").read_text()
+    portal_html = (root / "web" / "static" / "portal.html").read_text()
+
+    assert "Authoritative assessment" in index_html
+    assert "Advisory recommendation" in index_html
+    assert "Score and bucket are authoritative" in index_html
+    assert "decision labels" not in index_html
+
+    assert "Authoritative assessment" in portal_html
+    assert "Advisory recommendation" in portal_html
+    assert "Scoring & assessment" in portal_html
+    assert "Scoring & decision" not in portal_html
+    assert "<strong>Decision:</strong>" not in portal_html
+
+
 def test_company_rank_cards_render_website_and_specter_links() -> None:
     html = (Path(__file__).resolve().parents[1] / "web" / "static" / "index.html").read_text()
 
