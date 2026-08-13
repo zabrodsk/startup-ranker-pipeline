@@ -606,24 +606,18 @@ async def _run_quality_routed_search(
         return None
     primary_provider = "serper" if strategy == "hybrid" else None
     cache_info: dict[str, Any] = {}
-    try:
-        raw = await asyncio.wait_for(
-            asyncio.to_thread(
-                _run_web_search,
-                query,
-                domain_filter,
-                trigger_reason,
-                "portfolio",
-                route.value,
-                "portfolio",
-                purpose,
-                cache_info,
-                provider_override=primary_provider,
-            ),
-            timeout=WEB_SEARCH_TIMEOUT_SEC,
-        )
-    except asyncio.TimeoutError:
-        raw = "Web search failed: timeout"
+    raw = await asyncio.to_thread(
+        _run_web_search,
+        query,
+        domain_filter,
+        trigger_reason,
+        "portfolio",
+        route.value,
+        "portfolio",
+        purpose,
+        cache_info,
+        provider_override=primary_provider,
+    )
     if cache_info.get("hit"):
         await _refund_cached_web_search_slot(web_search_state)
     if on_cooperate:
@@ -646,25 +640,19 @@ async def _run_quality_routed_search(
         if on_cooperate:
             await on_cooperate()
         fallback_cache_info: dict[str, Any] = {}
-        try:
-            fallback_raw = await asyncio.wait_for(
-                asyncio.to_thread(
-                    _run_web_search,
-                    query,
-                    domain_filter,
-                    "quality fallback",
-                    "portfolio",
-                    route.value,
-                    "portfolio",
-                    purpose,
-                    fallback_cache_info,
-                    provider_override="sonar",
-                    fallback_from="serper",
-                ),
-                timeout=WEB_SEARCH_TIMEOUT_SEC,
-            )
-        except asyncio.TimeoutError:
-            fallback_raw = "Web search failed: timeout"
+        fallback_raw = await asyncio.to_thread(
+            _run_web_search,
+            query,
+            domain_filter,
+            "quality fallback",
+            "portfolio",
+            route.value,
+            "portfolio",
+            purpose,
+            fallback_cache_info,
+            provider_override="sonar",
+            fallback_from="serper",
+        )
         if fallback_cache_info.get("hit"):
             await _refund_cached_web_search_slot(web_search_state)
         if on_cooperate:
@@ -757,7 +745,14 @@ async def _prepare_shared_web_evidence(
         core_budget=core_budget,
         reserve_budget=reserve_budget,
     )
-    concurrency = max(1, int(os.getenv("WEB_SEARCH_PREFETCH_CONCURRENCY", "4")))
+    requested_concurrency = max(
+        1, int(os.getenv("WEB_SEARCH_PREFETCH_CONCURRENCY", "4"))
+    )
+    provider_concurrency = max(1, int(os.getenv("WEB_SEARCH_MAX_CONCURRENT", "1")))
+    # Never queue portfolio tasks behind the process-wide provider throttle.
+    # Provider HTTP timeouts/retries begin only after that throttle is acquired,
+    # so no cancelled to_thread call can continue as an abandoned paid request.
+    concurrency = min(requested_concurrency, provider_concurrency)
     semaphore = asyncio.Semaphore(concurrency)
 
     async def fetch(objective: Any) -> tuple[tuple[str, ...], dict[str, Any] | None]:

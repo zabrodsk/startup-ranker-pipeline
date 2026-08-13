@@ -377,6 +377,11 @@ class HybridSearchProvider(WebSearchProvider):
             "from",
             "into",
             "market",
+            "current",
+            "evidence",
+            "latest",
+            "overview",
+            "recent",
             "search",
             "site",
             "software",
@@ -389,12 +394,27 @@ class HybridSearchProvider(WebSearchProvider):
             "which",
             "with",
         }
-        query_terms = {
+        ordered_query_terms = [
             token
             for token in re.findall(r"[a-z0-9]+", query.lower())
-            if len(token) >= 3 and token not in stop_words and not token.isdigit()
-        }
-        return not query_terms or any(term in result_body for term in query_terms)
+            if (
+                (len(token) >= 3 or token in {"ai", "eu", "ml", "uk", "us"})
+                and token not in stop_words
+                and not token.isdigit()
+            )
+        ]
+        if not ordered_query_terms:
+            return True
+        result_terms = set(re.findall(r"[a-z0-9]+", result_body))
+        overlaps = {term for term in ordered_query_terms if term in result_terms}
+        # The first meaningful query term is normally the company, person, or
+        # industry anchor. Generic terms such as "funding" cannot substitute
+        # for it; multi-term queries also need one corroborating overlap.
+        required_overlap = min(2, len(set(ordered_query_terms)))
+        return (
+            ordered_query_terms[0] in result_terms
+            and len(overlaps) >= required_overlap
+        )
 
     def search(
         self,

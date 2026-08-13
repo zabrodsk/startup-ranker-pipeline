@@ -173,11 +173,11 @@ def test_hybrid_provider_falls_back_when_primary_results_are_unrelated(monkeypat
         def search(self, *_args, **_kwargs):
             attempts.append("serper")
             return (
-                "Search Results for: Apaleo funding\n\n"
-                "1. Banana cultivation — https://example.com/banana\n"
-                "   Banana soil harvest irrigation tropical fruit agriculture guide.\n\n"
-                "2. Mango recipes — https://example.com/mango\n"
-                "   Mango kitchen recipes fruit desserts cooking and nutrition guide."
+                "Search Results for: Apaleo funding investors\n\n"
+                "1. Acme funding — https://example.com/acme\n"
+                "   Acme announced funding from investors for international expansion.\n\n"
+                "2. Beta investors — https://example.com/beta\n"
+                "   Beta secured funding from investors to accelerate growth and hiring."
             )
 
     class _RelevantSonar:
@@ -196,7 +196,7 @@ def test_hybrid_provider_falls_back_when_primary_results_are_unrelated(monkeypat
     provider = providers.HybridSearchProvider(search_end_date="2026-08-07")
     provider._providers = [("serper", _UnrelatedSerper()), ("sonar", _RelevantSonar())]
 
-    result = provider.search("Apaleo funding")
+    result = provider.search("Apaleo funding investors")
 
     assert "Apaleo raised growth funding" in result
     assert provider.last_provider_name == "sonar"

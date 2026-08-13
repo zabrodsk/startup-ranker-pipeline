@@ -449,3 +449,44 @@ def test_shared_portfolio_checks_job_control_before_paid_prefetch(monkeypatch) -
         )
 
     assert attempts == []
+
+
+def test_shared_portfolio_concurrency_never_exceeds_provider_throttle(monkeypatch) -> None:
+    active = 0
+    peak = 0
+
+    async def fake_routed_search(**_kwargs):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return None
+
+    trees = {
+        "market": QuestionTree(
+            aspect="market",
+            root_node=QuestionNode(
+                question="How large is the hospitality software market?",
+                route="sector_market",
+                sub_nodes=[
+                    QuestionNode(question="Who are the competitors?", route="competitors"),
+                    QuestionNode(question="What drives demand?", route="customer_need"),
+                ],
+            ),
+        )
+    }
+    monkeypatch.setenv("WEB_SEARCH_PREFETCH_CONCURRENCY", "4")
+    monkeypatch.setenv("WEB_SEARCH_MAX_CONCURRENT", "1")
+    monkeypatch.setattr(ea, "_run_quality_routed_search", fake_routed_search)
+
+    async def run() -> None:
+        await ea._prepare_shared_web_evidence(
+            trees,
+            Company(name="Apaleo", domain="apaleo.com", industry="hospitality software"),
+            {"count": [0], "lock": asyncio.Lock(), "max": 12},
+        )
+
+    asyncio.run(run())
+
+    assert peak == 1
