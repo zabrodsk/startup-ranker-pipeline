@@ -457,8 +457,6 @@ def _run_web_search(
     if not configured_provider:
         return "No web search API key configured."
     provider_name = (provider_override or configured_provider).strip().lower()
-    if provider_name == "hybrid":
-        provider_name = "serper"
 
     try:
         from agent.web_search import get_provider, result_cache
@@ -473,13 +471,16 @@ def _run_web_search(
             search_date = datetime.now().strftime("%Y-%m-%d")
             provider = get_provider(search_end_date=search_date, provider_name=provider_name)
             result = provider.search(search_query, domain_filter=domain_filter)
+            metered_provider_name = getattr(provider, "last_provider_name", None) or provider_name
+        if cache_hit:
+            metered_provider_name = provider_name
         result_is_valid = bool(
             result and not str(result).lower().startswith("web search failed")
         )
         collector = get_current_collector()
         if (
             collector
-            and provider_name in {"sonar", "serper"}
+            and metered_provider_name in {"sonar", "serper"}
             and result_is_valid
             and not cache_hit
         ):
@@ -501,10 +502,13 @@ def _run_web_search(
                 metadata["query_purpose"] = query_purpose
             if fallback_from:
                 metadata["fallback_from"] = fallback_from
-            if provider_name == "sonar":
+            if metered_provider_name == "sonar":
                 collector.record_perplexity_search(metadata=metadata)
             else:
-                collector.record_web_search(provider=provider_name, metadata=metadata)
+                collector.record_web_search(
+                    provider=metered_provider_name,
+                    metadata=metadata,
+                )
         if not cache_hit and result_is_valid:
             result_cache.store(provider_name, search_query, domain_filter, result)
         return result
@@ -513,42 +517,9 @@ def _run_web_search(
 
 
 def _resolve_web_search_provider_name() -> str | None:
-    provider_name = os.getenv("WEB_SEARCH_PROVIDER", "sonar").strip().lower()
-    pplx_key = os.getenv("PPLX_API_KEY") or os.getenv("PERPLEXITY_API_KEY")
-    brave_key = os.getenv("BRAVE_SEARCH_API_KEY")
-    serper_key = os.getenv("SERPER_API_KEY")
+    from agent.web_search.providers import resolve_provider_name
 
-    if provider_name == "hybrid":
-        if serper_key:
-            return "hybrid" if pplx_key and pplx_key != "your_perplexity_api_key_here" else "serper"
-        if pplx_key and pplx_key != "your_perplexity_api_key_here":
-            return "sonar"
-        return "brave" if brave_key else None
-
-    if provider_name == "serper" and not serper_key:
-        if pplx_key and pplx_key != "your_perplexity_api_key_here":
-            return "sonar"
-        return "brave" if brave_key else None
-
-    if provider_name == "sonar" and (not pplx_key or pplx_key == "your_perplexity_api_key_here"):
-        if serper_key:
-            provider_name = "serper"
-        elif brave_key:
-            provider_name = "brave"
-        else:
-            return None
-
-    if provider_name == "brave" and not brave_key:
-        if pplx_key and pplx_key != "your_perplexity_api_key_here":
-            provider_name = "sonar"
-        elif serper_key:
-            provider_name = "serper"
-        else:
-            return None
-
-    if provider_name not in {"sonar", "serper", "brave"}:
-        return None
-    return provider_name
+    return resolve_provider_name()
 
 
 def _shared_web_evidence_enabled() -> bool:

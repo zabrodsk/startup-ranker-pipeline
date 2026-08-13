@@ -300,22 +300,28 @@ class HybridSearchProvider(WebSearchProvider):
 
     def __init__(self, search_end_date: str):
         """Build available providers without letting one broken setup disable others."""
-        candidates: list[WebSearchProvider] = []
+        candidates: list[tuple[str, WebSearchProvider]] = []
         initialization_failures: list[str] = []
         if os.getenv("SERPER_API_KEY"):
             try:
-                candidates.append(SerperSearchProvider(search_end_date=search_end_date))
+                candidates.append(
+                    ("serper", SerperSearchProvider(search_end_date=search_end_date))
+                )
             except Exception as exc:
                 initialization_failures.append(f"SerperSearchProvider: {exc}")
         pplx_key = os.getenv("PPLX_API_KEY") or os.getenv("PERPLEXITY_API_KEY")
         if pplx_key and pplx_key != "your_perplexity_api_key_here":
             try:
-                candidates.append(SonarSearchProvider(search_end_date=search_end_date))
+                candidates.append(
+                    ("sonar", SonarSearchProvider(search_end_date=search_end_date))
+                )
             except Exception as exc:
                 initialization_failures.append(f"SonarSearchProvider: {exc}")
         if os.getenv("BRAVE_SEARCH_API_KEY"):
             try:
-                candidates.append(BraveSearchProvider(search_end_date=search_end_date))
+                candidates.append(
+                    ("brave", BraveSearchProvider(search_end_date=search_end_date))
+                )
             except Exception as exc:
                 initialization_failures.append(f"BraveSearchProvider: {exc}")
         if not candidates:
@@ -326,6 +332,7 @@ class HybridSearchProvider(WebSearchProvider):
             )
         self._providers = candidates
         self._initialization_failures = initialization_failures
+        self.last_provider_name: str | None = None
 
     @staticmethod
     def _is_usable(result: str) -> bool:
@@ -340,9 +347,10 @@ class HybridSearchProvider(WebSearchProvider):
         """Return the first usable result, trying configured fallbacks in order."""
         last_result = ""
         failures = list(self._initialization_failures)
-        for provider in self._providers:
+        for provider_name, provider in self._providers:
             try:
                 last_result = provider.search(query, domain_filter=domain_filter)
+                self.last_provider_name = provider_name
                 if self._is_usable(last_result):
                     return last_result
             except Exception as exc:
@@ -354,9 +362,34 @@ class HybridSearchProvider(WebSearchProvider):
         )
 
 
+def resolve_provider_name(provider_name: str | None = None) -> str | None:
+    """Resolve configured search strategy against the API keys actually available."""
+    configured = (provider_name or os.getenv("WEB_SEARCH_PROVIDER", "sonar")).strip().lower()
+    pplx_key = os.getenv("PPLX_API_KEY") or os.getenv("PERPLEXITY_API_KEY")
+    has_pplx = bool(pplx_key and pplx_key != "your_perplexity_api_key_here")
+    has_serper = bool(os.getenv("SERPER_API_KEY"))
+    has_brave = bool(os.getenv("BRAVE_SEARCH_API_KEY"))
+
+    if configured == "hybrid":
+        if has_serper:
+            return "hybrid" if has_pplx else "serper"
+        if has_pplx:
+            return "sonar"
+        return "brave" if has_brave else None
+    if configured == "serper" and not has_serper:
+        return "sonar" if has_pplx else ("brave" if has_brave else None)
+    if configured == "sonar" and not has_pplx:
+        return "serper" if has_serper else ("brave" if has_brave else None)
+    if configured == "brave" and not has_brave:
+        return "sonar" if has_pplx else ("serper" if has_serper else None)
+    return configured if configured in {"sonar", "serper", "brave"} else None
+
+
 def get_provider(search_end_date: str, *, provider_name: str) -> WebSearchProvider:
     """Factory to instantiate the requested provider."""
-    provider = provider_name.lower()
+    provider = resolve_provider_name(provider_name)
+    if provider is None:
+        raise ValueError("No configured web search provider is available.")
     if provider == "sonar":
         return SonarSearchProvider(search_end_date=search_end_date)
     if provider == "serper":

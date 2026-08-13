@@ -673,7 +673,7 @@ def test_merge_run_cost_summaries_backfills_legacy_web_search_totals() -> None:
 
     assert merged["web_search"] == {
         "requests": 5,
-        "by_provider": {"sonar": 3, "serper": 2},
+        "by_provider": {"perplexity": 3, "serper": 2},
         "total_usd": 0.017,
     }
 

@@ -1531,7 +1531,7 @@ def _merge_run_cost_summaries(base: dict[str, Any] | None, delta: dict[str, Any]
                 "by_provider": {
                     provider: requests
                     for provider, requests in (
-                        ("sonar", perplexity_requests),
+                        ("perplexity", perplexity_requests),
                         ("serper", serper_requests),
                     )
                     if requests

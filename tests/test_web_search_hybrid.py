@@ -40,6 +40,8 @@ def test_run_web_search_uses_serper_for_hybrid_and_records_provider(monkeypatch)
     recorded: list[tuple[str, dict]] = []
 
     class _Provider:
+        last_provider_name = "serper"
+
         def search(self, query, domain_filter=None):  # noqa: ANN001
             return "Apaleo hotel software market evidence with relevant demand data."
 
@@ -66,7 +68,7 @@ def test_run_web_search_uses_serper_for_hybrid_and_records_provider(monkeypatch)
     )
 
     assert "Apaleo" in result
-    assert provider_names == ["serper"]
+    assert provider_names == ["hybrid"]
     assert recorded == [
         (
             "serper",
@@ -78,6 +80,42 @@ def test_run_web_search_uses_serper_for_hybrid_and_records_provider(monkeypatch)
             },
         )
     ]
+
+
+def test_run_web_search_uses_shared_hybrid_fallback_for_direct_callers(monkeypatch) -> None:
+    attempts: list[str] = []
+    recorded: list[str] = []
+
+    class _Provider:
+        last_provider_name = "sonar"
+
+        def search(self, *_args, **_kwargs):
+            attempts.extend(["serper", "sonar"])
+            return "Search Results for: q\n\n1. Perplexity fallback evidence"
+
+    class _Collector:
+        def record_perplexity_search(self, **_kwargs):
+            recorded.append("perplexity")
+
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "hybrid")
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    monkeypatch.setattr(
+        web_search_module,
+        "get_provider",
+        lambda *, provider_name, **_kwargs: (
+            attempts.append(f"factory:{provider_name}") or _Provider()
+        ),
+    )
+    monkeypatch.setattr(result_cache, "lookup", lambda *_args: None)
+    monkeypatch.setattr(result_cache, "store", lambda *_args: None)
+    monkeypatch.setattr(ea, "get_current_collector", lambda: _Collector())
+
+    result = ea._run_web_search("q")
+
+    assert "Perplexity fallback evidence" in result
+    assert attempts == ["factory:hybrid", "serper", "sonar"]
+    assert recorded == ["perplexity"]
 
 
 class _HybridAnswerLLM:

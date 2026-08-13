@@ -102,6 +102,28 @@ def test_provider_factory_supports_serper(monkeypatch) -> None:
     assert isinstance(provider, providers.SerperSearchProvider)
 
 
+def test_provider_factory_resolves_default_sonar_to_only_available_serper(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("SERPER_API_KEY", "test-key")
+    monkeypatch.delenv("PPLX_API_KEY", raising=False)
+    monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
+    monkeypatch.setattr(
+        providers.importlib,
+        "import_module",
+        lambda name: SimpleNamespace(post=lambda *_args, **_kwargs: None)
+        if name == "requests"
+        else None,
+    )
+
+    provider = providers.get_provider(
+        search_end_date="2026-08-07",
+        provider_name="sonar",
+    )
+
+    assert isinstance(provider, providers.SerperSearchProvider)
+
+
 def test_hybrid_provider_falls_back_when_serper_fails(monkeypatch) -> None:
     attempts: list[str] = []
 
