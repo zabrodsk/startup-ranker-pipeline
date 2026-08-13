@@ -3838,9 +3838,10 @@ function AdminPortal({ user, onSignOut }) {
               const costTotal = cs.total_usd;
               const llm = cs.llm_usd;
               const ppx = cs.perplexity_usd;
+              const serper = cs.serper_usd;
               const costTooltip = cs.status === "unavailable"
                 ? "No cost data recorded for this run"
-                : `LLM: ${fmtUsd(llm)}  ·  Perplexity: ${fmtUsd(ppx)}`;
+                : `LLM: ${fmtUsd(llm)}  ·  Serper: ${fmtUsd(serper)}  ·  Perplexity: ${fmtUsd(ppx)}`;
               const canViewLog = !!a.job_id_legacy;
               const startedBy = a.started_by || {};
               const startedLabel = startedBy.started_by_display_name
@@ -3926,6 +3927,7 @@ function AdminPortal({ user, onSignOut }) {
 
     const llmTokens = rc && rc.llm_tokens ? rc.llm_tokens : {};
     const ppx = rc && rc.perplexity_search ? rc.perplexity_search : {};
+    const serper = rc && rc.serper_search ? rc.serper_search : {};
 
     const allLines = s.progress_log || [];
     const displayLines = logFilterNoise
@@ -3979,10 +3981,10 @@ function AdminPortal({ user, onSignOut }) {
                   </span>
                 </div>
                 <div>
-                  <span style={{color:"var(--text-muted)",marginRight:6}}>Perplexity:</span>
-                  <span style={{fontFamily:"monospace"}}>{fmtUsd(rc.perplexity_usd)}</span>
+                  <span style={{color:"var(--text-muted)",marginRight:6}}>Web:</span>
+                  <span style={{fontFamily:"monospace"}}>{fmtUsd((rc.perplexity_usd || 0) + (rc.serper_usd || 0))}</span>
                   <span style={{color:"var(--text-muted)",marginLeft:4,fontSize:".72rem"}}>
-                    ({fmtInt(ppx.requests || 0)} searches)
+                    (Serper {fmtInt(serper.requests || 0)} · fallback {fmtInt(ppx.requests || 0)})
                   </span>
                 </div>
               </React.Fragment>

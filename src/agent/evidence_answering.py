@@ -440,6 +440,7 @@ def _run_web_search(
     cache_info: dict | None = None,
     provider_override: str | None = None,
     fallback_from: str | None = None,
+    provider_attempt_limit: int | None = None,
 ) -> str:
     """Run a web search using the configured provider.
 
@@ -470,17 +471,31 @@ def _run_web_search(
         else:
             search_date = datetime.now().strftime("%Y-%m-%d")
             provider = get_provider(search_end_date=search_date, provider_name=provider_name)
-            result = provider.search(search_query, domain_filter=domain_filter)
+            if provider_name == "hybrid" and provider_attempt_limit is not None:
+                result = provider.search(
+                    search_query,
+                    domain_filter=domain_filter,
+                    max_provider_attempts=provider_attempt_limit,
+                )
+            else:
+                result = provider.search(search_query, domain_filter=domain_filter)
             metered_provider_name = getattr(provider, "last_provider_name", None) or provider_name
+            metered_provider_names = list(
+                getattr(provider, "attempted_provider_names", None)
+                or [metered_provider_name]
+            )
+            if cache_info is not None and provider_name == "hybrid":
+                cache_info["attempted_providers"] = metered_provider_names
         if cache_hit:
             metered_provider_name = provider_name
+            metered_provider_names = []
         result_is_valid = bool(
             result and not str(result).lower().startswith("web search failed")
         )
         collector = get_current_collector()
         if (
             collector
-            and metered_provider_name in {"sonar", "serper"}
+            and metered_provider_names
             and result_is_valid
             and not cache_hit
         ):
@@ -502,13 +517,19 @@ def _run_web_search(
                 metadata["query_purpose"] = query_purpose
             if fallback_from:
                 metadata["fallback_from"] = fallback_from
-            if metered_provider_name == "sonar":
-                collector.record_perplexity_search(metadata=metadata)
-            else:
-                collector.record_web_search(
-                    provider=metered_provider_name,
-                    metadata=metadata,
-                )
+            for attempt_index, attempted_provider in enumerate(metered_provider_names):
+                attempt_metadata = dict(metadata)
+                if attempt_index:
+                    attempt_metadata.setdefault(
+                        "fallback_from", metered_provider_names[attempt_index - 1]
+                    )
+                if attempted_provider == "sonar":
+                    collector.record_perplexity_search(metadata=attempt_metadata)
+                elif attempted_provider == "serper":
+                    collector.record_web_search(
+                        provider=attempted_provider,
+                        metadata=attempt_metadata,
+                    )
         if not cache_hit and result_is_valid:
             result_cache.store(provider_name, search_query, domain_filter, result)
         return result
@@ -1314,7 +1335,18 @@ async def answer_question_from_evidence(
             web_search_query = _build_web_search_query(company, question)
             domain_filter = _web_search_domain_filter(company, question)
             cache_info: dict[str, Any] = {}
-            web_results = await asyncio.wait_for(
+            reserved_slots = 1 if web_search_state is not None else 0
+            provider_attempt_limit: int | None = None
+            if (
+                web_search_state is not None
+                and _resolve_web_search_provider_name() == "hybrid"
+            ):
+                async with web_search_state["lock"]:
+                    if web_search_state["count"][0] < web_search_state["max"]:
+                        web_search_state["count"][0] += 1
+                        reserved_slots += 1
+                provider_attempt_limit = reserved_slots
+            search_call = (
                 asyncio.to_thread(
                     _run_web_search,
                     web_search_query,
@@ -1322,15 +1354,36 @@ async def answer_question_from_evidence(
                     search_reason,
                     heavy_mode,
                     cache_info=cache_info,
-                ),
+                    provider_attempt_limit=provider_attempt_limit,
+                )
+                if provider_attempt_limit is not None
+                else asyncio.to_thread(
+                    _run_web_search,
+                    web_search_query,
+                    domain_filter,
+                    search_reason,
+                    heavy_mode,
+                    cache_info=cache_info,
+                )
+            )
+            web_results = await asyncio.wait_for(
+                search_call,
                 timeout=WEB_SEARCH_TIMEOUT_SEC,
             )
             # W13: a cache hit consumed no provider call — refund the cap slot
             # acquired above so cached answers don't shrink the budget.
             legacy_cache_hit = bool(cache_info.get("hit"))
-            if legacy_cache_hit and web_search_state is not None:
+            attempts_used = len(cache_info.get("attempted_providers") or [])
+            if not legacy_cache_hit and attempts_used == 0:
+                attempts_used = 1
+            refundable_slots = (
+                reserved_slots if legacy_cache_hit else max(0, reserved_slots - attempts_used)
+            )
+            if refundable_slots and web_search_state is not None:
                 async with web_search_state["lock"]:
-                    web_search_state["count"][0] -= 1
+                    web_search_state["count"][0] = max(
+                        0, web_search_state["count"][0] - refundable_slots
+                    )
             web_search_results = web_results[:WEB_RESULTS_TRUNCATE]
             if len(web_results) > WEB_RESULTS_TRUNCATE:
                 web_search_results += "\n...[truncated]"

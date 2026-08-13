@@ -5,6 +5,7 @@ import asyncio
 import agent.evidence_answering as ea
 import agent.web_search as web_search_module
 from agent.web_search import result_cache
+from agent.web_search.providers import HybridSearchProvider
 from agent.dataclasses.company import Company
 from agent.dataclasses.question_tree import QuestionNode, QuestionTree
 
@@ -88,12 +89,16 @@ def test_run_web_search_uses_shared_hybrid_fallback_for_direct_callers(monkeypat
 
     class _Provider:
         last_provider_name = "sonar"
+        attempted_provider_names = ["serper", "sonar"]
 
         def search(self, *_args, **_kwargs):
             attempts.extend(["serper", "sonar"])
             return "Search Results for: q\n\n1. Perplexity fallback evidence"
 
     class _Collector:
+        def record_web_search(self, *, provider, **_kwargs):  # noqa: ANN001
+            recorded.append(provider)
+
         def record_perplexity_search(self, **_kwargs):
             recorded.append("perplexity")
 
@@ -115,7 +120,61 @@ def test_run_web_search_uses_shared_hybrid_fallback_for_direct_callers(monkeypat
 
     assert "Perplexity fallback evidence" in result
     assert attempts == ["factory:hybrid", "serper", "sonar"]
-    assert recorded == ["perplexity"]
+    assert recorded == ["serper", "perplexity"]
+
+
+def test_hybrid_falls_back_when_primary_has_only_one_thin_result(monkeypatch) -> None:
+    attempts: list[str] = []
+
+    class _ThinPrimary:
+        def search(self, *_args, **_kwargs):
+            attempts.append("serper")
+            return "Search Results for: q\n\n1. Unrelated — https://example.com\n   Thin."
+
+    class _UsefulFallback:
+        def search(self, *_args, **_kwargs):
+            attempts.append("sonar")
+            return (
+                "Search Results for: q\n\n"
+                "1. Relevant market evidence — https://example.com/one\n"
+                "   Detailed market demand, adoption, customer, and growth evidence.\n\n"
+                "2. Independent benchmark — https://example.com/two\n"
+                "   Additional industry sizing, competition, and customer evidence."
+            )
+
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    provider = HybridSearchProvider("2026-08-13")
+    provider._providers = [("serper", _ThinPrimary()), ("sonar", _UsefulFallback())]
+
+    result = provider.search("q")
+
+    assert attempts == ["serper", "sonar"]
+    assert provider.attempted_provider_names == ["serper", "sonar"]
+    assert provider.last_provider_name == "sonar"
+    assert "Independent benchmark" in result
+
+
+def test_hybrid_respects_provider_attempt_limit(monkeypatch) -> None:
+    attempts: list[str] = []
+
+    class _Provider:
+        def __init__(self, name: str):
+            self.name = name
+
+        def search(self, *_args, **_kwargs):
+            attempts.append(self.name)
+            return "Search Results for: q\n\nNo search results returned."
+
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    provider = HybridSearchProvider("2026-08-13")
+    provider._providers = [("serper", _Provider("serper")), ("sonar", _Provider("sonar"))]
+
+    provider.search("q", max_provider_attempts=1)
+
+    assert attempts == ["serper"]
+    assert provider.attempted_provider_names == ["serper"]
 
 
 class _HybridAnswerLLM:

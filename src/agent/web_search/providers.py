@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import re
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from typing import List, Optional
@@ -333,21 +334,42 @@ class HybridSearchProvider(WebSearchProvider):
         self._providers = candidates
         self._initialization_failures = initialization_failures
         self.last_provider_name: str | None = None
+        self.attempted_provider_names: list[str] = []
 
     @staticmethod
     def _is_usable(result: str) -> bool:
-        normalized = (result or "").strip().lower()
-        return bool(
-            normalized
-            and "no search results returned" not in normalized
-            and not normalized.startswith(("web search failed", "search failed"))
+        """Require enough evidence to avoid accepting a thin primary response."""
+        text = (result or "").strip()
+        normalized = text.lower()
+        if (
+            not normalized
+            or "no search results returned" in normalized
+            or normalized.startswith(("web search failed", "search failed"))
+        ):
+            return False
+        result_count = len(re.findall(r"(?m)^\d+\.\s+", text))
+        substantive_chars = len(re.sub(r"\s+", " ", text))
+        return (result_count >= 2 and substantive_chars >= 160) or (
+            "answer box:" in normalized and substantive_chars >= 120
         )
 
-    def search(self, query: str, *, domain_filter: Optional[List[str]] = None) -> str:
+    def search(
+        self,
+        query: str,
+        *,
+        domain_filter: Optional[List[str]] = None,
+        max_provider_attempts: int | None = None,
+    ) -> str:
         """Return the first usable result, trying configured fallbacks in order."""
         last_result = ""
         failures = list(self._initialization_failures)
-        for provider_name, provider in self._providers:
+        self.last_provider_name = None
+        self.attempted_provider_names = []
+        providers = self._providers
+        if max_provider_attempts is not None:
+            providers = providers[: max(1, max_provider_attempts)]
+        for provider_name, provider in providers:
+            self.attempted_provider_names.append(provider_name)
             try:
                 last_result = provider.search(query, domain_filter=domain_filter)
                 self.last_provider_name = provider_name
