@@ -439,6 +439,7 @@ _SEARCH_BAD_RESULT_PATTERNS = [
     r"timeout",
     r"no relevant (web )?results",
     r"no search results found",
+    r"no search results returned",
 ]
 _SEARCH_BAD_RESULT_RE = re.compile(
     "|".join(f"({p})" for p in _SEARCH_BAD_RESULT_PATTERNS),

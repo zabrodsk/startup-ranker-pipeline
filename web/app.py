@@ -5511,16 +5511,15 @@ async def _decompose_questions_safe(state: Any) -> dict[str, Any] | None:
 async def web_search_available(session_id: str | None = Cookie(default=None)):
     if not _check_session(session_id):
         raise HTTPException(status_code=401, detail="Not authenticated")
-    pplx = os.getenv("PPLX_API_KEY") or os.getenv("PERPLEXITY_API_KEY")
-    brave = os.getenv("BRAVE_SEARCH_API_KEY")
-    serper = os.getenv("SERPER_API_KEY")
-    has_key = bool(
-        (pplx and pplx != "your_perplexity_api_key_here")
-        or brave
-        or serper
-    )
-    provider = os.getenv("WEB_SEARCH_PROVIDER", "sonar")
-    return {"available": has_key, "provider": provider}
+    from agent.evidence_answering import _resolve_web_search_provider_name  # noqa: PLC0415
+
+    provider = os.getenv("WEB_SEARCH_PROVIDER", "sonar").strip().lower()
+    effective_provider = _resolve_web_search_provider_name()
+    return {
+        "available": effective_provider is not None,
+        "provider": provider,
+        "effective_provider": effective_provider,
+    }
 
 
 def _detect_specter_csvs(upload_dir: Path, filenames: list[str]) -> dict | None:

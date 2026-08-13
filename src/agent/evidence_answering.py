@@ -118,6 +118,7 @@ _SEARCH_BAD_RESULT_PATTERNS = [
     r"timeout",
     r"no relevant (web )?results",
     r"no search results found",
+    r"no search results returned",
 ]
 _SEARCH_BAD_RESULT_RE = re.compile(
     "|".join(f"({p})" for p in _SEARCH_BAD_RESULT_PATTERNS),
@@ -529,7 +530,9 @@ def _resolve_web_search_provider_name() -> str | None:
         return "brave" if brave_key else None
 
     if provider_name == "sonar" and (not pplx_key or pplx_key == "your_perplexity_api_key_here"):
-        if brave_key:
+        if serper_key:
+            provider_name = "serper"
+        elif brave_key:
             provider_name = "brave"
         else:
             return None
@@ -537,6 +540,8 @@ def _resolve_web_search_provider_name() -> str | None:
     if provider_name == "brave" and not brave_key:
         if pplx_key and pplx_key != "your_perplexity_api_key_here":
             provider_name = "sonar"
+        elif serper_key:
+            provider_name = "serper"
         else:
             return None
 
@@ -549,6 +554,25 @@ def _shared_web_evidence_enabled() -> bool:
     return os.getenv("RDI_SHARED_WEB_EVIDENCE", "off").strip().lower() == "on"
 
 
+async def _acquire_web_search_slot(web_search_state: dict[str, Any] | None) -> bool:
+    """Reserve one real provider call under the company-wide cap."""
+    if web_search_state is None:
+        return True
+    async with web_search_state["lock"]:
+        if web_search_state["count"][0] >= web_search_state["max"]:
+            return False
+        web_search_state["count"][0] += 1
+        return True
+
+
+async def _refund_cached_web_search_slot(web_search_state: dict[str, Any] | None) -> None:
+    """Cached evidence does not consume a provider-call slot."""
+    if web_search_state is None:
+        return
+    async with web_search_state["lock"]:
+        web_search_state["count"][0] = max(0, web_search_state["count"][0] - 1)
+
+
 async def _run_quality_routed_search(
     *,
     query: str,
@@ -559,10 +583,13 @@ async def _run_quality_routed_search(
     representative_question: str,
     company: Company,
     trigger_reason: str,
+    web_search_state: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Run Serper first and use Perplexity only after a failed quality gate."""
     strategy = _resolve_web_search_provider_name()
     if not strategy:
+        return None
+    if not await _acquire_web_search_slot(web_search_state):
         return None
     primary_provider = "serper" if strategy == "hybrid" else None
     cache_info: dict[str, Any] = {}
@@ -584,6 +611,8 @@ async def _run_quality_routed_search(
         )
     except asyncio.TimeoutError:
         raw = "Web search failed: timeout"
+    if cache_info.get("hit"):
+        await _refund_cached_web_search_slot(web_search_state)
     useful, reason = evaluate_web_result_relevance(
         policy=relevance_policy,
         route=route,
@@ -594,7 +623,11 @@ async def _run_quality_routed_search(
     )
     accepted_provider = primary_provider or strategy
 
-    if not useful and strategy == "hybrid":
+    if (
+        not useful
+        and strategy == "hybrid"
+        and await _acquire_web_search_slot(web_search_state)
+    ):
         fallback_cache_info: dict[str, Any] = {}
         try:
             fallback_raw = await asyncio.wait_for(
@@ -615,6 +648,8 @@ async def _run_quality_routed_search(
             )
         except asyncio.TimeoutError:
             fallback_raw = "Web search failed: timeout"
+        if fallback_cache_info.get("hit"):
+            await _refund_cached_web_search_slot(web_search_state)
         fallback_useful, fallback_reason = evaluate_web_result_relevance(
             policy=relevance_policy,
             route=route,
@@ -666,14 +701,34 @@ def _portfolio_questions(question_trees: Dict[str, QuestionTree]) -> list[Portfo
 async def _prepare_shared_web_evidence(
     question_trees: Dict[str, QuestionTree],
     company: Company,
+    web_search_state: dict[str, Any],
+    web_search_mode: str | None = None,
 ) -> dict[str, Any]:
     """Plan and fetch the bounded company-level evidence portfolio."""
     from datetime import datetime
 
     core_budget = max(0, int(os.getenv("WEB_SEARCH_CORE_BUDGET", "10")))
     reserve_budget = max(0, int(os.getenv("WEB_SEARCH_RESERVE_BUDGET", "2")))
+    questions = _portfolio_questions(question_trees)
+    effective_mode = resolve_web_search_mode(
+        web_search_mode if web_search_mode is not None else get_current_web_search_mode()
+    )
+    if effective_mode == "targeted":
+        questions = [
+            item
+            for item in questions
+            if not predict_targeted_skip(
+                question=item.question,
+                route_tag=item.route_tag,
+                aspect=item.aspect,
+                company_name=company.name,
+                company_domain=company.domain,
+                industry=company.industry,
+                is_root=item.is_root,
+            )[0]
+        ]
     plan = build_company_web_evidence_plan(
-        questions=_portfolio_questions(question_trees),
+        questions=questions,
         company_name=company.name,
         company_domain=company.domain,
         industry_hint=company.industry,
@@ -698,6 +753,7 @@ async def _prepare_shared_web_evidence(
                 representative_question=objective.representative_question,
                 company=company,
                 trigger_reason="portfolio core",
+                web_search_state=web_search_state,
             )
             return objective.bucket_key, evidence
 
@@ -1084,6 +1140,7 @@ async def answer_question_from_evidence(
                         representative_question=question,
                         company=company,
                         trigger_reason="portfolio reserve",
+                        web_search_state=web_search_state,
                     )
                     if reserve_evidence is not None:
                         reserve_used = True
@@ -1468,7 +1525,12 @@ async def answer_all_trees_from_evidence(
         }
         if _shared_web_evidence_enabled() and _web_evidence_planner_mode() == "on":
             web_search_state.update(
-                await _prepare_shared_web_evidence(question_trees, company)
+                await _prepare_shared_web_evidence(
+                    question_trees,
+                    company,
+                    web_search_state,
+                    web_search_mode,
+                )
             )
 
     tasks = [
