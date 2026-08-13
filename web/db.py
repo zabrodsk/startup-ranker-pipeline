@@ -1103,6 +1103,23 @@ def _worker_state_terminal_timestamp(worker_state: dict[str, Any]) -> datetime |
     )
 
 
+def _terminal_history_overrides_active_worker(
+    latest_status: dict[str, Any],
+    worker_state: dict[str, Any],
+) -> bool:
+    worker_status = str(worker_state.get("status") or "").strip().lower()
+    if worker_status not in WORKER_ACTIVE_STATUSES:
+        return False
+    status = str(latest_status.get("status") or "").strip().lower()
+    if status not in WORKER_TERMINAL_STATUSES:
+        return False
+    status_at = _parse_timestamp(latest_status.get("created_at"))
+    if status_at is None:
+        return False
+    heartbeat_at = _parse_timestamp(worker_state.get("last_heartbeat_at"))
+    return heartbeat_at is None or status_at >= heartbeat_at
+
+
 def _merge_worker_state(
     run_config: dict[str, Any] | None,
     updates: dict[str, Any] | None,
@@ -3058,7 +3075,11 @@ def load_job_status(job_id_legacy: str) -> dict[str, Any] | None:
     if isinstance(snapshot_payload, dict) and not progress:
         progress = snapshot_payload.get("job_message")
 
-    if worker_active and analysis_status not in {"done", "error", "stopped"}:
+    if _terminal_history_overrides_active_worker(latest_status, worker_state):
+        status = str(latest_status.get("status") or status).strip().lower()
+        progress = latest_status.get("progress") or progress
+        worker_active = False
+    elif worker_active and analysis_status not in {"done", "error", "stopped"}:
         status = worker_status if worker_status != "claimed" else "running"
         progress = worker_progress or progress
     elif analysis_status in {"done", "error", "stopped"} and (
@@ -3262,7 +3283,11 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
             status = latest_status.get("status") or analysis_status or worker_status or "pending"
             progress = latest_status.get("progress") or worker_progress
             snapshot_payload = latest_analysis.get("results_payload")
-            if worker_active and analysis_status not in {"done", "error", "stopped"}:
+            if _terminal_history_overrides_active_worker(latest_status, worker_state):
+                status = str(latest_status.get("status") or status).strip().lower()
+                progress = latest_status.get("progress") or progress
+                worker_active = False
+            elif worker_active and analysis_status not in {"done", "error", "stopped"}:
                 status = worker_status if worker_status != "claimed" else "running"
                 progress = worker_progress or progress
             elif analysis_status in {"done", "error", "stopped"} and (

@@ -114,9 +114,10 @@ def _build_bounded_question_tree(
     root_key = _normalized_question_key(root_text)
     root_route = next(
         (
-            _normalized_route_value(node.route)
+            normalized_route
             for node in decomposition_tree.nodes
             if _normalized_question_key(node.question) == root_key
+            if (normalized_route := _normalized_route_value(node.route)) is not None
         ),
         None,
     )
@@ -127,7 +128,6 @@ def _build_bounded_question_tree(
         aspect=aspect,
         route=root_route,
     )
-    seen = {root_key}
     candidates = [(node.question, node.route) for node in decomposition_tree.nodes] + [
         (child_question, None)
         for node in decomposition_tree.nodes
@@ -135,20 +135,26 @@ def _build_bounded_question_tree(
     ]
     child_limit = max(max_nodes - 1, 0)
 
+    deduped_candidates: dict[str, tuple[str, str | None]] = {}
     for question, route in candidates:
-        if len(root_node.sub_nodes) >= child_limit:
-            break
         question_text = (question or "").strip()
         question_key = _normalized_question_key(question_text)
-        if not question_key or question_key in seen:
+        if not question_key or question_key == root_key:
             continue
-        seen.add(question_key)
+        normalized_route = _normalized_route_value(route)
+        existing = deduped_candidates.get(question_key)
+        if existing is None:
+            deduped_candidates[question_key] = (question_text, normalized_route)
+        elif existing[1] is None and normalized_route is not None:
+            deduped_candidates[question_key] = (existing[0], normalized_route)
+
+    for question_text, route in list(deduped_candidates.values())[:child_limit]:
         root_node.sub_nodes.append(
             QuestionNode(
                 question=question_text,
                 sub_nodes=[],
                 aspect=aspect,
-                route=_normalized_route_value(route),
+                route=route,
             )
         )
 

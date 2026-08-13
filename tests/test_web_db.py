@@ -1092,6 +1092,60 @@ def test_load_job_status_keeps_old_unclaimed_job_queued(monkeypatch) -> None:
     )
 
 
+def test_newer_explicit_stop_overrides_unclaimed_queued_worker_state(monkeypatch) -> None:
+    import web.db as web_db
+
+    class FakeResponse:
+        def __init__(self, data):
+            self.data = data
+
+    class FakeQuery:
+        def __init__(self, table_name: str):
+            self.table_name = table_name
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, *_args, **_kwargs):
+            return self
+
+        def order(self, *_args, **_kwargs):
+            return self
+
+        def limit(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            if self.table_name == "jobs":
+                return FakeResponse([{
+                    "run_config": {"worker_state": {
+                        "status": "queued",
+                        "progress": "Queued for worker...",
+                        "last_heartbeat_at": "2026-03-14T18:00:00+00:00",
+                    }}
+                }])
+            if self.table_name == "job_status_history":
+                return FakeResponse([{
+                    "status": "stopped",
+                    "progress": "Stopped by user.",
+                    "created_at": "2026-03-14T18:05:00+00:00",
+                }])
+            raise AssertionError(f"Unexpected table lookup: {self.table_name}")
+
+    class FakeClient:
+        def table(self, table_name: str):
+            return FakeQuery(table_name)
+
+    monkeypatch.setattr(web_db, "_get_client", lambda: FakeClient())
+    monkeypatch.setattr(web_db, "_load_latest_analysis_snapshot", lambda client, job_id_legacy: {})
+
+    assert web_db.load_job_status("job-queued-stop") == {
+        "status": "stopped",
+        "progress": "Stopped by user.",
+        "worker_active": False,
+    }
+
+
 def test_load_job_status_promotes_terminal_worker_state_over_stale_running_status(monkeypatch) -> None:
     import web.db as web_db
 
