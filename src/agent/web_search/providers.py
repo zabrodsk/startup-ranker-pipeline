@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib
 import os
 import re
+import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from typing import List, Optional
@@ -37,7 +38,13 @@ class WebSearchProvider(ABC):
     """Minimal interface for search providers."""
 
     @abstractmethod
-    def search(self, query: str, *, domain_filter: Optional[List[str]] = None) -> str:
+    def search(
+        self,
+        query: str,
+        *,
+        domain_filter: Optional[List[str]] = None,
+        deadline_seconds: float | None = None,
+    ) -> str:
         """Execute a query and return a formatted string.
 
         domain_filter: Optional list of domains to limit results (Perplexity only).
@@ -74,7 +81,13 @@ class BraveSearchProvider(WebSearchProvider):
             },
         )
 
-    def search(self, query: str, *, domain_filter: Optional[List[str]] = None) -> str:
+    def search(
+        self,
+        query: str,
+        *,
+        domain_filter: Optional[List[str]] = None,
+        deadline_seconds: float | None = None,
+    ) -> str:
         return self._brave_search.run(query)
 
     @staticmethod
@@ -114,7 +127,13 @@ class SerperSearchProvider(WebSearchProvider):
                 "The 'requests' package is required for SerperSearchProvider."
             ) from exc
 
-    def search(self, query: str, *, domain_filter: Optional[List[str]] = None) -> str:
+    def search(
+        self,
+        query: str,
+        *,
+        domain_filter: Optional[List[str]] = None,
+        deadline_seconds: float | None = None,
+    ) -> str:
         search_query = self._apply_domain_filter(query, domain_filter)
         search_query = self._apply_date_filter(search_query, self._search_end_date)
         payload = {
@@ -132,6 +151,7 @@ class SerperSearchProvider(WebSearchProvider):
             },
             json=payload,
             timeout=30,
+            max_elapsed_seconds=deadline_seconds,
         )
         response.raise_for_status()
         data = response.json()
@@ -236,7 +256,13 @@ class SonarSearchProvider(WebSearchProvider):
                 "The 'requests' package is required for SonarSearchProvider."
             ) from exc
 
-    def search(self, query: str, *, domain_filter: Optional[List[str]] = None) -> str:
+    def search(
+        self,
+        query: str,
+        *,
+        domain_filter: Optional[List[str]] = None,
+        deadline_seconds: float | None = None,
+    ) -> str:
         payload = {
             "query": query,
             "max_results": self._max_results,
@@ -260,6 +286,7 @@ class SonarSearchProvider(WebSearchProvider):
             },
             json=payload,
             timeout=30,
+            max_elapsed_seconds=deadline_seconds,
         )
         response.raise_for_status()
         data = response.json()
@@ -422,6 +449,7 @@ class HybridSearchProvider(WebSearchProvider):
         *,
         domain_filter: Optional[List[str]] = None,
         max_provider_attempts: int | None = None,
+        deadline_seconds: float | None = None,
     ) -> str:
         """Return the first usable result, trying configured fallbacks in order."""
         last_result = ""
@@ -431,10 +459,22 @@ class HybridSearchProvider(WebSearchProvider):
         providers = self._providers
         if max_provider_attempts is not None:
             providers = providers[: max(1, max_provider_attempts)]
+        deadline = (
+            time.monotonic() + max(0.001, deadline_seconds)
+            if deadline_seconds is not None
+            else None
+        )
         for provider_name, provider in providers:
             self.attempted_provider_names.append(provider_name)
             try:
-                last_result = provider.search(query, domain_filter=domain_filter)
+                remaining = deadline - time.monotonic() if deadline is not None else None
+                if remaining is not None and remaining <= 0:
+                    break
+                last_result = provider.search(
+                    query,
+                    domain_filter=domain_filter,
+                    deadline_seconds=remaining,
+                )
                 self.last_provider_name = provider_name
                 if self._is_usable(query, last_result):
                     return last_result

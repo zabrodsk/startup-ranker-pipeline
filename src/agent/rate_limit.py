@@ -385,19 +385,46 @@ async def gather_with_concurrency(
     return await asyncio.gather(*(_run(item) for item in items))
 
 
-def run_with_sync_retries(callable_: Any, *args: Any, **kwargs: Any) -> Any:
+def run_with_sync_retries(
+    callable_: Any,
+    *args: Any,
+    max_elapsed_seconds: float | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Run a throttled sync call with retries inside an enforceable deadline.
+
+    The deadline starts after the first throttle acquisition. Per-attempt HTTP
+    timeouts are capped to the remaining budget, so callers never need to
+    abandon an uncancellable ``asyncio.to_thread`` operation.
+    """
     throttle = web_search_throttle()
     retry_policy = web_search_retry_policy()
     attempt = 0
+    deadline: float | None = None
 
     while True:
         throttle.acquire_sync()
         try:
-            return callable_(*args, **kwargs)
+            if deadline is None and max_elapsed_seconds is not None:
+                deadline = time.monotonic() + max(0.001, max_elapsed_seconds)
+            call_kwargs = kwargs
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Web search deadline exceeded before retry.")
+                configured_timeout = kwargs.get("timeout")
+                if isinstance(configured_timeout, (int, float)):
+                    call_kwargs = dict(kwargs)
+                    call_kwargs["timeout"] = max(0.001, min(float(configured_timeout), remaining))
+            return callable_(*args, **call_kwargs)
         except Exception as exc:
             if attempt >= retry_policy.max_retries or not is_retryable_api_error(exc):
                 raise
             delay = compute_retry_delay(exc, attempt, retry_policy)
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= delay:
+                    raise TimeoutError("Web search deadline exceeded during retries.") from exc
             if is_rate_limit_error(exc):
                 throttle.impose_sync_cooldown(delay)
         finally:

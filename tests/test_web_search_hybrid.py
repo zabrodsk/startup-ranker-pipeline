@@ -124,6 +124,43 @@ def test_run_web_search_uses_shared_hybrid_fallback_for_direct_callers(monkeypat
     assert recorded == ["serper", "perplexity"]
 
 
+def test_failed_hybrid_attempts_remain_in_cap_metadata_and_telemetry(monkeypatch) -> None:
+    recorded: list[str] = []
+
+    class _FailingProvider:
+        attempted_provider_names = ["serper", "sonar"]
+        last_provider_name = "sonar"
+
+        def search(self, *_args, **_kwargs):
+            raise RuntimeError("all providers failed")
+
+    class _Collector:
+        def record_web_search(self, *, provider, **_kwargs):  # noqa: ANN001
+            recorded.append(provider)
+
+        def record_perplexity_search(self, **_kwargs):
+            recorded.append("perplexity")
+
+    monkeypatch.setenv("WEB_SEARCH_PROVIDER", "hybrid")
+    monkeypatch.setenv("SERPER_API_KEY", "serper-key")
+    monkeypatch.setenv("PPLX_API_KEY", "pplx-key")
+    monkeypatch.setattr(
+        web_search_module,
+        "get_provider",
+        lambda **_kwargs: _FailingProvider(),
+    )
+    monkeypatch.setattr(result_cache, "lookup", lambda *_args: None)
+    monkeypatch.setattr(ea, "get_current_collector", lambda: _Collector())
+    cache_info: dict = {}
+
+    result = ea._run_web_search("Apaleo funding", cache_info=cache_info)
+
+    assert result.startswith("Web search failed:")
+    assert cache_info["attempted_providers"] == ["serper", "sonar"]
+    assert cache_info["provider"] == "sonar"
+    assert recorded == ["serper", "perplexity"]
+
+
 def test_hybrid_falls_back_when_primary_has_only_one_thin_result(monkeypatch) -> None:
     attempts: list[str] = []
 

@@ -441,6 +441,7 @@ def _run_web_search(
     provider_override: str | None = None,
     fallback_from: str | None = None,
     provider_attempt_limit: int | None = None,
+    provider_deadline_seconds: float | None = None,
 ) -> str:
     """Run a web search using the configured provider.
 
@@ -459,6 +460,7 @@ def _run_web_search(
         return "No web search API key configured."
     provider_name = (provider_override or configured_provider).strip().lower()
 
+    provider: Any | None = None
     try:
         from agent.web_search import get_provider, result_cache
 
@@ -476,6 +478,17 @@ def _run_web_search(
                     search_query,
                     domain_filter=domain_filter,
                     max_provider_attempts=provider_attempt_limit,
+                    deadline_seconds=provider_deadline_seconds,
+                )
+            elif provider_deadline_seconds is not None and provider_name in {
+                "hybrid",
+                "serper",
+                "sonar",
+            }:
+                result = provider.search(
+                    search_query,
+                    domain_filter=domain_filter,
+                    deadline_seconds=provider_deadline_seconds,
                 )
             else:
                 result = provider.search(search_query, domain_filter=domain_filter)
@@ -551,6 +564,32 @@ def _run_web_search(
                 result_cache.store(provider_name, search_query, domain_filter, result)
         return result
     except Exception as exc:
+        attempted_provider_names = list(
+            getattr(provider, "attempted_provider_names", None) or []
+        )
+        if cache_info is not None and attempted_provider_names:
+            cache_info["attempted_providers"] = attempted_provider_names
+            cache_info["provider"] = (
+                getattr(provider, "last_provider_name", None)
+                or attempted_provider_names[-1]
+            )
+        collector = get_current_collector()
+        if collector and attempted_provider_names:
+            failure_metadata: dict[str, Any] = {
+                "query": search_query,
+                "domain_filter": domain_filter or [],
+                "failed": True,
+                "error_type": type(exc).__name__,
+            }
+            if trigger_reason:
+                failure_metadata["trigger_reason"] = trigger_reason
+            for attempted_provider in attempted_provider_names:
+                if attempted_provider == "sonar":
+                    collector.record_perplexity_search(metadata=failure_metadata)
+                elif attempted_provider == "serper":
+                    collector.record_web_search(
+                        provider="serper", metadata=failure_metadata
+                    )
         return f"Web search failed: {exc}"
 
 
@@ -617,6 +656,7 @@ async def _run_quality_routed_search(
         purpose,
         cache_info,
         provider_override=primary_provider,
+        provider_deadline_seconds=WEB_SEARCH_TIMEOUT_SEC,
     )
     if cache_info.get("hit"):
         await _refund_cached_web_search_slot(web_search_state)
@@ -652,6 +692,7 @@ async def _run_quality_routed_search(
             fallback_cache_info,
             provider_override="sonar",
             fallback_from="serper",
+            provider_deadline_seconds=WEB_SEARCH_TIMEOUT_SEC,
         )
         if fallback_cache_info.get("hit"):
             await _refund_cached_web_search_slot(web_search_state)

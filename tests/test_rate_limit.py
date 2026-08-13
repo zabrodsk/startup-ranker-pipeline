@@ -6,7 +6,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from agent.rate_limit import InvocationThrottle
+import pytest
+
+import agent.rate_limit as rate_limit
+from agent.rate_limit import InvocationThrottle, RetryPolicy
 
 
 async def _acquire_and_release(throttle: InvocationThrottle) -> None:
@@ -23,3 +26,31 @@ def test_invocation_throttle_async_acquire_works_across_event_loops():
 
     asyncio.run(_acquire_and_release(throttle))
     asyncio.run(_acquire_and_release(throttle))
+
+
+def test_sync_retry_deadline_stops_before_an_unbounded_retry(monkeypatch) -> None:
+    calls: list[float] = []
+    monkeypatch.setattr(
+        rate_limit,
+        "web_search_retry_policy",
+        lambda: RetryPolicy(
+            max_retries=5,
+            base_delay_sec=10.0,
+            max_delay_sec=10.0,
+            jitter_sec=0.0,
+        ),
+    )
+
+    def timeout_call(*_args, timeout: float, **_kwargs):
+        calls.append(timeout)
+        raise TimeoutError("provider timed out")
+
+    with pytest.raises(TimeoutError, match="deadline exceeded"):
+        rate_limit.run_with_sync_retries(
+            timeout_call,
+            timeout=30,
+            max_elapsed_seconds=0.1,
+        )
+
+    assert len(calls) == 1
+    assert 0 < calls[0] <= 0.1
