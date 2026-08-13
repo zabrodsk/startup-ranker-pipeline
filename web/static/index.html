@@ -11733,6 +11733,7 @@ function parseAuditDimensions(value) {
 }
 
 function formatAuditNumber(value, digits = 1) {
+  if (value == null || String(value).trim() === '') return '—';
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric.toFixed(digits) : '—';
 }

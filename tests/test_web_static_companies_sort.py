@@ -57,6 +57,12 @@ def test_score_and_bucket_are_authoritative_and_binary_decision_is_advisory() ->
     assert "<strong>Decision:</strong>" not in portal_html
 
 
+def test_authoritative_audit_score_does_not_coerce_missing_values_to_zero() -> None:
+    html = (Path(__file__).resolve().parents[1] / "web" / "static" / "index.html").read_text()
+
+    assert "if (value == null || String(value).trim() === '') return '—';" in html
+
+
 def test_company_rank_cards_render_website_and_specter_links() -> None:
     html = (Path(__file__).resolve().parents[1] / "web" / "static" / "index.html").read_text()
 
