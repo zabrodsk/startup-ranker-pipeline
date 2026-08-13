@@ -60,12 +60,7 @@ def test_tree_builder_propagates_normalized_routes():
             DecompositionNode(question="B?", sub_questions=[], route="not_a_route"),
         ]
     )
-    qt = _build_bounded_question_tree(
-        tree,
-        root_question="Root?",
-        aspect="market",
-        max_nodes=10,
-    )
+    qt = _build_question_tree_from_decomposition_tree(tree, "market")
     assert qt.root_node.route == "sector_market"  # normalized from "Sector-Market"
     by_q = {n.question: n for n in qt.root_node.sub_nodes}
     assert by_q["A?"].route == "competitors"
@@ -78,12 +73,7 @@ def test_tree_builder_orphan_children_get_no_route():
             DecompositionNode(question="Root?", sub_questions=["Orphan?"], route="regulation"),
         ]
     )
-    qt = _build_bounded_question_tree(
-        tree,
-        root_question="Root?",
-        aspect="market",
-        max_nodes=10,
-    )
+    qt = _build_question_tree_from_decomposition_tree(tree, "market")
     assert qt.root_node.sub_nodes[0].route is None
 
 
