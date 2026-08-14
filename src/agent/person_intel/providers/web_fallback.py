@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
+import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -14,6 +16,13 @@ from agent.web_search import get_provider
 
 def _today() -> str:
     return datetime.now().strftime("%Y-%m-%d")
+
+
+def _positive_float_env(name: str, default: float) -> float:
+    try:
+        return max(0.001, float(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
 
 
 def _extract_url(line: str) -> str | None:
@@ -57,6 +66,10 @@ class WebFallbackProvider(PersonSourceProvider):
         self.enabled = os.getenv("PERSON_INTEL_WEB_ENRICHMENT", "true").lower() != "false"
         self.max_records = int(os.getenv("PERSON_INTEL_WEB_MAX_RECORDS", "36"))
         self.max_per_query = int(os.getenv("PERSON_INTEL_WEB_MAX_PER_QUERY", "8"))
+        self.timeout_seconds = _positive_float_env("PERSON_INTEL_WEB_TIMEOUT_SEC", 45.0)
+        self.query_timeout_seconds = _positive_float_env(
+            "PERSON_INTEL_WEB_QUERY_TIMEOUT_SEC", 15.0
+        )
 
     async def collect(
         self,
@@ -69,7 +82,8 @@ class WebFallbackProvider(PersonSourceProvider):
         provider_name = os.getenv("WEB_SEARCH_PROVIDER", "sonar")
         pplx_key = os.getenv("PPLX_API_KEY") or os.getenv("PERPLEXITY_API_KEY")
         brave_key = os.getenv("BRAVE_SEARCH_API_KEY")
-        if not pplx_key and not brave_key:
+        serper_key = os.getenv("SERPER_API_KEY")
+        if not pplx_key and not brave_key and not serper_key:
             return []
 
         try:
@@ -117,9 +131,18 @@ class WebFallbackProvider(PersonSourceProvider):
 
         records: list[EvidenceRecord] = []
         seen_keys: set[str] = set()
+        deadline = time.monotonic() + self.timeout_seconds
         for query, domain_filter in query_plan:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             try:
-                raw = provider.search(query, domain_filter=domain_filter)
+                raw = await asyncio.to_thread(
+                    provider.search,
+                    query,
+                    domain_filter=domain_filter,
+                    deadline_seconds=min(self.query_timeout_seconds, remaining),
+                )
             except Exception:
                 continue
 
@@ -128,10 +151,18 @@ class WebFallbackProvider(PersonSourceProvider):
 
             lines = [line.strip() for line in raw.splitlines() if line.strip()]
             kept = 0
+            pending_result_url: str | None = None
             for line in lines:
+                line_url = _extract_url(line)
+                if re.match(r"^\d+\.\s*", line) or line.lower().startswith(
+                    "answer box:"
+                ):
+                    pending_result_url = line_url
+                    continue
                 if _is_low_quality_line(line):
                     continue
-                url = _extract_url(line) or subject.normalized_profile_url
+                url = line_url or pending_result_url or subject.normalized_profile_url
+                pending_result_url = None
                 domain = _domain_of(url)
                 clean = " ".join(line.split())
                 dedupe_key = f"{domain}|{clean.lower()}"

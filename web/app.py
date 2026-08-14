@@ -1464,8 +1464,13 @@ def _run_costs_from_cache(job_id: str) -> dict[str, Any]:
         "total_usd": None,
         "llm_usd": None,
         "perplexity_usd": None,
+        "serper_usd": None,
+        "brave_usd": None,
         "llm_tokens": {"prompt": 0, "completion": 0, "total": 0},
         "perplexity_search": {"requests": 0, "total_usd": 0.0},
+        "serper_search": {"requests": 0, "total_usd": 0.0},
+        "brave_search": {"requests": 0, "total_usd": 0.0},
+        "web_search": {"requests": 0, "by_provider": {}, "total_usd": 0.0},
         "by_model": [],
     }
 
@@ -1477,8 +1482,13 @@ def _empty_run_costs_summary() -> dict[str, Any]:
         "total_usd": None,
         "llm_usd": None,
         "perplexity_usd": 0.0,
+        "serper_usd": 0.0,
+        "brave_usd": 0.0,
         "llm_tokens": {"prompt": 0, "completion": 0, "total": 0},
         "perplexity_search": {"requests": 0, "total_usd": 0.0},
+        "serper_search": {"requests": 0, "total_usd": 0.0},
+        "brave_search": {"requests": 0, "total_usd": 0.0},
+        "web_search": {"requests": 0, "by_provider": {}, "total_usd": 0.0},
         "by_model": [],
     }
 
@@ -1488,13 +1498,17 @@ def _merge_run_cost_summaries(base: dict[str, Any] | None, delta: dict[str, Any]
     base = base or {}
     delta = delta or {}
 
-    status_order = {"complete": 0, "partial": 1, "unavailable": 2}
     base_status = base.get("status") or "unavailable"
     delta_status = delta.get("status") or "unavailable"
+    available_statuses = {
+        status for status in (base_status, delta_status) if status != "unavailable"
+    }
     merged["status"] = (
-        base_status
-        if status_order.get(base_status, 2) <= status_order.get(delta_status, 2)
-        else delta_status
+        "partial"
+        if "partial" in available_statuses
+        else "complete"
+        if "complete" in available_statuses
+        else "unavailable"
     )
 
     for side in (base, delta):
@@ -1505,6 +1519,43 @@ def _merge_run_cost_summaries(base: dict[str, Any] | None, delta: dict[str, Any]
         merged["perplexity_search"]["requests"] += int((side.get("perplexity_search") or {}).get("requests") or 0)
         merged["perplexity_search"]["total_usd"] += float((side.get("perplexity_search") or {}).get("total_usd") or 0.0)
         merged["perplexity_usd"] += float(side.get("perplexity_usd") or 0.0)
+        merged["serper_search"]["requests"] += int((side.get("serper_search") or {}).get("requests") or 0)
+        merged["serper_search"]["total_usd"] += float((side.get("serper_search") or {}).get("total_usd") or 0.0)
+        merged["serper_usd"] += float(side.get("serper_usd") or 0.0)
+        merged["brave_search"]["requests"] += int((side.get("brave_search") or {}).get("requests") or 0)
+        web_search = side.get("web_search") or {}
+        if "web_search" not in side:
+            legacy_perplexity = side.get("perplexity_search") or {}
+            legacy_serper = side.get("serper_search") or {}
+            legacy_brave = side.get("brave_search") or {}
+            perplexity_requests = int(legacy_perplexity.get("requests") or 0)
+            serper_requests = int(legacy_serper.get("requests") or 0)
+            brave_requests = int(legacy_brave.get("requests") or 0)
+            perplexity_cost = float(
+                legacy_perplexity.get("total_usd") or side.get("perplexity_usd") or 0.0
+            )
+            serper_cost = float(
+                legacy_serper.get("total_usd") or side.get("serper_usd") or 0.0
+            )
+            web_search = {
+                "requests": perplexity_requests + serper_requests + brave_requests,
+                "by_provider": {
+                    provider: requests
+                    for provider, requests in (
+                        ("perplexity", perplexity_requests),
+                        ("serper", serper_requests),
+                        ("brave", brave_requests),
+                    )
+                    if requests
+                },
+                "total_usd": perplexity_cost + serper_cost,
+            }
+        merged["web_search"]["requests"] += int(web_search.get("requests") or 0)
+        merged["web_search"]["total_usd"] += float(web_search.get("total_usd") or 0.0)
+        for provider, requests in (web_search.get("by_provider") or {}).items():
+            merged["web_search"]["by_provider"][provider] = (
+                merged["web_search"]["by_provider"].get(provider, 0) + int(requests or 0)
+            )
 
     def _sum_optional(left: Any, right: Any) -> float | None:
         known = [float(v) for v in (left, right) if isinstance(v, (int, float))]
@@ -1513,7 +1564,15 @@ def _merge_run_cost_summaries(base: dict[str, Any] | None, delta: dict[str, Any]
     merged["llm_usd"] = _sum_optional(base.get("llm_usd"), delta.get("llm_usd"))
     merged["total_usd"] = _sum_optional(base.get("total_usd"), delta.get("total_usd"))
     merged["perplexity_usd"] = round(merged["perplexity_usd"], 8)
+    merged["serper_usd"] = round(merged["serper_usd"], 8)
+    merged["brave_usd"] = _sum_optional(base.get("brave_usd"), delta.get("brave_usd"))
     merged["perplexity_search"]["total_usd"] = round(merged["perplexity_search"]["total_usd"], 8)
+    merged["serper_search"]["total_usd"] = round(merged["serper_search"]["total_usd"], 8)
+    merged["brave_search"]["total_usd"] = _sum_optional(
+        (base.get("brave_search") or {}).get("total_usd"),
+        (delta.get("brave_search") or {}).get("total_usd"),
+    )
+    merged["web_search"]["total_usd"] = round(merged["web_search"]["total_usd"], 8)
 
     by_model: dict[tuple[str, str], dict[str, Any]] = {}
     for side in (base, delta):
@@ -5492,14 +5551,15 @@ async def _decompose_questions_safe(state: Any) -> dict[str, Any] | None:
 async def web_search_available(session_id: str | None = Cookie(default=None)):
     if not _check_session(session_id):
         raise HTTPException(status_code=401, detail="Not authenticated")
-    pplx = os.getenv("PPLX_API_KEY") or os.getenv("PERPLEXITY_API_KEY")
-    brave = os.getenv("BRAVE_SEARCH_API_KEY")
-    has_key = bool(
-        (pplx and pplx != "your_perplexity_api_key_here")
-        or brave
-    )
-    provider = os.getenv("WEB_SEARCH_PROVIDER", "sonar")
-    return {"available": has_key, "provider": provider}
+    from agent.evidence_answering import _resolve_web_search_provider_name  # noqa: PLC0415
+
+    provider = os.getenv("WEB_SEARCH_PROVIDER", "sonar").strip().lower()
+    effective_provider = _resolve_web_search_provider_name()
+    return {
+        "available": effective_provider is not None,
+        "provider": provider,
+        "effective_provider": effective_provider,
+    }
 
 
 def _detect_specter_csvs(upload_dir: Path, filenames: list[str]) -> dict | None:

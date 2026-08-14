@@ -74,7 +74,8 @@ def harness(monkeypatch):
 
     def fake_run_web_search(query, domain_filter=None, trigger_reason=None,
                             gating_mode=None, route=None, planner_mode=None,
-                            query_purpose=None, cache_info=None):
+                            query_purpose=None, cache_info=None,
+                            provider_deadline_seconds=None, **_kwargs):
         rec.searches.append({
             "query": query,
             "domain_filter": domain_filter,
@@ -82,6 +83,7 @@ def harness(monkeypatch):
             "route": route,
             "planner_mode": planner_mode,
             "query_purpose": query_purpose,
+            "provider_deadline_seconds": provider_deadline_seconds,
         })
         result = rec.search_result
         return result(query) if callable(result) else result
@@ -225,6 +227,7 @@ def test_on_mode_competitors_multi_query_broad_web(harness, monkeypatch):
         assert call["route"] == "competitors"
         assert call["planner_mode"] == "on"
         assert call["query_purpose"]
+        assert call["provider_deadline_seconds"] > 0
     n = len(harness.searches)
     assert prov["web_search_decision"] == f"used: {n}/{n} results passed topic_keywords gate"
     assert prov["web_search_used"] is True

@@ -616,11 +616,18 @@ def test_merge_run_cost_summaries_prefers_available_status() -> None:
         {
             "currency": "USD",
             "status": "complete",
-            "total_usd": 0.001,
+            "total_usd": 0.003,
             "llm_usd": 0.001,
             "perplexity_usd": 0.0,
+            "serper_usd": 0.002,
             "llm_tokens": {"prompt": 100, "completion": 50, "total": 150},
             "perplexity_search": {"requests": 0, "total_usd": 0.0},
+            "serper_search": {"requests": 2, "total_usd": 0.002},
+            "web_search": {
+                "requests": 2,
+                "by_provider": {"serper": 2},
+                "total_usd": 0.002,
+            },
             "by_model": [
                 {
                     "provider": "gemini",
@@ -640,7 +647,57 @@ def test_merge_run_cost_summaries_prefers_available_status() -> None:
     assert merged["status"] == "complete"
     assert merged["llm_usd"] == 0.001
     assert merged["llm_tokens"] == {"prompt": 100, "completion": 50, "total": 150}
+    assert merged["serper_search"]["requests"] == 2
+    assert merged["web_search"]["by_provider"] == {"serper": 2}
     assert merged["by_model"][0]["provider"] == "gemini"
+
+
+def test_merge_run_cost_summaries_backfills_legacy_web_search_totals() -> None:
+    merged = web_app._merge_run_cost_summaries(
+        {
+            "status": "complete",
+            "perplexity_usd": 0.015,
+            "perplexity_search": {"requests": 3, "total_usd": 0.015},
+        },
+        {
+            "status": "complete",
+            "serper_usd": 0.002,
+            "serper_search": {"requests": 2, "total_usd": 0.002},
+            "web_search": {
+                "requests": 2,
+                "by_provider": {"serper": 2},
+                "total_usd": 0.002,
+            },
+        },
+    )
+
+    assert merged["web_search"] == {
+        "requests": 5,
+        "by_provider": {"perplexity": 3, "serper": 2},
+        "total_usd": 0.017,
+    }
+
+
+def test_merge_run_cost_summaries_preserves_partial_brave_telemetry() -> None:
+    merged = web_app._merge_run_cost_summaries(
+        {"status": "complete", "total_usd": 0.01, "llm_usd": 0.01},
+        {
+            "status": "partial",
+            "total_usd": None,
+            "brave_usd": None,
+            "brave_search": {"requests": 1, "total_usd": None},
+            "web_search": {
+                "requests": 1,
+                "by_provider": {"brave": 1},
+                "total_usd": 0.0,
+            },
+        },
+    )
+
+    assert merged["status"] == "partial"
+    assert merged["brave_usd"] is None
+    assert merged["brave_search"] == {"requests": 1, "total_usd": None}
+    assert merged["web_search"]["by_provider"] == {"brave": 1}
 
 
 def test_append_progress_updates_cached_results_metadata() -> None:

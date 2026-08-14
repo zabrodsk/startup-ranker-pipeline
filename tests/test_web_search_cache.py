@@ -108,6 +108,17 @@ def test_lookup_on_returns_db_value_and_swallows_errors(monkeypatch):
     assert result_cache.lookup("sonar", "q", None) is None
 
 
+def test_lookup_provider_returns_actual_cached_provider(monkeypatch):
+    monkeypatch.setenv(result_cache.RDI_WEB_SEARCH_CACHE_ENV, "on")
+    from web import db
+
+    monkeypatch.setattr(
+        db, "get_web_search_cache_provider", lambda _h, ttl_days: "sonar"
+    )
+
+    assert result_cache.lookup_provider("hybrid", "q", None) == "sonar"
+
+
 def test_store_on_upserts_with_computed_hash_and_swallows_errors(monkeypatch):
     monkeypatch.setenv(result_cache.RDI_WEB_SEARCH_CACHE_ENV, "on")
     from web import db
@@ -134,6 +145,25 @@ def test_store_on_upserts_with_computed_hash_and_swallows_errors(monkeypatch):
 
     monkeypatch.setattr(db, "upsert_web_search_cache_entry", _boom)
     result_cache.store("sonar", "q", None, "text")  # must not raise
+
+
+def test_store_hybrid_records_actual_provider_without_changing_cache_key(monkeypatch):
+    monkeypatch.setenv(result_cache.RDI_WEB_SEARCH_CACHE_ENV, "on")
+    from web import db
+
+    stored = []
+    monkeypatch.setattr(
+        db,
+        "upsert_web_search_cache_entry",
+        lambda **kwargs: stored.append(kwargs) or True,
+    )
+
+    result_cache.store("hybrid", "q", None, "text", "sonar")
+
+    assert stored[0]["query_hash"] == result_cache.compute_query_hash(
+        "hybrid", "q", None
+    )
+    assert stored[0]["provider"] == "sonar"
 
 
 def test_store_off_never_touches_db(monkeypatch):
@@ -174,7 +204,7 @@ class _FakeCollector:
 
 def _patch_provider(monkeypatch, calls: list):
     class _FakeProvider:
-        def search(self, query, domain_filter=None):
+        def search(self, query, domain_filter=None, **_kwargs):
             calls.append(query)
             return COMPANY_RESULT
 
@@ -183,7 +213,7 @@ def _patch_provider(monkeypatch, calls: list):
     monkeypatch.setattr(web_search_module, "get_provider", lambda **_k: _FakeProvider())
 
 
-def test_run_web_search_hit_skips_provider_and_marks_telemetry(monkeypatch):
+def test_run_web_search_hit_skips_provider_and_billable_telemetry(monkeypatch):
     provider_calls: list = []
     _patch_provider(monkeypatch, provider_calls)
     collector = _FakeCollector()
@@ -197,10 +227,13 @@ def test_run_web_search_hit_skips_provider_and_marks_telemetry(monkeypatch):
 
     assert result == "CACHED RESULT"
     assert provider_calls == []
-    assert cache_info == {"hit": True}
+    assert cache_info == {
+        "hit": True,
+        "provider": "sonar",
+        "attempted_providers": [],
+    }
     assert stored == []  # hits are not re-stored
-    assert len(collector.metadata) == 1
-    assert collector.metadata[0]["cache_hit"] is True
+    assert collector.metadata == []
 
 
 def test_run_web_search_miss_calls_provider_stores_and_keeps_legacy_metadata(monkeypatch):
@@ -219,7 +252,11 @@ def test_run_web_search_miss_calls_provider_stores_and_keeps_legacy_metadata(mon
 
     assert result == COMPANY_RESULT
     assert provider_calls == ["some query"]
-    assert cache_info == {"hit": False}
+    assert cache_info == {
+        "hit": False,
+        "provider": "sonar",
+        "attempted_providers": ["sonar"],
+    }
     assert stored == [("sonar", "some query", None, COMPANY_RESULT)]
     # Off-mode/miss telemetry stays byte-identical: no cache_hit key.
     assert collector.metadata == [
@@ -234,7 +271,7 @@ def test_run_web_search_miss_calls_provider_stores_and_keeps_legacy_metadata(mon
 
 def test_run_web_search_does_not_store_failed_results(monkeypatch):
     class _FailingProvider:
-        def search(self, query, domain_filter=None):
+        def search(self, query, domain_filter=None, **_kwargs):
             return "Web search failed: provider exploded"
 
     monkeypatch.setenv("WEB_SEARCH_PROVIDER", "sonar")

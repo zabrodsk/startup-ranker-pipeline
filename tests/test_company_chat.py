@@ -393,7 +393,21 @@ def test_company_chat_persists_shared_history_across_users(monkeypatch) -> None:
         assert shared_sessions["name:apaleo"]["selection"]["provider"] == "gemini"
 
 
-def test_company_chat_prefers_web_for_competitor_questions(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("cache_hit", "provider_name", "attempted_providers", "expected_cost"),
+    [
+        (False, "sonar", ["serper", "sonar"], 0.006),
+        (True, "sonar", [], 0.0),
+        (False, "brave", ["brave"], None),
+    ],
+)
+def test_company_chat_prefers_web_for_competitor_questions(
+    monkeypatch,
+    cache_hit: bool,
+    provider_name: str,
+    attempted_providers: list[str],
+    expected_cost: float | None,
+) -> None:
     monkeypatch.setattr(
         "agent.company_chat.retrieve_chunks",
         lambda question, store, k=8: [
@@ -418,9 +432,16 @@ def test_company_chat_prefers_web_for_competitor_questions(monkeypatch) -> None:
 
     captured: dict[str, object] = {}
 
-    def fake_run_web_search(query: str, domain_filter):
+    def fake_run_web_search(query: str, domain_filter, cache_info=None, **_kwargs):
         captured["query"] = query
         captured["domain_filter"] = domain_filter
+        cache_info.update(
+            {
+                "hit": cache_hit,
+                "provider": provider_name,
+                "attempted_providers": attempted_providers,
+            }
+        )
         return (
             "Apaleo competitors include Mews, Cloudbeds, and Oracle OPERA Cloud. "
             "Their positioning differs on legacy footprint, cloud-native architecture, and ecosystem breadth."
@@ -462,3 +483,5 @@ def test_company_chat_prefers_web_for_competitor_questions(monkeypatch) -> None:
     assert captured["domain_filter"] is None
     assert result["answer"].startswith("Cloudbeds, Mews, and Oracle OPERA")
     assert result["citations"][0]["kind"] == "web"
+    assert result["citations"][0]["web_search_provider"] == provider_name
+    assert result["citations"][0]["web_search_cost_usd"] == expected_cost
