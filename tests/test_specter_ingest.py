@@ -678,6 +678,28 @@ def test_merge_run_cost_summaries_backfills_legacy_web_search_totals() -> None:
     }
 
 
+def test_merge_run_cost_summaries_preserves_partial_brave_telemetry() -> None:
+    merged = web_app._merge_run_cost_summaries(
+        {"status": "complete", "total_usd": 0.01, "llm_usd": 0.01},
+        {
+            "status": "partial",
+            "total_usd": None,
+            "brave_usd": None,
+            "brave_search": {"requests": 1, "total_usd": None},
+            "web_search": {
+                "requests": 1,
+                "by_provider": {"brave": 1},
+                "total_usd": 0.0,
+            },
+        },
+    )
+
+    assert merged["status"] == "partial"
+    assert merged["brave_usd"] is None
+    assert merged["brave_search"] == {"requests": 1, "total_usd": None}
+    assert merged["web_search"]["by_provider"] == {"brave": 1}
+
+
 def test_append_progress_updates_cached_results_metadata() -> None:
     job_id = "job-progress-sync"
     web_app._jobs[job_id] = web_app.AnalysisStatus(
