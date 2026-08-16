@@ -697,7 +697,7 @@ def test_compose_results_payload_from_company_runs_rebuilds_batch_ranking() -> N
     payload = web_db._compose_results_payload_from_company_runs(
         rows,
         preferred_mode="batch",
-        snapshot_payload={"llm": "Claude", "job_status": "done"},
+        snapshot_payload={"llm": "Claude", "job_status": "done", "num_skipped": 2},
     )
 
     assert payload["mode"] == "batch"
@@ -714,6 +714,7 @@ def test_compose_results_payload_from_company_runs_rebuilds_batch_ranking() -> N
     ]
     assert payload["llm"] == "Claude"
     assert payload["job_status"] == "done"
+    assert payload["num_skipped"] == 2
 
 
 def test_load_job_results_reconstructs_from_company_runs(monkeypatch) -> None:
@@ -773,6 +774,54 @@ def test_load_job_results_reconstructs_from_company_runs(monkeypatch) -> None:
     assert loaded["results"]["summary_rows"][0]["startup_slug"] == "alpha"
     assert loaded["results"]["job_status"] == "done"
     assert loaded["results"]["run_costs"]["total_usd"] == 0.0123
+
+
+def test_load_company_runs_retries_without_optional_source_key_when_schema_lags() -> None:
+    import web.db as web_db
+
+    expected_row = {
+        "company_key": "domain:alpha.example",
+        "company_name": "Alpha",
+        "startup_slug": "alpha",
+        "job_id_legacy": "job-123",
+        "result_payload": {"company_name": "Alpha"},
+    }
+    selected_columns: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, data):
+            self.data = data
+
+    class FakeQuery:
+        def select(self, columns):
+            selected_columns.append(columns)
+            return self
+
+        def eq(self, *_args):
+            return self
+
+        def limit(self, *_args):
+            return self
+
+        def execute(self):
+            if "source_company_key" in selected_columns[-1]:
+                raise RuntimeError(
+                    "{'message': 'column company_runs.source_company_key does not exist', "
+                    "'code': '42703'}"
+                )
+            return FakeResponse([expected_row])
+
+    class FakeClient:
+        def table(self, table_name):
+            assert table_name == "company_runs"
+            return FakeQuery()
+
+    rows = web_db._load_company_run_rows_for_job(FakeClient(), "job-123")
+
+    assert rows == [expected_row]
+    assert len(selected_columns) == 2
+    assert "source_company_key" in selected_columns[0]
+    assert "source_company_key" not in selected_columns[1]
 
 
 def test_load_latest_analysis_snapshot_ignores_company_rows(monkeypatch) -> None:

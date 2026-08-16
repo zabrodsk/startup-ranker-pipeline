@@ -543,7 +543,15 @@ def _compose_results_payload_from_company_runs(
 
     if resolved_mode == "single" and len(prepared) == 1:
         payload = _serialize(prepared[0][1])
-        for key in ("llm", "llm_selection", "run_costs", "batch_chunking", "job_status", "job_message"):
+        for key in (
+            "llm",
+            "llm_selection",
+            "run_costs",
+            "batch_chunking",
+            "job_status",
+            "job_message",
+            "num_skipped",
+        ):
             if key in snapshot:
                 payload[key] = _serialize(snapshot.get(key))
         return payload
@@ -626,7 +634,15 @@ def _compose_results_payload_from_company_runs(
         "founders_by_slug": founders_by_slug,
         "team_members_by_slug": team_members_by_slug,
     }
-    for key in ("llm", "llm_selection", "run_costs", "batch_chunking", "job_status", "job_message"):
+    for key in (
+        "llm",
+        "llm_selection",
+        "run_costs",
+        "batch_chunking",
+        "job_status",
+        "job_message",
+        "num_skipped",
+    ):
         if key in snapshot:
             results_payload[key] = _serialize(snapshot.get(key))
     return results_payload
@@ -2732,21 +2748,71 @@ def _load_latest_analysis_snapshot(
     return None
 
 
+_COMPANY_RUN_RESULT_COLUMNS = (
+    "company_key, source_company_key, company_lookup_key, company_name, startup_slug, job_id_legacy, decision, total_score, "
+    "composite_score, strategy_fit_score, team_score, upside_score, bucket, mode, input_order, "
+    "run_created_at, created_at, result_payload"
+)
+_COMPANY_RUN_RESULT_COLUMNS_WITHOUT_SOURCE_KEY = _COMPANY_RUN_RESULT_COLUMNS.replace(
+    "source_company_key, ",
+    "",
+)
+
+
+def _is_missing_source_company_key_error(exc: Exception) -> bool:
+    code = str(getattr(exc, "code", "") or "")
+    message = str(getattr(exc, "message", "") or exc).lower()
+    return (
+        (code == "42703" or "42703" in message or "does not exist" in message)
+        and "source_company_key" in message
+    )
+
+
+def _select_company_run_result_rows(
+    client: Client,
+    job_id_legacy: str,
+    *,
+    columns: str,
+) -> list[dict[str, Any]]:
+    rows = (
+        client.table("company_runs")
+        .select(columns)
+        .eq("job_id_legacy", job_id_legacy)
+        .limit(500)
+        .execute()
+    )
+    return rows.data or []
+
+
 def _load_company_run_rows_for_job(client: Client, job_id_legacy: str) -> list[dict[str, Any]]:
     try:
-        rows = (
-            client.table("company_runs")
-            .select(
-                "company_key, source_company_key, company_lookup_key, company_name, startup_slug, job_id_legacy, decision, total_score, "
-                "composite_score, strategy_fit_score, team_score, upside_score, bucket, mode, input_order, "
-                "run_created_at, created_at, result_payload"
-            )
-            .eq("job_id_legacy", job_id_legacy)
-            .limit(500)
-            .execute()
+        return _select_company_run_result_rows(
+            client,
+            job_id_legacy,
+            columns=_COMPANY_RUN_RESULT_COLUMNS,
         )
-        return rows.data or []
     except Exception as exc:
+        if _is_missing_source_company_key_error(exc):
+            _log_supabase_error(
+                "load_company_run_rows_for_job.optional_source_company_key",
+                "company_runs",
+                exc,
+                job_id_legacy=job_id_legacy,
+            )
+            try:
+                return _select_company_run_result_rows(
+                    client,
+                    job_id_legacy,
+                    columns=_COMPANY_RUN_RESULT_COLUMNS_WITHOUT_SOURCE_KEY,
+                )
+            except Exception as fallback_exc:
+                _log_supabase_error(
+                    "load_company_run_rows_for_job.fallback",
+                    "company_runs",
+                    fallback_exc,
+                    job_id_legacy=job_id_legacy,
+                )
+                return []
         _log_supabase_error("load_company_run_rows_for_job", "company_runs", exc, job_id_legacy=job_id_legacy)
         return []
 

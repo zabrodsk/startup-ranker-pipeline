@@ -87,9 +87,17 @@ def test_get_job_control_missing_row_returns_false(monkeypatch):
 # _process_job stop loop
 # ---------------------------------------------------------------------------
 class _FakeWorkerDb:
-    def __init__(self, stop_after=None, load_job_results_payload=None):
+    def __init__(
+        self,
+        stop_after=None,
+        load_job_results_payload=None,
+        load_job_results_sequence=None,
+        persist_snapshot_sequence=None,
+    ):
         self.stop_after = stop_after
         self.load_job_results_payload = load_job_results_payload
+        self.load_job_results_sequence = list(load_job_results_sequence or [])
+        self.persist_snapshot_sequence = list(persist_snapshot_sequence or [])
         self.poll_count = 0
         self.events = []
         self.snapshots = []
@@ -112,6 +120,8 @@ class _FakeWorkerDb:
 
     def load_job_results(self, _job_id, preferred_mode=None):
         self.load_job_results_calls += 1
+        if self.load_job_results_sequence:
+            return self.load_job_results_sequence.pop(0)
         return self.load_job_results_payload
 
     def load_run_costs(self, _job_id):
@@ -119,6 +129,8 @@ class _FakeWorkerDb:
 
     def persist_analysis_snapshot(self, _job_id, **kw):
         self.snapshots.append(kw)
+        if self.persist_snapshot_sequence:
+            return self.persist_snapshot_sequence.pop(0)
         return True
 
     def finish_specter_worker_job(self, _job_id, **kw):
@@ -132,12 +144,16 @@ def _drive_process_job(
     stop_after=None,
     subprocess_status="done",
     load_job_results_payload=None,
+    load_job_results_sequence=None,
+    persist_snapshot_sequence=None,
 ):
     if load_job_results_payload is None and subprocess_status == "done":
         load_job_results_payload = {"results": {"companies": []}}
     fake_db = _FakeWorkerDb(
         stop_after=stop_after,
         load_job_results_payload=load_job_results_payload,
+        load_job_results_sequence=load_job_results_sequence,
+        persist_snapshot_sequence=persist_snapshot_sequence,
     )
     monkeypatch.setattr(scw, "db", fake_db)
     monkeypatch.setattr(scw, "_download_worker_inputs", lambda _job_id, _rc: (None, None, None))
@@ -184,6 +200,48 @@ def test_no_stop_processes_all_and_marks_done(monkeypatch):
     assert processed == ["co1", "co2", "co3", "co4"]
     assert fake_db.finished["status"] == "done"
     assert not any(e.get("event_type") == "worker_stopped" for e in fake_db.events)
+
+
+def test_finalization_retries_reconstruction_before_failing_job(monkeypatch):
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr(scw.asyncio, "sleep", no_wait)
+    fake_db, processed = _drive_process_job(
+        monkeypatch,
+        n_companies=1,
+        load_job_results_sequence=[
+            None,
+            None,
+            {"results": {"mode": "batch", "summary_rows": [{"company_name": "co1"}]}},
+        ],
+    )
+
+    assert processed == ["co1"]
+    assert fake_db.load_job_results_calls == 3
+    assert fake_db.finished["status"] == "done"
+    assert fake_db.snapshots[-1]["results_payload"]["job_status"] == "done"
+    assert sum(event.get("event_type") == "worker_finalize_retry" for event in fake_db.events) == 2
+
+
+def test_finalization_retries_snapshot_persistence_before_failing_job(monkeypatch):
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr(scw.asyncio, "sleep", no_wait)
+    fake_db, processed = _drive_process_job(
+        monkeypatch,
+        n_companies=1,
+        persist_snapshot_sequence=[False, True],
+    )
+
+    assert processed == ["co1"]
+    assert len(fake_db.snapshots) == 2
+    assert fake_db.finished["status"] == "done"
+    assert sum(
+        event.get("event_type") == "worker_finalize_persist_retry"
+        for event in fake_db.events
+    ) == 1
 
 
 def test_all_failed_without_company_runs_persists_clear_error_snapshot(monkeypatch):
