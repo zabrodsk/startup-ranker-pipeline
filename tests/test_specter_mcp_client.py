@@ -428,10 +428,30 @@ def test_verify_match_rejects_scribe_to_shopscribe_regression():
         )
 
 
-def test_verify_match_rejects_name_mismatch_when_expected_provided():
+@pytest.mark.parametrize(
+    ("identifier", "expected_name", "returned_name"),
+    [
+        ("https://amilabs.xyz/", "AMI Labs", "AMI - Advanced Machine Intelligence"),
+        ("https://designverse.ai/", "DesignVerse", "FigVision"),
+        ("https://www.npco.ai/", "NP Company", "NPco"),
+        ("https://www.recurvia.ai/", "Inephany Ltd (Recurvia)", "recurvia"),
+        ("https://staer.ai/", "Staer AB", "Staer"),
+    ],
+)
+def test_verify_match_accepts_name_variants_for_exact_verified_domain(
+    identifier, expected_name, returned_name
+):
+    _verify_match(
+        identifier,
+        expected_name,
+        {"name": returned_name, "domain": _domain_root(identifier)},
+    )
+
+
+def test_verify_match_rejects_name_mismatch_for_name_identifier():
     with pytest.raises(SpecterDisambiguationError):
         _verify_match(
-            "scribe.com",
+            "Scribe",
             "Scribe",
             {"name": "Shopscribe", "domain": "scribe.com"},
         )

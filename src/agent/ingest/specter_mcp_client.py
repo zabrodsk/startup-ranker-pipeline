@@ -812,9 +812,11 @@ def _verify_match(
     """Raise SpecterDisambiguationError when find_company picked the wrong company.
 
     Triggered by the Phase 0.5 finding that ``find_company('scribe.com')``
-    returned 'Shopscribe' instead of Scribe Inc. Strategy: if the user gave a
-    domain, the returned ``domain`` must share the same root. If the user also
-    gave an expected name, the returned ``name`` must fuzzy-match it.
+    returned 'Shopscribe' on ``shopscribe.com`` instead of Scribe Inc. For a
+    domain lookup, an exact normalized domain match is authoritative and safely
+    permits aliases, legal names, abbreviations, or rebrands. A different domain
+    is always rejected. Name-based lookups (and domain results without a
+    returned domain) still require the returned name to match.
     """
     requested = (requested_identifier or "").strip()
     looks_like_domain = (
@@ -834,6 +836,8 @@ def _verify_match(
                 f"Specter resolved {requested!r} to {returned_name!r} "
                 f"(domain={returned_domain!r}); domain root mismatch."
             )
+        if wanted and got and wanted == got:
+            return
 
     if expected_name:
         if _normalize_for_match(expected_name) != _normalize_for_match(returned_name):
