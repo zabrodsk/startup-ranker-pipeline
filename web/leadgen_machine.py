@@ -579,6 +579,15 @@ def _optional_timestamp(value: Any, *, field: str) -> str | None:
     return _timestamp(value, field=field) if value not in (None, "") else None
 
 
+def _latest_timestamp(*values: str | None) -> str:
+    """Return the latest already-normalized UTC timestamp."""
+    present = [value for value in values if value is not None]
+    return max(
+        present,
+        key=lambda value: datetime.fromisoformat(value[:-1] + "+00:00"),
+    )
+
+
 def _exact_decimal(value: Any, *, field: str) -> str:
     if isinstance(value, bool) or value is None:
         raise _problem(503, "machine_terminal_contract_invalid", f"Persisted {field} is invalid.")
@@ -638,6 +647,10 @@ def _safe_error_message(value: Any) -> str:
 def _status_payload(record: dict[str, Any]) -> dict[str, Any]:
     state = str(record.get("lifecycle_state") or "")
     terminal = state in {"succeeded", "failed", "cancelled", "rejected"}
+    created_at = _timestamp(record["created_at"], field="created_at")
+    updated_at = _timestamp(record.get("updated_at") or record["created_at"], field="updated_at")
+    started_at = _optional_timestamp(record.get("started_at"), field="started_at")
+    completed_at = _optional_timestamp(record.get("completed_at"), field="completed_at")
     return {
         "contract_version": CONTRACT_VERSION,
         "intake_id": record["intake_id"],
@@ -647,10 +660,10 @@ def _status_payload(record: dict[str, Any]) -> dict[str, Any]:
         "job_id": record.get("job_id"),
         "lifecycle_state": state,
         "terminal": terminal,
-        "created_at": _timestamp(record["created_at"], field="created_at"),
-        "updated_at": _timestamp(record.get("updated_at") or record["created_at"], field="updated_at"),
-        "started_at": _optional_timestamp(record.get("started_at"), field="started_at"),
-        "completed_at": _optional_timestamp(record.get("completed_at"), field="completed_at"),
+        "created_at": created_at,
+        "updated_at": _latest_timestamp(updated_at, started_at, completed_at),
+        "started_at": started_at,
+        "completed_at": completed_at,
     }
 
 

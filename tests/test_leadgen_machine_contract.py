@@ -2054,7 +2054,7 @@ def test_terminal_result_is_exact_checksummed_and_restart_stable(
             "job_id": "rdi-job-0123456789abcdef0123456789abcdef",
             "rdi_company_id": "5d9018b8-ff3e-4f8e-a07d-0f7dbf7eb381",
             "started_at": "2026-07-31T10:00:00Z",
-            "updated_at": "2026-07-31T10:06:00Z",
+            "updated_at": "2026-07-31T10:01:00Z",
             "completed_at": "2026-07-31T10:06:00Z",
             "terminal_result": {
                 "rdi_company_id": "5d9018b8-ff3e-4f8e-a07d-0f7dbf7eb381",
@@ -2100,6 +2100,7 @@ def test_terminal_result_is_exact_checksummed_and_restart_stable(
     assert wrong_view.json()["detail"]["code"] == "machine_error_unavailable"
     assert status.status_code == 200
     assert status.json()["terminal"] is True
+    assert status.json()["updated_at"] == "2026-07-31T10:06:00Z"
     assert status.json()["completed_at"] == "2026-07-31T10:06:00Z"
 
 
