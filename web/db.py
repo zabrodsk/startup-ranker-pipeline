@@ -36,9 +36,9 @@ except Exception:
     FEEDBACK_MAX_SCREENSHOT_BYTES = 3_000_000
 FEEDBACK_SCREENSHOT_CONTENT_TYPES = {"image/webp"}
 WORKER_ACTIVE_STATUSES = {"queued", "claimed", "running", "finalizing"}
+WORKER_CLAIMABLE_STATUSES = {"queued", "claimed", "running"}
 WORKER_TERMINAL_STATUSES = {"done", "error", "interrupted", "stopped"}
 WORKER_EXECUTION_STALE_SECONDS = int(os.getenv("SPECTER_WORKER_STALE_SECONDS", "120"))
-WORKER_QUEUE_STALE_SECONDS = int(os.getenv("SPECTER_WORKER_QUEUE_STALE_SECONDS", "900"))
 SPECTER_PROFILE_BASE_URL = "https://app.tryspecter.com/signals/company/feed/"
 
 
@@ -543,7 +543,15 @@ def _compose_results_payload_from_company_runs(
 
     if resolved_mode == "single" and len(prepared) == 1:
         payload = _serialize(prepared[0][1])
-        for key in ("llm", "llm_selection", "run_costs", "batch_chunking", "job_status", "job_message"):
+        for key in (
+            "llm",
+            "llm_selection",
+            "run_costs",
+            "batch_chunking",
+            "job_status",
+            "job_message",
+            "num_skipped",
+        ):
             if key in snapshot:
                 payload[key] = _serialize(snapshot.get(key))
         return payload
@@ -626,7 +634,15 @@ def _compose_results_payload_from_company_runs(
         "founders_by_slug": founders_by_slug,
         "team_members_by_slug": team_members_by_slug,
     }
-    for key in ("llm", "llm_selection", "run_costs", "batch_chunking", "job_status", "job_message"):
+    for key in (
+        "llm",
+        "llm_selection",
+        "run_costs",
+        "batch_chunking",
+        "job_status",
+        "job_message",
+        "num_skipped",
+    ):
         if key in snapshot:
             results_payload[key] = _serialize(snapshot.get(key))
     return results_payload
@@ -993,13 +1009,18 @@ def is_configured() -> bool:
 def _serialize(obj: Any) -> Any:
     """Convert Pydantic/objects to JSON-serializable dict."""
     if hasattr(obj, "model_dump"):
-        return obj.model_dump()
+        return _serialize(obj.model_dump())
     if hasattr(obj, "__dict__") and not isinstance(obj, type):
         return {k: _serialize(v) for k, v in obj.__dict__.items()}
     if isinstance(obj, list):
         return [_serialize(x) for x in obj]
     if isinstance(obj, dict):
         return {k: _serialize(v) for k, v in obj.items()}
+    if isinstance(obj, str):
+        # PostgreSQL text and jsonb reject U+0000. Model/provider text is
+        # otherwise usable, so strip only the incompatible code point instead
+        # of failing the completed analysis during persistence.
+        return obj.replace("\x00", "")
     return obj
 
 
@@ -1063,8 +1084,12 @@ def _worker_state_timeout_seconds(worker_state: dict[str, Any]) -> int | None:
     status = str(worker_state.get("status") or "").strip().lower()
     if status not in WORKER_ACTIVE_STATUSES:
         return None
+    # Queued jobs do not have a worker heartbeat yet. Queue age therefore says
+    # nothing about worker health and must not turn valid backlog into a false
+    # terminal interruption. Once claimed, the execution heartbeat remains the
+    # fail-safe for a genuinely lost worker.
     if status == "queued":
-        return max(WORKER_QUEUE_STALE_SECONDS, 1)
+        return None
     return max(WORKER_EXECUTION_STALE_SECONDS, 1)
 
 
@@ -1084,8 +1109,6 @@ def _resolved_worker_state(worker_state: dict[str, Any]) -> tuple[str, str | Non
     if status not in WORKER_ACTIVE_STATUSES:
         return status, progress, False
     if _worker_state_is_stale(worker_state):
-        if status == "queued":
-            return "interrupted", "Worker queue stalled before processing started.", False
         return "interrupted", "Worker interrupted before completion.", False
     return status, progress, True
 
@@ -1094,6 +1117,23 @@ def _worker_state_terminal_timestamp(worker_state: dict[str, Any]) -> datetime |
     return _parse_timestamp(worker_state.get("run_finished_at")) or _parse_timestamp(
         worker_state.get("last_heartbeat_at")
     )
+
+
+def _terminal_history_overrides_active_worker(
+    latest_status: dict[str, Any],
+    worker_state: dict[str, Any],
+) -> bool:
+    worker_status = str(worker_state.get("status") or "").strip().lower()
+    if worker_status not in WORKER_ACTIVE_STATUSES:
+        return False
+    status = str(latest_status.get("status") or "").strip().lower()
+    if status not in WORKER_TERMINAL_STATUSES:
+        return False
+    status_at = _parse_timestamp(latest_status.get("created_at"))
+    if status_at is None:
+        return False
+    heartbeat_at = _parse_timestamp(worker_state.get("last_heartbeat_at"))
+    return heartbeat_at is None or status_at >= heartbeat_at
 
 
 def _merge_worker_state(
@@ -1832,19 +1872,23 @@ def reserve_machine_start(
     *,
     intake_id: str,
     target_environment: str,
+    business_date: str,
+    business_timezone: str,
     job_id: str,
     actor: str,
-    global_limit: int,
+    daily_start_limit: int,
 ) -> dict[str, Any] | None:
-    """Atomically fence one start and enforce the environment-wide start limit."""
+    """Atomically fence one start within its immutable Prague daily scope."""
     return _machine_rpc_object(
         "reserve_leadgen_machine_start",
         {
             "p_intake_id": intake_id,
             "p_target_environment": target_environment,
+            "p_business_date": business_date,
+            "p_business_timezone": business_timezone,
             "p_job_id": job_id,
             "p_actor": actor,
-            "p_global_limit": global_limit,
+            "p_daily_start_limit": daily_start_limit,
         },
     )
 
@@ -1901,15 +1945,17 @@ def load_machine_lifecycle(intake_id: str) -> dict[str, Any] | None:
 
 def list_claimable_specter_worker_jobs(limit: int = 10) -> list[dict[str, Any]]:
     client = _get_client()
-    if not client:
+    requested_limit = max(int(limit), 0)
+    if not client or requested_limit == 0:
         return []
     try:
         rows = (
             client.table("jobs")
             .select("job_id_legacy, input_mode, use_web_search, created_at, run_config")
             .eq("input_mode", "specter")
-            .order("created_at", desc=True)
-            .limit(max(limit * 10, 50))
+            .in_("run_config->worker_state->>status", sorted(WORKER_CLAIMABLE_STATUSES))
+            .order("created_at", desc=False)
+            .limit(requested_limit)
             .execute()
         )
     except Exception as exc:
@@ -1920,7 +1966,7 @@ def list_claimable_specter_worker_jobs(limit: int = 10) -> list[dict[str, Any]]:
     for row in rows.data or []:
         worker_state = _extract_worker_state(row.get("run_config") or {})
         status = str(worker_state.get("status") or "").strip().lower()
-        if status in {"queued", "claimed", "running", "finalizing"}:
+        if status in WORKER_CLAIMABLE_STATUSES:
             claimable.append(
                 {
                     "job_id": row.get("job_id_legacy"),
@@ -1931,7 +1977,7 @@ def list_claimable_specter_worker_jobs(limit: int = 10) -> list[dict[str, Any]]:
                     "worker_state": worker_state,
                 }
             )
-        if len(claimable) >= limit:
+        if len(claimable) >= requested_limit:
             break
     return claimable
 
@@ -2702,21 +2748,71 @@ def _load_latest_analysis_snapshot(
     return None
 
 
+_COMPANY_RUN_RESULT_COLUMNS = (
+    "company_key, source_company_key, company_lookup_key, company_name, startup_slug, job_id_legacy, decision, total_score, "
+    "composite_score, strategy_fit_score, team_score, upside_score, bucket, mode, input_order, "
+    "run_created_at, created_at, result_payload"
+)
+_COMPANY_RUN_RESULT_COLUMNS_WITHOUT_SOURCE_KEY = _COMPANY_RUN_RESULT_COLUMNS.replace(
+    "source_company_key, ",
+    "",
+)
+
+
+def _is_missing_source_company_key_error(exc: Exception) -> bool:
+    code = str(getattr(exc, "code", "") or "")
+    message = str(getattr(exc, "message", "") or exc).lower()
+    return (
+        (code == "42703" or "42703" in message or "does not exist" in message)
+        and "source_company_key" in message
+    )
+
+
+def _select_company_run_result_rows(
+    client: Client,
+    job_id_legacy: str,
+    *,
+    columns: str,
+) -> list[dict[str, Any]]:
+    rows = (
+        client.table("company_runs")
+        .select(columns)
+        .eq("job_id_legacy", job_id_legacy)
+        .limit(500)
+        .execute()
+    )
+    return rows.data or []
+
+
 def _load_company_run_rows_for_job(client: Client, job_id_legacy: str) -> list[dict[str, Any]]:
     try:
-        rows = (
-            client.table("company_runs")
-            .select(
-                "company_key, source_company_key, company_lookup_key, company_name, startup_slug, job_id_legacy, decision, total_score, "
-                "composite_score, strategy_fit_score, team_score, upside_score, bucket, mode, input_order, "
-                "run_created_at, created_at, result_payload"
-            )
-            .eq("job_id_legacy", job_id_legacy)
-            .limit(500)
-            .execute()
+        return _select_company_run_result_rows(
+            client,
+            job_id_legacy,
+            columns=_COMPANY_RUN_RESULT_COLUMNS,
         )
-        return rows.data or []
     except Exception as exc:
+        if _is_missing_source_company_key_error(exc):
+            _log_supabase_error(
+                "load_company_run_rows_for_job.optional_source_company_key",
+                "company_runs",
+                exc,
+                job_id_legacy=job_id_legacy,
+            )
+            try:
+                return _select_company_run_result_rows(
+                    client,
+                    job_id_legacy,
+                    columns=_COMPANY_RUN_RESULT_COLUMNS_WITHOUT_SOURCE_KEY,
+                )
+            except Exception as fallback_exc:
+                _log_supabase_error(
+                    "load_company_run_rows_for_job.fallback",
+                    "company_runs",
+                    fallback_exc,
+                    job_id_legacy=job_id_legacy,
+                )
+                return []
         _log_supabase_error("load_company_run_rows_for_job", "company_runs", exc, job_id_legacy=job_id_legacy)
         return []
 
@@ -2935,6 +3031,7 @@ def get_costs_by_day(days: int = 14) -> list[dict[str, Any]] | None:
                     "total_usd": 0.0,
                     "llm_usd": 0.0,
                     "perplexity_usd": 0.0,
+                    "serper_usd": 0.0,
                     "search_requests": 0,
                 },
             )
@@ -2949,12 +3046,13 @@ def get_costs_by_day(days: int = 14) -> list[dict[str, Any]] | None:
             entry["total_usd"] += float(total_usd)
             entry["llm_usd"] += float(run_costs.get("llm_usd") or 0.0)
             entry["perplexity_usd"] += float(run_costs.get("perplexity_usd") or 0.0)
-            search = run_costs.get("perplexity_search")
+            entry["serper_usd"] += float(run_costs.get("serper_usd") or 0.0)
+            search = run_costs.get("web_search") or run_costs.get("perplexity_search")
             if isinstance(search, dict):
                 entry["search_requests"] += int(search.get("requests") or 0)
         results = sorted(by_day.values(), key=lambda item: item["day"], reverse=True)
         for entry in results:
-            for key in ("total_usd", "llm_usd", "perplexity_usd"):
+            for key in ("total_usd", "llm_usd", "perplexity_usd", "serper_usd"):
                 entry[key] = round(entry[key], 6)
         return results
     except Exception as exc:
@@ -3045,7 +3143,11 @@ def load_job_status(job_id_legacy: str) -> dict[str, Any] | None:
     if isinstance(snapshot_payload, dict) and not progress:
         progress = snapshot_payload.get("job_message")
 
-    if worker_active and analysis_status not in {"done", "error", "stopped"}:
+    if _terminal_history_overrides_active_worker(latest_status, worker_state):
+        status = str(latest_status.get("status") or status).strip().lower()
+        progress = latest_status.get("progress") or progress
+        worker_active = False
+    elif worker_active and analysis_status not in {"done", "error", "stopped"}:
         status = worker_status if worker_status != "claimed" else "running"
         progress = worker_progress or progress
     elif analysis_status in {"done", "error", "stopped"} and (
@@ -3249,7 +3351,11 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
             status = latest_status.get("status") or analysis_status or worker_status or "pending"
             progress = latest_status.get("progress") or worker_progress
             snapshot_payload = latest_analysis.get("results_payload")
-            if worker_active and analysis_status not in {"done", "error", "stopped"}:
+            if _terminal_history_overrides_active_worker(latest_status, worker_state):
+                status = str(latest_status.get("status") or status).strip().lower()
+                progress = latest_status.get("progress") or progress
+                worker_active = False
+            elif worker_active and analysis_status not in {"done", "error", "stopped"}:
                 status = worker_status if worker_status != "claimed" else "running"
                 progress = worker_progress or progress
             elif analysis_status in {"done", "error", "stopped"} and (
@@ -4354,6 +4460,32 @@ def get_web_search_cache_entry(query_hash: str, *, ttl_days: int) -> str | None:
         return results or None
     except Exception as exc:
         _log_supabase_error("get_web_search_cache_entry", "web_search_cache", exc)
+        return None
+
+
+def get_web_search_cache_provider(query_hash: str, *, ttl_days: int) -> str | None:
+    """Return the actual provider recorded for a live cache entry."""
+    client = _get_client()
+    if not client:
+        return None
+    normalized_hash = (query_hash or "").strip()
+    if not normalized_hash:
+        return None
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=ttl_days)).isoformat()
+        rows = (
+            client.table("web_search_cache")
+            .select("provider, created_at")
+            .eq("query_hash", normalized_hash)
+            .gte("created_at", cutoff)
+            .limit(1)
+            .execute()
+        )
+        if not rows.data:
+            return None
+        return str((rows.data[0] or {}).get("provider") or "").strip() or None
+    except Exception as exc:
+        _log_supabase_error("get_web_search_cache_provider", "web_search_cache", exc)
         return None
 
 
@@ -6305,6 +6437,8 @@ def admin_get_recent_analyses(limit: int = 40) -> list[dict[str, Any]]:
                     "total_usd": run_costs.get("total_usd"),
                     "llm_usd": run_costs.get("llm_usd"),
                     "perplexity_usd": run_costs.get("perplexity_usd"),
+                    "serper_usd": run_costs.get("serper_usd"),
+                    "web_search_usd": (run_costs.get("web_search") or {}).get("total_usd"),
                 }
 
             results.append({

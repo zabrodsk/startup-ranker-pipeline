@@ -5,13 +5,15 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Awaitable, Callable, Coroutine, Literal, Protocol, cast
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -26,10 +28,15 @@ CONTRACT_VERSION = "rdi.leadgen-machine.v1"
 SERVICE_ACTOR = "service:rockaway-leadgen"
 SERVICE_KEY_ENV = "RDI_LEADGEN_AUTOSTART_KEY"
 START_ENABLED_ENV = "RDI_LEADGEN_AUTOSTART_ENABLED"
-GLOBAL_START_LIMIT_ENV = "RDI_LEADGEN_GLOBAL_START_LIMIT"
+DAILY_START_LIMIT_ENV = "RDI_LEADGEN_DAILY_START_LIMIT"
+LEGACY_GLOBAL_START_LIMIT_ENV = "RDI_LEADGEN_GLOBAL_START_LIMIT"
 SCORING_VERSION_ENV = "RDI_SCORING_VERSION"
 TARGET_ENVIRONMENT_ENV = "RDI_LEADGEN_TARGET_ENVIRONMENT"
 SERVICE_KEY_HEADER = "X-LeadGen-Service-Key"
+BUSINESS_TIMEZONE = "Europe/Prague"
+
+_LOGGER = logging.getLogger(__name__)
+_PRAGUE = ZoneInfo(BUSINESS_TIMEZONE)
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _INTAKE_REFERENCE_RE = re.compile(r"^rdi-intake-[0-9a-f]{32}$")
@@ -63,6 +70,8 @@ class MachineIntakeRequest(BaseModel):
     source_run_id: str
     batch_id: str
     idempotency_key: str
+    business_date: str
+    business_timezone: Literal["Europe/Prague"]
     target_environment: Literal["staging", "production"]
     provenance_reference: str = Field(min_length=1, max_length=512)
 
@@ -95,11 +104,29 @@ class MachineIntakeRequest(BaseModel):
             raise ValueError("must be bounded printable text without surrounding whitespace")
         return value
 
+    @field_validator("business_date")
+    @classmethod
+    def _validate_business_date(cls, value: str) -> str:
+        try:
+            parsed = date.fromisoformat(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("must be an ISO YYYY-MM-DD date") from exc
+        if parsed.isoformat() != value:
+            raise ValueError("must be an ISO YYYY-MM-DD date")
+        return value
+
 
 class MachineStartRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     target_environment: Literal["staging", "production"]
+    business_date: str
+    business_timezone: Literal["Europe/Prague"]
+
+    @field_validator("business_date")
+    @classmethod
+    def _validate_business_date(cls, value: str) -> str:
+        return MachineIntakeRequest._validate_business_date(value)
 
 
 LifecycleState = Literal[
@@ -142,6 +169,11 @@ class MachineStartResponse(_MachineResponse):
     lifecycle_state: LifecycleState
     actor: Literal["service:rockaway-leadgen"]
     uncertain: bool
+    business_date: str
+    business_timezone: Literal["Europe/Prague"]
+    daily_start_limit: int = Field(ge=1, le=20)
+    daily_started_count: int = Field(ge=0, le=20)
+    daily_remaining_capacity: int = Field(ge=0, le=20)
 
 
 class MachineStatusResponse(_MachineResponse):
@@ -297,15 +329,55 @@ def _require_start_enabled() -> None:
         raise _problem(503, "invalid_start_configuration", "Autonomous start configuration is invalid.")
 
 
-def _global_start_limit() -> int:
-    raw = os.getenv(GLOBAL_START_LIMIT_ENV, "20")
+def _daily_start_limit() -> int:
+    preferred = os.getenv(DAILY_START_LIMIT_ENV)
+    legacy = os.getenv(LEGACY_GLOBAL_START_LIMIT_ENV)
+    if preferred is not None:
+        if legacy not in {None, "", preferred}:
+            raise _problem(
+                503,
+                "invalid_start_configuration",
+                "Daily start limit configuration is ambiguous.",
+            )
+        raw = preferred
+        if legacy is not None:
+            _LOGGER.warning(
+                "%s is deprecated; use %s",
+                LEGACY_GLOBAL_START_LIMIT_ENV,
+                DAILY_START_LIMIT_ENV,
+            )
+    elif legacy is not None:
+        raw = legacy
+        _LOGGER.warning(
+            "%s is deprecated; use %s",
+            LEGACY_GLOBAL_START_LIMIT_ENV,
+            DAILY_START_LIMIT_ENV,
+        )
+    else:
+        raw = "20"
     try:
         value = int(raw)
     except (TypeError, ValueError) as exc:
-        raise _problem(503, "invalid_start_configuration", "Global start limit configuration is invalid.") from exc
-    if value < 1 or value > 100:
-        raise _problem(503, "invalid_start_configuration", "Global start limit configuration is invalid.")
+        raise _problem(503, "invalid_start_configuration", "Daily start limit configuration is invalid.") from exc
+    if value < 1 or value > 20:
+        raise _problem(503, "invalid_start_configuration", "Daily start limit configuration is invalid.")
     return value
+
+
+def _prague_business_date(at: datetime | None = None) -> date:
+    observed = at or datetime.now(timezone.utc)
+    if observed.tzinfo is None or observed.utcoffset() is None:
+        raise ValueError("business-date clock must be timezone-aware")
+    return observed.astimezone(_PRAGUE).date()
+
+
+def _require_current_business_date(value: str) -> None:
+    if date.fromisoformat(value) != _prague_business_date():
+        raise _problem(
+            409,
+            "machine_business_date_closed",
+            "Machine intake business date is not the current Europe/Prague date.",
+        )
 
 
 def _scoring_version() -> str:
@@ -355,6 +427,8 @@ def _intake_record(
             "source_run_id",
             "batch_id",
             "idempotency_key",
+            "business_date",
+            "business_timezone",
             "target_environment",
         )
     }
@@ -419,6 +493,11 @@ def _start_response(record: dict[str, Any]) -> dict[str, Any]:
         "lifecycle_state": state,
         "actor": SERVICE_ACTOR,
         "uncertain": state in {"start_fenced", "uncertain"},
+        "business_date": str(record["business_date"]),
+        "business_timezone": record["business_timezone"],
+        "daily_start_limit": int(record["daily_start_limit"]),
+        "daily_started_count": int(record["daily_started_count"]),
+        "daily_remaining_capacity": int(record["daily_remaining_capacity"]),
     }
 
 
@@ -428,6 +507,10 @@ def _reservation_problem(record: dict[str, Any]) -> HTTPException:
         return _problem(404, "machine_intake_not_found", "Machine intake was not found.")
     if action == "environment_mismatch":
         return _problem(409, "machine_intake_environment_mismatch", "Machine intake environment does not match.")
+    if action == "scope_mismatch":
+        return _problem(409, "machine_intake_scope_mismatch", "Machine intake daily scope does not match.")
+    if action == "business_date_closed":
+        return _problem(409, "machine_business_date_closed", "Machine intake business date is closed.")
     if action == "rate_limited":
         return _problem(429, "machine_start_rate_limited", "The machine-start limit is exhausted.")
     if action == "terminal_invalid":
@@ -454,7 +537,17 @@ def _finalize_or_fence(
         actor=SERVICE_ACTOR,
     )
     if finalized is not None:
-        return finalized
+        return {
+            **finalized,
+            **{
+                key: reservation[key]
+                for key in (
+                    "daily_start_limit",
+                    "daily_started_count",
+                    "daily_remaining_capacity",
+                )
+            },
+        }
     return {**reservation, "lifecycle_state": "start_fenced"}
 
 
@@ -484,6 +577,15 @@ def _timestamp(value: Any, *, field: str) -> str:
 
 def _optional_timestamp(value: Any, *, field: str) -> str | None:
     return _timestamp(value, field=field) if value not in (None, "") else None
+
+
+def _latest_timestamp(*values: str | None) -> str:
+    """Return the latest already-normalized UTC timestamp."""
+    present = [value for value in values if value is not None]
+    return max(
+        present,
+        key=lambda value: datetime.fromisoformat(value[:-1] + "+00:00"),
+    )
 
 
 def _exact_decimal(value: Any, *, field: str) -> str:
@@ -545,6 +647,10 @@ def _safe_error_message(value: Any) -> str:
 def _status_payload(record: dict[str, Any]) -> dict[str, Any]:
     state = str(record.get("lifecycle_state") or "")
     terminal = state in {"succeeded", "failed", "cancelled", "rejected"}
+    created_at = _timestamp(record["created_at"], field="created_at")
+    updated_at = _timestamp(record.get("updated_at") or record["created_at"], field="updated_at")
+    started_at = _optional_timestamp(record.get("started_at"), field="started_at")
+    completed_at = _optional_timestamp(record.get("completed_at"), field="completed_at")
     return {
         "contract_version": CONTRACT_VERSION,
         "intake_id": record["intake_id"],
@@ -554,10 +660,10 @@ def _status_payload(record: dict[str, Any]) -> dict[str, Any]:
         "job_id": record.get("job_id"),
         "lifecycle_state": state,
         "terminal": terminal,
-        "created_at": _timestamp(record["created_at"], field="created_at"),
-        "updated_at": _timestamp(record.get("updated_at") or record["created_at"], field="updated_at"),
-        "started_at": _optional_timestamp(record.get("started_at"), field="started_at"),
-        "completed_at": _optional_timestamp(record.get("completed_at"), field="completed_at"),
+        "created_at": created_at,
+        "updated_at": _latest_timestamp(updated_at, started_at, completed_at),
+        "started_at": started_at,
+        "completed_at": completed_at,
     }
 
 
@@ -643,6 +749,7 @@ def build_leadgen_machine_router(
         request: MachineIntakeRequest,
     ) -> dict[str, Any]:
         target_environment = _target_environment(request.target_environment)
+        _require_current_business_date(request.business_date)
         store = _require_store(dependencies)
         result = store.create_machine_intake(
             **_intake_record(request, target_environment=target_environment)
@@ -670,9 +777,11 @@ def build_leadgen_machine_router(
         reservation = store.reserve_machine_start(
             intake_id=intake_id,
             target_environment=target_environment,
+            business_date=request.business_date,
+            business_timezone=request.business_timezone,
             job_id=_job_id(intake_id),
             actor=SERVICE_ACTOR,
-            global_limit=_global_start_limit(),
+            daily_start_limit=_daily_start_limit(),
         )
         if reservation is None:
             raise _problem(503, "machine_start_reservation_failed", "Machine start reservation could not be persisted.")
@@ -698,6 +807,11 @@ def build_leadgen_machine_router(
                 "batch_id": reservation["batch_id"],
                 "rdi_correlation_id": reservation["rdi_correlation_id"],
                 "target_environment": target_environment,
+                "business_date": reservation["business_date"],
+                "business_timezone": reservation["business_timezone"],
+                "daily_start_limit": reservation["daily_start_limit"],
+                "daily_started_count": reservation["daily_started_count"],
+                "daily_remaining_capacity": reservation["daily_remaining_capacity"],
                 "actor": SERVICE_ACTOR,
             },
         }

@@ -15,11 +15,17 @@ if str(ROOT / "src") not in sys.path:
 from web.verify_flag_staging import COST_OBSERVABLE_FEATURES, verify_feature
 
 
-def _cost(stages, perplexity_requests=0):
+def _cost(stages, perplexity_requests=0, serper_requests=0, web_requests=None):
+    totals = {
+        "perplexity_search": {"requests": perplexity_requests},
+        "serper_search": {"requests": serper_requests},
+    }
+    if web_requests is not None:
+        totals["web_search"] = {"requests": web_requests}
     return {
         "job_id": "j",
         "stages": stages,
-        "totals": {"perplexity_search": {"requests": perplexity_requests}},
+        "totals": totals,
     }
 
 
@@ -82,6 +88,17 @@ def test_w13_perplexity_requests_drop():
 def test_w13_no_drop_fails():
     passed, _ = verify_feature("w13", _cost([], perplexity_requests=10), _cost([], perplexity_requests=10))
     assert passed is False
+
+
+def test_w13_counts_serper_and_prefers_provider_aggregate():
+    passed, evidence = verify_feature(
+        "w13",
+        _cost([], serper_requests=4, web_requests=4),
+        _cost([], serper_requests=15, web_requests=15),
+    )
+
+    assert passed is True
+    assert "web-search requests" in evidence
 
 
 def test_unknown_feature_fails():

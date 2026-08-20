@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from threading import Lock, Semaphore
-from typing import Any, Awaitable, Iterable
+from typing import Any, Awaitable, Callable, Iterable
 
 from agent.run_context import (
     get_current_collector,
@@ -87,12 +87,23 @@ class InvocationThrottle:
     def release_async(self) -> None:
         self._sync_semaphore.release()
 
-    def acquire_sync(self) -> None:
-        self._sync_semaphore.acquire()
+    def acquire_sync(self, *, deadline: float | None = None) -> bool:
+        if deadline is None:
+            self._sync_semaphore.acquire()
+        else:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not self._sync_semaphore.acquire(timeout=remaining):
+                return False
         while True:
+            if deadline is not None and deadline <= time.monotonic():
+                self._sync_semaphore.release()
+                return False
             delay = self._reserve_slot()
             if delay <= 0:
-                return
+                return True
+            if deadline is not None and delay >= deadline - time.monotonic():
+                self._sync_semaphore.release()
+                return False
             time.sleep(delay)
 
     def release_sync(self) -> None:
@@ -385,21 +396,60 @@ async def gather_with_concurrency(
     return await asyncio.gather(*(_run(item) for item in items))
 
 
-def run_with_sync_retries(callable_: Any, *args: Any, **kwargs: Any) -> Any:
+def run_with_sync_retries(
+    callable_: Any,
+    *args: Any,
+    max_elapsed_seconds: float | None = None,
+    max_attempts: int | None = None,
+    on_attempt_started: Callable[[], None] | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Run a throttled sync call with retries inside an enforceable deadline.
+
+    The deadline includes throttle acquisition and pacing. Per-attempt HTTP
+    timeouts are capped to the remaining budget, so callers never need to
+    abandon an uncancellable ``asyncio.to_thread`` operation.
+    """
     throttle = web_search_throttle()
     retry_policy = web_search_retry_policy()
     attempt = 0
+    deadline = (
+        time.monotonic() + max(0.001, max_elapsed_seconds)
+        if max_elapsed_seconds is not None
+        else None
+    )
 
     while True:
-        throttle.acquire_sync()
+        if not throttle.acquire_sync(deadline=deadline):
+            raise TimeoutError("Web search deadline exceeded waiting for capacity.")
         try:
-            return callable_(*args, **kwargs)
+            call_kwargs = kwargs
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Web search deadline exceeded before retry.")
+                configured_timeout = kwargs.get("timeout")
+                if isinstance(configured_timeout, (int, float)):
+                    call_kwargs = dict(kwargs)
+                    call_kwargs["timeout"] = max(0.001, min(float(configured_timeout), remaining))
+            if on_attempt_started is not None:
+                on_attempt_started()
+            return callable_(*args, **call_kwargs)
         except Exception as exc:
-            if attempt >= retry_policy.max_retries or not is_retryable_api_error(exc):
+            attempts_used = attempt + 1
+            if (
+                attempt >= retry_policy.max_retries
+                or (max_attempts is not None and attempts_used >= max(1, max_attempts))
+                or not is_retryable_api_error(exc)
+            ):
                 raise
             delay = compute_retry_delay(exc, attempt, retry_policy)
             if is_rate_limit_error(exc):
                 throttle.impose_sync_cooldown(delay)
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= delay:
+                    raise TimeoutError("Web search deadline exceeded during retries.") from exc
         finally:
             throttle.release_sync()
 

@@ -102,6 +102,123 @@ def test_quota_limit_is_subclass_of_mcp_error():
 
 
 # ---------------------------------------------------------------------------
+# Financial tool compatibility
+# ---------------------------------------------------------------------------
+
+def test_get_company_financials_adapts_split_funding_rounds_tool(monkeypatch):
+    """Specter replaced get_company_financials with split finance tools.
+
+    Keep the client-facing compatibility method stable while normalizing the
+    funding-round payload into the schema consumed by the evidence builders.
+    """
+    client = object.__new__(SpecterMCPClient)
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        calls.append((name, arguments))
+        assert name == "get_company_funding_rounds"
+        return {
+            "external_company_id": "61643d92c3c073075bcb8983",
+            "total": 2,
+            "funding_rounds": [
+                {
+                    "external_funding_round_id": "fnr_latest",
+                    "name": "Series E",
+                    "investment_type": "series_e",
+                    "announced_on": "2025-01-01",
+                    "raised_amount_usd": 500_000_000,
+                    "pre_money_valuation_usd": 49_500_000_000,
+                    "post_money_valuation_usd": 50_000_000_000,
+                    "investors": [
+                        {
+                            "external_investor_id": "inv_a",
+                            "name": "A",
+                            "is_lead_investor": True,
+                        },
+                        {
+                            "external_investor_id": "inv_b",
+                            "name": "B",
+                            "is_lead_investor": False,
+                        },
+                    ],
+                },
+                {
+                    "external_funding_round_id": "fnr_seed",
+                    "name": "Seed",
+                    "investment_type": "seed",
+                    "announced_on": "2022-01-01",
+                    "raised_amount_usd": 100_000_000,
+                    "pre_money_valuation_usd": None,
+                    "post_money_valuation_usd": None,
+                    "investors": [
+                        {
+                            "external_investor_id": "inv_a",
+                            "name": "A",
+                            "is_lead_investor": True,
+                        }
+                    ],
+                },
+            ],
+        }
+
+    monkeypatch.setattr(client, "_call_tool", fake_call_tool)
+
+    financials = client.get_company_financials("61643d92c3c073075bcb8983")
+
+    assert calls == [
+        (
+            "get_company_funding_rounds",
+            {"external_company_id": "61643d92c3c073075bcb8983", "limit": 50},
+        )
+    ]
+    assert financials == {
+        "total_funding_amount": 600_000_000,
+        "last_funding_amount": 500_000_000,
+        "last_funding_date": "2025-01-01",
+        "last_funding_type": "Series E",
+        "post_money_valuation": 50_000_000_000,
+        "number_of_funding_rounds": 2,
+        "number_of_investors": 2,
+        "investors": ["A", "B"],
+        "funding_rounds": [
+            {
+                "funding_round_name": "Series E",
+                "date": "2025-01-01",
+                "raised": 500_000_000,
+                "lead_investors_partners": [
+                    {
+                        "external_investor_id": "inv_a",
+                        "name": "A",
+                        "is_lead_investor": True,
+                    },
+                    {
+                        "external_investor_id": "inv_b",
+                        "name": "B",
+                        "is_lead_investor": False,
+                    },
+                ],
+                "pre_money_valuation": 49_500_000_000,
+                "post_money_valuation": 50_000_000_000,
+            },
+            {
+                "funding_round_name": "Seed",
+                "date": "2022-01-01",
+                "raised": 100_000_000,
+                "lead_investors_partners": [
+                    {
+                        "external_investor_id": "inv_a",
+                        "name": "A",
+                        "is_lead_investor": True,
+                    }
+                ],
+                "pre_money_valuation": None,
+                "post_money_valuation": None,
+            },
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Brand stem extraction
 # ---------------------------------------------------------------------------
 
@@ -311,10 +428,30 @@ def test_verify_match_rejects_scribe_to_shopscribe_regression():
         )
 
 
-def test_verify_match_rejects_name_mismatch_when_expected_provided():
+@pytest.mark.parametrize(
+    ("identifier", "expected_name", "returned_name"),
+    [
+        ("https://amilabs.xyz/", "AMI Labs", "AMI - Advanced Machine Intelligence"),
+        ("https://designverse.ai/", "DesignVerse", "FigVision"),
+        ("https://www.npco.ai/", "NP Company", "NPco"),
+        ("https://www.recurvia.ai/", "Inephany Ltd (Recurvia)", "recurvia"),
+        ("https://staer.ai/", "Staer AB", "Staer"),
+    ],
+)
+def test_verify_match_accepts_name_variants_for_exact_verified_domain(
+    identifier, expected_name, returned_name
+):
+    _verify_match(
+        identifier,
+        expected_name,
+        {"name": returned_name, "domain": _domain_root(identifier)},
+    )
+
+
+def test_verify_match_rejects_name_mismatch_for_name_identifier():
     with pytest.raises(SpecterDisambiguationError):
         _verify_match(
-            "scribe.com",
+            "Scribe",
             "Scribe",
             {"name": "Shopscribe", "domain": "scribe.com"},
         )

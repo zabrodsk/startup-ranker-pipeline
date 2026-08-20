@@ -1,14 +1,16 @@
 """Centralized multi-provider LLM factory.
 
-Supports Gemini, OpenAI, Anthropic, and OpenRouter via environment variables.
+Supports Gemini, OpenAI, Anthropic, OpenRouter, and Meta via environment variables.
 
 Environment variables:
-    LLM_PROVIDER: One of "gemini", "openai", "anthropic", "openrouter" (default: "gemini")
+    LLM_PROVIDER: One of "gemini", "openai", "anthropic", "openrouter", "meta" (default: "gemini")
     MODEL_NAME: Model identifier (default: "gemini-3.1-flash-lite-preview")
     GOOGLE_API_KEY: Required when LLM_PROVIDER=gemini
     OPENAI_API_KEY: Required when LLM_PROVIDER=openai
     OPENROUTER_API_KEY: Required when LLM_PROVIDER=openrouter (falls back to OPENAI_API_KEY)
     ANTHROPIC_API_KEY: Required when LLM_PROVIDER=anthropic
+    MODEL_API_KEY: Required when LLM_PROVIDER=meta
+    META_BASE_URL: Optional when LLM_PROVIDER=meta (defaults to https://api.meta.ai/v1)
     OPENROUTER_BASE_URL: Optional when LLM_PROVIDER=openrouter (defaults to https://openrouter.ai/api/v1)
     OPENAI_BASE_URL: Legacy fallback for OpenRouter base URL
 """
@@ -17,14 +19,19 @@ import os
 from threading import Lock
 from typing import Any
 
+import tiktoken
 from dotenv import load_dotenv
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
-import tiktoken
 
-from agent.llm_catalog import normalize_creativity, normalize_provider, supports_selection_creativity_control
+from agent.llm_catalog import (
+    normalize_creativity,
+    normalize_provider,
+    supports_selection_creativity_control,
+)
 from agent.llm_policy import (
+    resolve_meta_phase_sampling,
     resolve_openai_phase_sampling,
     resolve_openai_reasoning_fallback_temperature,
 )
@@ -50,6 +57,7 @@ _CHAT_PROVIDER = "gemini"
 _CHAT_MODEL = "gemini-3.1-flash-lite-preview"
 _FALLBACK_ENCODING_NAME = "o200k_base"
 _DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+_DEFAULT_META_BASE_URL = "https://api.meta.ai/v1"
 _OPENROUTER_DEFAULT_APP_NAME = "Deal Intelligence"
 _GPT5_TEMPERATURE_MODE_ENV = "OPENAI_GPT5_TEMPERATURE_MODE"
 _DEFAULT_GPT5_TEMPERATURE_MODE = "respect_requested"
@@ -365,7 +373,13 @@ def _is_exact_gpt5_model(model: str) -> bool:
 
 
 def _is_reasoning_effort_model(model: str) -> bool:
-    return (model or "").strip() in {"gpt-5.2", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"}
+    return (model or "").strip() in {
+        "gpt-5.2",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
+        "gpt-5.6-luna",
+    }
 
 
 def _resolve_openai_request_settings(
@@ -478,6 +492,26 @@ def create_llm(
                 selected_reasoning_effort=selection_reasoning_effort,
             )
         )
+    elif provider == "meta":
+        resolved_meta = resolve_meta_phase_sampling(
+            model,
+            get_current_stage_name(),
+            requested_temperature,
+            requested_reasoning_effort=requested_reasoning_effort,
+            selected_temperature=selection_temperature,
+            selected_reasoning_effort=selection_reasoning_effort,
+        )
+        if resolved_meta is not None:
+            resolved_temperature = resolved_meta.get("temperature")
+            resolved_reasoning_effort = resolved_meta.get("reasoning_effort")
+            request_settings.update(
+                {
+                    "effective_temperature": resolved_temperature,
+                    "sampling_mode": "temperature_plus_reasoning",
+                    "requested_reasoning_effort": resolved_reasoning_effort,
+                    "effective_reasoning_effort": resolved_reasoning_effort,
+                }
+            )
     set_current_llm_request_settings(request_settings)
     effective_temperature = request_settings["effective_temperature"]
 
@@ -503,10 +537,20 @@ def create_llm(
         return wrap_llm(_create_openrouter(model, requested_temperature or 0.0, timeout_s, max_retries))
     elif provider == "anthropic":
         return wrap_llm(_create_anthropic(model, requested_temperature or 0.0, timeout_s, max_retries))
+    elif provider == "meta":
+        return wrap_llm(
+            _create_meta(
+                model,
+                effective_temperature,
+                timeout_s,
+                max_retries,
+                reasoning_effort=request_settings.get("effective_reasoning_effort"),
+            )
+        )
     else:
         raise ValueError(
             f"Unknown LLM_PROVIDER '{provider}'. "
-            "Supported: gemini, openai, anthropic, openrouter"
+            "Supported: gemini, openai, anthropic, openrouter, meta"
         )
 
 
@@ -668,6 +712,36 @@ def _create_openrouter(
         default_headers=default_headers,
         callbacks=[_TELEMETRY_CALLBACK],
     )
+
+
+def _create_meta(
+    model: str,
+    temperature: float | None,
+    timeout_s: float,
+    max_retries: int,
+    reasoning_effort: str | None = None,
+) -> BaseChatModel:
+    """Create a Meta Model API client through its OpenAI-compatible endpoint."""
+    from langchain_openai import ChatOpenAI
+
+    api_key = os.getenv("MODEL_API_KEY")
+    if not api_key:
+        raise ValueError("MODEL_API_KEY is required when LLM_PROVIDER=meta")
+
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "api_key": api_key,
+        "base_url": os.getenv("META_BASE_URL") or _DEFAULT_META_BASE_URL,
+        "request_timeout": timeout_s,
+        "max_retries": max_retries,
+        "use_responses_api": False,
+        "callbacks": [_TELEMETRY_CALLBACK],
+    }
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    if reasoning_effort is not None:
+        kwargs["reasoning_effort"] = reasoning_effort
+    return ChatOpenAI(**kwargs)
 
 
 def _create_anthropic(

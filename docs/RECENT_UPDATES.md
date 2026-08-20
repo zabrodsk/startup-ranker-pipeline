@@ -23,6 +23,35 @@ Specter header sniffing, Rockaway branding) are preserved below.
 
 ---
 
+## GPT-5.6 Luna Pipeline Defaults (2026-08-03)
+
+The New Analysis pipeline now defaults every user-facing phase to
+`gpt-5.6-luna`. Phase-aware sampling keeps creative generation at temperature
+`0.7`, while evidence and decision stages use explicit reasoning effort from
+`low` through `high` and omit temperature.
+
+## Budget-Aware Question Portfolio (2026-08-06)
+
+Question decomposition now receives a fixed 76-question portfolio before it
+generates anything: 14 strategy-fit, 24 market, 20 product, and 18 team nodes,
+with each category count including its root. The prompt requires Luna to build
+a larger private candidate pool, rank candidates by decision value, remove
+overlap, and then return the exact category allocation with mandatory coverage
+tags, rationale, and priority metadata. Structural validation rejects and
+regenerates an invalid category; the pipeline never truncates a generated tree.
+Luna decomposition uses medium reasoning with temperature omitted.
+
+## Meta Muse Spark Contributor Staging Arm (2026-08-06)
+
+Staging can now route every pipeline phase through
+`muse-spark-1.2-contributor` using Meta's OpenAI-compatible Model API. The
+phase policy combines temperature and reasoning effort: low reasoning for
+decomposition and Q&A, minimal reasoning for creative generation, medium for
+evaluation, and high for decision ranking. The model becomes the phase default
+when `MODEL_API_KEY` is configured. Contributor data-use terms apply.
+
+---
+
 ## Production Persistence Fix (2026-04-30)
 
 A pre-existing production bug surfaced during the Specter MCP cutover and
@@ -134,11 +163,11 @@ On any failure (no URL, MCP error, disambiguation rejection,
 A second toggle "Fetch deep team profiles (Specter)" (default OFF) flips
 `fetch_full_team`:
 
-- **OFF** — 3 MCP calls per company (find + profile + intelligence +
-  financials). Founders come from the `intelligence.founders` summary
-  list. Recommended for pitch-deck mode (deck usually carries founder
-  bios).
-- **ON** — Same 3 calls + one `get_person_profile` per founder/key
+- **OFF** — 4 MCP calls per company (`find_company`, `get_company_profile`,
+  `get_company_intelligence`, and `get_company_funding_rounds`). Founders come
+  from the `intelligence.founders` summary list. Recommended for pitch-deck
+  mode (deck usually carries founder bios).
+- **ON** — Same 4 calls + one `get_person_profile` per founder/key
   person. Adds ~60% more MCP calls but yields full LinkedIn-grade
   career history, education, and seniority per person. Recommended for
   URL-list mode where there is no deck context.
@@ -184,7 +213,8 @@ See `.env.example` and the README's environment table.
 
 - **NEW** `src/agent/ingest/specter_mcp_client.py` — OAuth token
   manager, MCP tool wrappers (`find_company`, `get_company_profile`,
-  `get_company_intelligence`, `get_company_financials`,
+  `get_company_intelligence`, `get_company_funding_rounds` (normalized through
+  the compatibility `get_company_financials` method),
   `get_person_profile`), chunk builders, `fetch_specter_company()`
   with brand-stem fallback.
 - **NEW** `src/agent/ingest/specter_augmentation.py` —

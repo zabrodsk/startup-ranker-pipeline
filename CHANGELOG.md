@@ -4,6 +4,34 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed — budget-aware investment-question portfolio (2026-08-06)
+
+- Replaced unconstrained question decomposition with an upfront 76-question
+  portfolio: 14 strategy-fit, 24 market, 20 product, and 18 team nodes.
+- Added deterministic validation for exact count, root identity, uniqueness,
+  coverage tags, decision rationale, priority, connectivity, and parentage.
+  Invalid category trees are regenerated in full and are never truncated.
+- Raised GPT-5.6 Luna decomposition from low to medium reasoning while keeping
+  temperature omitted; all other Luna phase defaults are unchanged.
+
+### Added — Meta Muse Spark Contributor staging model (2026-08-06)
+
+- Added `muse-spark-1.2-contributor` through Meta's OpenAI-compatible Model API,
+  including structured-output selection, cost telemetry, phase-specific
+  temperature/reasoning defaults, and the New Analysis model selector.
+- The Meta model becomes the per-phase default only when `MODEL_API_KEY` is
+  configured; existing Luna defaults remain the credential-aware fallback.
+- The Contributor catalog entry and environment docs warn that its prompts and
+  outputs may be used to improve future Meta models.
+
+### Fixed — Specter MCP financial tool compatibility (2026-08-03)
+
+- Specter removed the legacy `get_company_financials` MCP tool and replaced it
+  with split finance tools. The client now calls `get_company_funding_rounds`
+  and normalizes the response into the existing evidence schema, restoring URL
+  quality preflight and worker enrichment without increasing per-company MCP
+  call count.
+
 ### Fixed — production persistence (2026-04-30)
 
 - **Missing non-partial UNIQUE constraint on `companies.company_key`** —

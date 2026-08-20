@@ -505,6 +505,48 @@ def test_specter_mcp_quota_preflight_blocks_before_quality_preflight(
     assert web_app._jobs[job_id].status == "pending"
 
 
+def test_specter_mcp_quota_preflight_allows_explicit_machine_fallback(
+    monkeypatch,
+    guardrail_modules,
+) -> None:
+    web_app = guardrail_modules.app
+
+    class SpecterMCPError(RuntimeError):
+        pass
+
+    class SpecterCompanyNotFoundError(SpecterMCPError):
+        pass
+
+    class SpecterQuotaLimitError(SpecterMCPError):
+        reset_hint = "00:00 UTC"
+
+    class Client:
+        def find_company(self, _identifier):
+            raise SpecterQuotaLimitError("Daily MCP limit reached")
+
+    monkeypatch.setattr(
+        web_app,
+        "_lazy_import_specter_mcp_preflight_symbols",
+        lambda: (
+            SpecterCompanyNotFoundError,
+            SpecterMCPError,
+            SpecterQuotaLimitError,
+            lambda: Client(),
+            lambda _message: "00:00 UTC",
+        ),
+    )
+
+    response = asyncio.run(
+        web_app._run_specter_mcp_start_preflight(
+            job_id=None,
+            identifiers=[{"url": "https://variene.ai"}],
+            allow_quota_fallback=True,
+        )
+    )
+
+    assert response is None
+
+
 def test_specter_mcp_unavailable_preflight_blocks_with_503(
     monkeypatch,
     tmp_path: Path,

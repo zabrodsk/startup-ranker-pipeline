@@ -180,12 +180,13 @@ subsequent token rotation the new refresh token is persisted to the
 the session reaches its bounded maximum lifetime.
 
 **Cost control** — The deep-team toggle (UI: "Fetch deep team profiles")
-controls per-founder profile fan-out. Default OFF: ~3 MCP calls per
-company (find + profile + intelligence + financials). Default ON: same
-plus one `get_person_profile` per founder/key person — adds ~60% more
-calls and yields full LinkedIn-grade career history. Recommended OFF for
-pitch-deck mode (deck usually carries founder bios) and ON for URL-list
-mode where there is no deck context.
+controls per-founder profile fan-out. Default OFF: 4 MCP calls per company
+(`find_company`, `get_company_profile`, `get_company_intelligence`, and
+`get_company_funding_rounds`). Default ON: the same calls plus one
+`get_person_profile` per founder/key person — adds ~60% more calls and yields
+full LinkedIn-grade career history. Recommended OFF for pitch-deck mode (deck
+usually carries founder bios) and ON for URL-list mode where there is no deck
+context.
 
 ### Railway deployment layout
 
@@ -291,12 +292,18 @@ Copy `.env.example` to `.env` and set:
 | `OPENROUTER_API_KEY` | if OpenRouter | For `LLM_PROVIDER=openrouter` |
 | `OPENROUTER_BASE_URL` | optional | Defaults to `https://openrouter.ai/api/v1` |
 | `ANTHROPIC_API_KEY` | if Anthropic | For `LLM_PROVIDER=anthropic` |
+| `MODEL_API_KEY` | if Meta | For `LLM_PROVIDER=meta` |
+| `META_BASE_URL` | optional | Meta Model API base URL (default: `https://api.meta.ai/v1`) |
 | `APP_ENV` | optional | `development` (default), `staging`, or `production` |
 | `APP_PASSWORD` | optional locally, required in production web | Web app login |
 | `SESSION_SECRET` | optional locally, required in production web | Cookie/session signing secret |
 | `PPLX_API_KEY` | optional | Perplexity for web search |
+| `SERPER_API_KEY` | optional | Serper Google Search API (primary in `hybrid` mode) |
 | `BRAVE_SEARCH_API_KEY` | optional | Brave Search alternative |
-| `WEB_SEARCH_PROVIDER` | optional | `sonar` (Perplexity) or `brave` |
+| `WEB_SEARCH_PROVIDER` | optional | `hybrid` (Serper then quality-gated Perplexity), `serper`, `sonar`, or `brave` |
+| `RDI_SHARED_WEB_EVIDENCE` | optional | `on` builds one reusable company-wide search portfolio (requires planner `on`) |
+| `WEB_SEARCH_CORE_BUDGET` | optional | Company-wide core evidence objectives (default: `10`) |
+| `WEB_SEARCH_RESERVE_BUDGET` | optional | Question-specific material-gap reserves (default: `2`) |
 | `MAX_PPLX_CALLS_PER_COMPANY` | optional | Per-company web-search cap (default: `100`) |
 | `WEB_SEARCH_TRIGGER` | optional | `answer` (default) or `no_chunks` |
 | `WEB_SEARCH_HEAVY_OVERRIDE` | optional | Gate for forced market/competitor searches: `always` (default), `root_only`, or `never` |
@@ -311,7 +318,8 @@ Copy `.env.example` to `.env` and set:
 | `RDI_LEADGEN_AUTOSTART_KEY` | for LeadGen machine routes | Dedicated server-side key for the versioned machine contract |
 | `RDI_LEADGEN_AUTOSTART_ENABLED` | optional | Must be exactly `true` to permit autonomous machine starts; otherwise fail closed |
 | `RDI_LEADGEN_TARGET_ENVIRONMENT` | for LeadGen machine routes | Server deployment target; must be exactly `staging` or `production` and match every machine intake/start request |
-| `RDI_LEADGEN_GLOBAL_START_LIMIT` | optional | Maximum machine starts across campaigns per target environment (default: `20`) |
+| `RDI_LEADGEN_DAILY_START_LIMIT` | optional | Maximum machine starts per Prague business date and target environment (default: `20`) |
+| `RDI_LEADGEN_GLOBAL_START_LIMIT` | deprecated alias | Used only when the daily variable is unset; configuring both fails closed |
 | `RDI_SCORING_VERSION` | for LeadGen machine start | Explicit scoring version persisted with the worker job and returned in terminal results |
 | `SPECTER_WORKER_POLL_SECONDS` | optional | Poll interval for the dedicated Specter worker (code default: `5`; current Railway production override: `10`) |
 | `SPECTER_MCP_URL` | optional | Specter MCP endpoint (default: `https://mcp.tryspecter.com/mcp`) — used for both URL-list intake and pitch-deck augmentation |
@@ -346,7 +354,19 @@ MODEL_NAME=gpt-5.4-mini
 OPENAI_API_KEY=your_openai_api_key_here
 ```
 
-Available OpenAI models in the UI: `gpt-5.4-nano`, `gpt-5.4-mini`, `gpt-5`, `gpt-4.1-mini`, `o4-mini`, `gpt-5.2`, `gpt-5.4`
+Available OpenAI models in the UI: `gpt-5.6-luna`, `gpt-5.4-nano`, `gpt-5.4-mini`, `gpt-5`, `gpt-4.1-mini`, `o4-mini`, `gpt-5.2`, `gpt-5.4`
+
+**Example for Meta Muse Spark Contributor:**
+
+```
+LLM_PROVIDER=meta
+MODEL_NAME=muse-spark-1.2-contributor
+MODEL_API_KEY=your_meta_model_api_key_here
+```
+
+The Contributor tier may allow Meta to use submitted prompts and outputs for
+future model training. Use it only with analysis inputs approved for that data
+use; the staging catalog labels the model accordingly.
 
 **Example for OpenRouter:**
 

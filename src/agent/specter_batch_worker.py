@@ -37,6 +37,8 @@ EVENT_PREFIX = "__SPECTER_COMPANY_EVENT__"
 SPECTER_MCP_QUOTA_ERROR_CODE = "specter_mcp_quota_exhausted"
 POLL_SECONDS = max(1, int(os.getenv("SPECTER_WORKER_POLL_SECONDS", "5")))
 HEARTBEAT_SECONDS = max(10, int(os.getenv("SPECTER_WORKER_HEARTBEAT_SECONDS", "20")))
+FINALIZATION_ATTEMPTS = 3
+FINALIZATION_RETRY_SECONDS = 2.0
 
 
 def _log(message: str) -> None:
@@ -225,6 +227,64 @@ def _final_job_outcome(
         "done",
         f"Analysis complete — {completed_companies}/{total_companies} companies ranked",
     )
+
+
+async def _load_final_results_with_retry(job_id: str) -> dict[str, Any] | None:
+    for attempt in range(1, FINALIZATION_ATTEMPTS + 1):
+        loaded = db.load_job_results(job_id, preferred_mode="specter")
+        if loaded and isinstance(loaded.get("results"), dict):
+            return loaded["results"]
+        if attempt >= FINALIZATION_ATTEMPTS:
+            break
+        message = (
+            "Final report reconstruction unavailable; retrying "
+            f"({attempt}/{FINALIZATION_ATTEMPTS})."
+        )
+        _log(f"{job_id}: {message}")
+        db.insert_analysis_event(
+            job_id,
+            message=message,
+            event_type="worker_finalize_retry",
+            stage="finalize",
+        )
+        if FINALIZATION_RETRY_SECONDS:
+            await asyncio.sleep(FINALIZATION_RETRY_SECONDS * attempt)
+    return None
+
+
+async def _persist_final_snapshot_with_retry(
+    job_id: str,
+    *,
+    results: dict[str, Any],
+    run_config: dict[str, Any],
+    versions: dict[str, Any],
+    worker_state: dict[str, Any],
+) -> bool:
+    for attempt in range(1, FINALIZATION_ATTEMPTS + 1):
+        if db.persist_analysis_snapshot(
+            job_id,
+            results_payload=results,
+            run_config=run_config,
+            versions=versions,
+            worker_state=worker_state,
+        ):
+            return True
+        if attempt >= FINALIZATION_ATTEMPTS:
+            break
+        message = (
+            "Final report snapshot persistence unavailable; retrying "
+            f"({attempt}/{FINALIZATION_ATTEMPTS})."
+        )
+        _log(f"{job_id}: {message}")
+        db.insert_analysis_event(
+            job_id,
+            message=message,
+            event_type="worker_finalize_persist_retry",
+            stage="finalize",
+        )
+        if FINALIZATION_RETRY_SECONDS:
+            await asyncio.sleep(FINALIZATION_RETRY_SECONDS * attempt)
+    return False
 
 
 def _quota_exhausted_final_message(info: _SpecterWorkerQuotaExhausted) -> str:
@@ -767,8 +827,15 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
             total_companies=total_companies,
             worker_id=worker_id,
         )
-        loaded = db.load_job_results(job_id, preferred_mode="specter")
-        if not loaded or not isinstance(loaded.get("results"), dict):
+        no_persisted_company_results_expected = completed_companies <= 0 and bool(
+            stopped or quota_exhausted or failed_companies > 0
+        )
+        results = (
+            None
+            if no_persisted_company_results_expected
+            else await _load_final_results_with_retry(job_id)
+        )
+        if results is None:
             if stopped or quota_exhausted or (completed_companies <= 0 and failed_companies > 0):
                 # No company_runs exist when every company failed before a
                 # trustworthy company result could be persisted. Still write a
@@ -776,8 +843,6 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
                 results = {}
             else:
                 raise RuntimeError("Could not reconstruct final Specter results from persisted state.")
-        else:
-            results = loaded["results"]
         if stopped:
             final_status = "stopped"
             final_message = f"Stopped by user — {completed_companies}/{total_companies} companies ranked"
@@ -792,6 +857,9 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
             )
         results["job_status"] = final_status
         results["job_message"] = final_message
+        if results.get("mode") == "batch":
+            results["num_companies"] = completed_companies
+            results["num_skipped"] = failed_companies
         if quota_exhausted:
             results["error_code"] = SPECTER_MCP_QUOTA_ERROR_CODE
             results["quota_remaining"] = "unknown"
@@ -816,9 +884,9 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
             if quota_exhausted.reset_hint:
                 worker_state["reset_hint"] = quota_exhausted.reset_hint
 
-        if not db.persist_analysis_snapshot(
+        if not await _persist_final_snapshot_with_retry(
             job_id,
-            results_payload=results,
+            results=results,
             run_config=run_config,
             versions=versions,
             worker_state=worker_state,

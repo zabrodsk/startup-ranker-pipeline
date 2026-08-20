@@ -34,6 +34,9 @@ jobs:
         # on real errors. F841 backlog is tracked for later sprints.
         run: uv run ruff check --select F,E9 --ignore F841 .
 
+      - name: Verify protected production scoring
+        run: uv run python scripts/verify_protected_scoring.py
+
       - name: Byte-compile web entrypoints
         run: uv run python -m py_compile web/app.py web/db.py
 

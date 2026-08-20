@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "algorithm": "sha256",
+  "authoritative_production_commit": "662a9d88397e4b5519f4b67e7379beea37207623",
+  "files": {
+    "src/agent/dataclasses/config.py": "0d7dad1bd227be7560c447a21e24df2a4084eec4abdc86553b916f9b3525ea5e",
+    "src/agent/dataclasses/ranking.py": "92f808d8e78015c96e68be683475c9aba04fe576aa329af4167e17fabbcfd00a",
+    "src/agent/pipeline/stages/ranking.py": "6545f3b2ef24e873a72791d040be44747e967d395581331d5028ba497d7d5dab",
+    "src/agent/prompt_library/defaults.py": "d95091f7bf8e52d1a6d68fcbfd77d85b904979d602e208f4d272e2db4634f4f2",
+    "src/agent/prompt_library/manager.py": "ef99610b95b2fb9afa93e6636eeb2b68f3f007a45a26d7fa85dccae6aaea2e5c",
+    "src/agent/prompts/__init__.py": "9e2d04f8ad9ec4ebc23b7ea926d55a306786eaeac0115adfb4559aa4d2f0a3b0",
+    "src/agent/prompts/argument_critique.py": "bb4c8b6436e516feea3da61f8fe8340cb3387b8d001eab9e367d0af85c7d310c",
+    "src/agent/prompts/argument_evaluation.py": "771f58dcd9a96b3a11de118e5b174b4bb65a5992bf323f1f4063178741154107",
+    "src/agent/prompts/argument_generation.py": "c4fa09da0d5a50254b0fe9237b930a2dff6c06abc12c40f6b953ae17827bb037",
+    "src/agent/prompts/argument_refinement.py": "3b5a5fd0360f135f75cef80f57ed8f3d95e46df1c8af44c61e36ab46d5756c9a",
+    "src/agent/prompts/question_answering.py": "b910c54f2b3af0c88b7023681221d75d784510c0a83cbb49e92fcdb38d759983",
+    "src/agent/prompts/ranking.py": "8589cde57a5e799d4fea9c062ab19d06a8b66c1dbf6f326dd8fc14d7f30c49f2"
+  }
+}

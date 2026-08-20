@@ -15,6 +15,8 @@ that captures all the sub-questions needed to fully answer the main question.
 
 import asyncio
 import json
+import re
+import unicodedata
 from typing import Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -22,13 +24,14 @@ from langgraph.graph import END, START, StateGraph
 
 from agent.common.llm_config import get_llm
 from agent.dataclasses.question_tree import QuestionNode, QuestionTree
-from agent.prompt_library.manager import get_prompt
+from agent.pipeline.stages.question_portfolio import build_portfolio_instruction
 from agent.pipeline.state.decomposition import (
     DecompositionInput,
     DecompositionOutput,
     DecompositionTree,
 )
 from agent.pipeline.utils.phase_llm import ainvoke_with_phase_fallback
+from agent.prompt_library.manager import get_prompt
 from agent.run_context import get_current_pipeline_policy, use_stage_context
 from agent.web_search.planner import ROUTE_TAGGING_INSTRUCTION, normalize_route_tag
 
@@ -39,9 +42,16 @@ def _normalized_route_value(tag: str | None) -> str | None:
     return normalized.value if normalized else None
 
 
+def _normalized_question_key(value: str) -> str:
+    """Normalize superficial model variations for portfolio deduplication."""
+    normalized = unicodedata.normalize("NFKC", value or "").casefold().strip()
+    return re.sub(r"[^\w]+", " ", normalized).strip()
+
+
 def _build_question_tree_from_decomposition_tree(
     decomposition_tree: DecompositionTree,
-    aspect: Literal["general_company", "market", "product", "team"] | None = "general_company",
+    aspect: Literal["general_company", "market", "product", "team"]
+    | None = "general_company",
 ) -> QuestionTree:
     """Build a hierarchical QuestionTree from the flat DecompositionTree.
 
@@ -82,6 +92,75 @@ def _build_question_tree_from_decomposition_tree(
     return QuestionTree(root_node=root_node, aspect=aspect)
 
 
+def _build_bounded_question_tree(
+    decomposition_tree: DecompositionTree,
+    *,
+    root_question: str,
+    aspect: Literal["general_company", "market", "product", "team"],
+    max_nodes: int,
+) -> QuestionTree:
+    """Keep usable questions up to a soft maximum without rejecting LLM output."""
+    root_text = (root_question or "").strip()
+    if not root_text:
+        root_text = next(
+            (
+                node.question.strip()
+                for node in decomposition_tree.nodes
+                if (node.question or "").strip()
+            ),
+            "What is the investment case for this company?",
+        )
+
+    root_key = _normalized_question_key(root_text)
+    root_route = next(
+        (
+            normalized_route
+            for node in decomposition_tree.nodes
+            if _normalized_question_key(node.question) == root_key
+            if (normalized_route := _normalized_route_value(node.route)) is not None
+        ),
+        None,
+    )
+
+    root_node = QuestionNode(
+        question=root_text,
+        sub_nodes=[],
+        aspect=aspect,
+        route=root_route,
+    )
+    candidates = [(node.question, node.route) for node in decomposition_tree.nodes] + [
+        (child_question, None)
+        for node in decomposition_tree.nodes
+        for child_question in node.sub_questions
+    ]
+    child_limit = max(max_nodes - 1, 0)
+
+    deduped_candidates: dict[str, tuple[str, str | None]] = {}
+    for question, route in candidates:
+        question_text = (question or "").strip()
+        question_key = _normalized_question_key(question_text)
+        if not question_key or question_key == root_key:
+            continue
+        normalized_route = _normalized_route_value(route)
+        existing = deduped_candidates.get(question_key)
+        if existing is None:
+            deduped_candidates[question_key] = (question_text, normalized_route)
+        elif existing[1] is None and normalized_route is not None:
+            deduped_candidates[question_key] = (existing[0], normalized_route)
+
+    for question_text, route in list(deduped_candidates.values())[:child_limit]:
+        root_node.sub_nodes.append(
+            QuestionNode(
+                question=question_text,
+                sub_nodes=[],
+                aspect=aspect,
+                route=route,
+            )
+        )
+
+    return QuestionTree(root_node=root_node, aspect=aspect)
+
+
 async def decompose_question_async(state: DecompositionInput) -> DecompositionOutput:
     """Decompose a complex question into a hierarchical question tree.
 
@@ -90,11 +169,27 @@ async def decompose_question_async(state: DecompositionInput) -> DecompositionOu
     """
     decompose_system_prompt = get_prompt("decomposition.system", state.prompt_overrides)
     decompose_user_prompt = get_prompt("decomposition.user", state.prompt_overrides)
+    portfolio_instruction = ""
+    if state.question_budget is not None:
+        if state.aspect is None:
+            raise ValueError(
+                "A question aspect is required when using a portfolio budget"
+            )
+        portfolio_instruction = build_portfolio_instruction(
+            state.aspect, state.question_budget
+        )
     # Route tagging rides the same decomposition call (zero extra LLM calls).
     # Appended in code, not in the editable catalog, so stale persisted
     # library.json overlays cannot silently drop the instruction.
     messages = [
-        SystemMessage(content=decompose_system_prompt + "\n\n" + ROUTE_TAGGING_INSTRUCTION),
+        SystemMessage(
+            content=(
+                decompose_system_prompt
+                + "\n\n"
+                + ROUTE_TAGGING_INSTRUCTION
+                + ("\n\n" + portfolio_instruction if portfolio_instruction else "")
+            )
+        ),
         HumanMessage(
             content=decompose_user_prompt.format(
                 question=state.question, industry=state.industry
@@ -115,9 +210,17 @@ async def decompose_question_async(state: DecompositionInput) -> DecompositionOu
         _invoke,
     )
 
-    question_tree: QuestionTree = _build_question_tree_from_decomposition_tree(
-        decomposition_tree, state.aspect
-    )
+    if state.question_budget is not None and state.aspect is not None:
+        question_tree = _build_bounded_question_tree(
+            decomposition_tree,
+            root_question=state.question or "",
+            aspect=state.aspect,
+            max_nodes=state.question_budget,
+        )
+    else:
+        question_tree = _build_question_tree_from_decomposition_tree(
+            decomposition_tree, state.aspect
+        )
 
     return {
         "question_tree": question_tree,

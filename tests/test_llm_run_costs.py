@@ -16,8 +16,11 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
+from agent import llm as llm_module
+from agent import rate_limit as rate_limit_module
 from agent.llm_catalog import (
     available_models_payload,
+    pricing_catalog_payload,
     validate_chat_requested_selection,
     validate_requested_selection,
 )
@@ -28,6 +31,7 @@ from agent.llm_policy import (
     phase_model_defaults_payload,
     premium_phase_options_payload,
     quality_tiers_payload,
+    resolve_meta_phase_sampling,
     resolve_openai_phase_sampling,
 )
 from agent.run_context import (
@@ -38,8 +42,6 @@ from agent.run_context import (
     use_run_context,
     use_stage_context,
 )
-from agent import llm as llm_module
-from agent import rate_limit as rate_limit_module
 from web.app import AnalysisStatus, app
 
 
@@ -129,6 +131,7 @@ def test_available_models_payload_marks_availability(monkeypatch) -> None:
     monkeypatch.setenv("GOOGLE_API_KEY", "google")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("MODEL_API_KEY", "meta")
     models = available_models_payload()
     gemini = next(item for item in models if item["model"] == "gemini-3.1-flash-lite-preview")
     assert {item["model"] for item in models} == {
@@ -137,6 +140,7 @@ def test_available_models_payload_marks_availability(monkeypatch) -> None:
         "gemini-2.5-flash-lite",
         "gemini-3.1-pro-preview",
         "claude-haiku-4-5-20251001",
+        "gpt-5.6-luna",
         "gpt-5.4-nano",
         "gpt-5.4-mini",
         "gpt-5",
@@ -148,6 +152,7 @@ def test_available_models_payload_marks_availability(monkeypatch) -> None:
         "openai/gpt-5",
         "openai/gpt-4.1-mini",
         "openrouter/hunter-alpha",
+        "muse-spark-1.2-contributor",
     }
 
     assert gemini["available"] is True
@@ -170,11 +175,41 @@ def test_available_models_payload_marks_availability(monkeypatch) -> None:
     assert gemini["tier"] == "budget"
     assert next(item for item in models if item["model"] == "gpt-5")["supports_creativity_control"] is True
     assert next(item for item in models if item["model"] == "o4-mini")["supports_creativity_control"] is False
+    luna = next(item for item in models if item["model"] == "gpt-5.6-luna")
+    assert pricing_catalog_payload()["openai:gpt-5.6-luna"]["pricing"] == {
+        "input_per_million_tokens_usd": 0.20,
+        "output_per_million_tokens_usd": 1.20,
+    }
+    assert luna["supports_structured_output"] is True
+    assert luna["supports_temperature_control"] is True
+    assert luna["supports_reasoning_effort_control"] is True
+    assert luna["temperature_requires_reasoning_none"] is True
+    assert luna["reasoning_effort_options"] == [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ]
     gpt54_mini = next(item for item in models if item["model"] == "gpt-5.4-mini")
     assert gpt54_mini["supports_temperature_control"] is True
     assert gpt54_mini["supports_reasoning_effort_control"] is True
     assert gpt54_mini["temperature_requires_reasoning_none"] is True
     assert gpt54_mini["reasoning_effort_options"] == ["none", "low", "medium", "high", "xhigh"]
+    muse = next(item for item in models if item["model"] == "muse-spark-1.2-contributor")
+    assert pricing_catalog_payload()["meta:muse-spark-1.2-contributor"]["pricing"] == {
+        "input_per_million_tokens_usd": 0.10,
+        "output_per_million_tokens_usd": 0.20,
+    }
+    assert muse["provider"] == "meta"
+    assert muse["available"] is True
+    assert muse["selectable"] is True
+    assert muse["supports_structured_output"] is True
+    assert muse["supports_temperature_control"] is True
+    assert muse["supports_reasoning_effort_control"] is True
+    assert muse["temperature_requires_reasoning_none"] is False
+    assert muse["reasoning_effort_options"] == ["minimal", "low", "medium", "high", "xhigh"]
 
 
 def test_validate_requested_selection_accepts_new_catalog_models(monkeypatch) -> None:
@@ -189,6 +224,7 @@ def test_validate_requested_selection_accepts_new_catalog_models(monkeypatch) ->
     assert validate_requested_selection("openai", "gpt-5.4") is not None
     assert validate_requested_selection("openai", "gpt-5.4-mini") is not None
     assert validate_requested_selection("openai", "gpt-5.4-nano") is not None
+    assert validate_requested_selection("openai", "gpt-5.6-luna") is not None
 
 
 def test_build_pipeline_policy_resolves_cheap_and_premium(monkeypatch) -> None:
@@ -333,34 +369,75 @@ def test_phase_model_defaults_follow_new_analysis_recommendations(monkeypatch) -
     monkeypatch.setenv("GOOGLE_API_KEY", "google")
     monkeypatch.setenv("OPENAI_API_KEY", "openai")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic")
+    monkeypatch.setenv("MODEL_API_KEY", "meta")
 
     defaults = phase_model_defaults_payload()
 
     assert defaults["decomposition"] == {
-        "provider": "openai",
-        "model": "gpt-5.4-mini",
-        "label": "GPT-5.4 mini",
+        "provider": "meta",
+        "model": "muse-spark-1.2-contributor",
+        "label": "Meta Muse Spark 1.2 Contributor",
     }
     assert defaults["answering"] == {
-        "provider": "openai",
-        "model": "gpt-5.4-nano",
-        "label": "GPT-5.4 nano",
+        "provider": "meta",
+        "model": "muse-spark-1.2-contributor",
+        "label": "Meta Muse Spark 1.2 Contributor",
     }
     assert defaults["generation"] == {
-        "provider": "openai",
-        "model": "gpt-5.4-mini",
-        "label": "GPT-5.4 mini",
+        "provider": "meta",
+        "model": "muse-spark-1.2-contributor",
+        "label": "Meta Muse Spark 1.2 Contributor",
     }
     assert defaults["evaluation"] == {
-        "provider": "openai",
-        "model": "gpt-5.4-mini",
-        "label": "GPT-5.4 mini",
+        "provider": "meta",
+        "model": "muse-spark-1.2-contributor",
+        "label": "Meta Muse Spark 1.2 Contributor",
     }
     assert defaults["ranking"] == {
-        "provider": "openai",
-        "model": "gpt-5.4-mini",
-        "label": "GPT-5.4 mini",
+        "provider": "meta",
+        "model": "muse-spark-1.2-contributor",
+        "label": "Meta Muse Spark 1.2 Contributor",
     }
+
+
+def test_resolve_openai_phase_sampling_uses_luna_stage_policy() -> None:
+    expected = {
+        "decomposition": {"temperature": None, "reasoning_effort": "medium"},
+        "answering": {"temperature": None, "reasoning_effort": "low"},
+        "generation_pro": {"temperature": 0.7, "reasoning_effort": "none"},
+        "generation_contra": {"temperature": 0.7, "reasoning_effort": "none"},
+        "critique": {"temperature": None, "reasoning_effort": "low"},
+        "evaluation": {"temperature": None, "reasoning_effort": "medium"},
+        "refinement": {"temperature": None, "reasoning_effort": "low"},
+        "ranking_dimension_score": {"temperature": None, "reasoning_effort": "high"},
+        "ranking_upside_score": {"temperature": 0.7, "reasoning_effort": "none"},
+        "ranking_executive_summary": {"temperature": None, "reasoning_effort": "high"},
+    }
+
+    assert {
+        stage: resolve_openai_phase_sampling("gpt-5.6-luna", stage, 0.0)
+        for stage in expected
+    } == expected
+
+
+def test_resolve_meta_phase_sampling_uses_muse_stage_policy() -> None:
+    expected = {
+        "decomposition": {"temperature": 0.2, "reasoning_effort": "low"},
+        "answering": {"temperature": 0.2, "reasoning_effort": "low"},
+        "generation_pro": {"temperature": 0.7, "reasoning_effort": "minimal"},
+        "generation_contra": {"temperature": 0.7, "reasoning_effort": "minimal"},
+        "critique": {"temperature": 0.2, "reasoning_effort": "low"},
+        "evaluation": {"temperature": 0.1, "reasoning_effort": "medium"},
+        "refinement": {"temperature": 0.2, "reasoning_effort": "low"},
+        "ranking_dimension_score": {"temperature": 0.1, "reasoning_effort": "high"},
+        "ranking_upside_score": {"temperature": 0.7, "reasoning_effort": "minimal"},
+        "ranking_executive_summary": {"temperature": 0.2, "reasoning_effort": "high"},
+    }
+
+    assert {
+        stage: resolve_meta_phase_sampling("muse-spark-1.2-contributor", stage, 0.0)
+        for stage in expected
+    } == expected
 
 
 def test_resolve_openai_phase_sampling_uses_low_reasoning_for_gpt54_answering_auto() -> None:
@@ -654,6 +731,72 @@ def test_create_llm_maps_gpt54_mini_decomposition_to_temperature_plus_reasoning(
     assert called == {"model": "gpt-5.4-mini", "temperature": 0.5, "reasoning_effort": "none"}
 
 
+def test_create_llm_maps_luna_decomposition_to_medium_reasoning_without_temperature(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    called = {}
+
+    def fake_openai(model, temperature, timeout_s, max_retries, reasoning_effort=None):
+        called["model"] = model
+        called["temperature"] = temperature
+        called["reasoning_effort"] = reasoning_effort
+        return object()
+
+    monkeypatch.setattr(llm_module, "_create_openai", fake_openai)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable, **kwargs: runnable)
+
+    with use_run_context(llm_selection={"provider": "openai", "model": "gpt-5.6-luna"}):
+        with use_stage_context("decomposition"):
+            llm_module.create_llm(temperature=0.2)
+
+    assert called == {"model": "gpt-5.6-luna", "temperature": None, "reasoning_effort": "medium"}
+
+
+def test_create_llm_maps_muse_decomposition_to_meta_stage_policy(monkeypatch) -> None:
+    monkeypatch.setenv("MODEL_API_KEY", "meta-key")
+    called = {}
+
+    def fake_meta(model, temperature, timeout_s, max_retries, reasoning_effort=None):
+        called["model"] = model
+        called["temperature"] = temperature
+        called["reasoning_effort"] = reasoning_effort
+        return object()
+
+    monkeypatch.setattr(llm_module, "_create_meta", fake_meta)
+    monkeypatch.setattr(llm_module, "wrap_llm", lambda runnable, **kwargs: runnable)
+
+    with use_run_context(
+        llm_selection={"provider": "meta", "model": "muse-spark-1.2-contributor"}
+    ):
+        with use_stage_context("decomposition"):
+            llm_module.create_llm(temperature=0.0)
+
+    assert called == {
+        "model": "muse-spark-1.2-contributor",
+        "temperature": 0.2,
+        "reasoning_effort": "low",
+    }
+
+
+def test_create_meta_uses_model_api_chat_completions_contract(monkeypatch) -> None:
+    monkeypatch.setenv("MODEL_API_KEY", "meta-key")
+    monkeypatch.delenv("META_BASE_URL", raising=False)
+
+    llm = llm_module._create_meta(
+        "muse-spark-1.2-contributor",
+        0.2,
+        90.0,
+        0,
+        reasoning_effort="low",
+    )
+
+    assert llm.model_name == "muse-spark-1.2-contributor"
+    assert llm.openai_api_base == "https://api.meta.ai/v1"
+    assert llm.temperature == 0.2
+    assert llm.reasoning_effort == "low"
+    assert llm.use_responses_api is False
+
+
 def test_create_llm_ignores_selection_creativity_for_unsupported_reasoning_model(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
 
@@ -818,6 +961,57 @@ def test_run_telemetry_collector_builds_costs_for_llm_and_perplexity() -> None:
     assert costs["perplexity_usd"] == 0.005
     assert costs["total_usd"] == 0.006
     assert costs["by_model"][0]["label"] == "Gemini 3.1 Flash Lite"
+
+
+def test_run_telemetry_collector_builds_provider_aware_web_search_costs() -> None:
+    collector = RunTelemetryCollector()
+    collector.record_web_search(
+        provider="serper",
+        metadata={"query": "market size", "trigger_reason": "portfolio core"},
+    )
+    collector.record_web_search(
+        provider="perplexity",
+        metadata={"query": "market size", "trigger_reason": "quality fallback"},
+    )
+
+    costs = collector.build_run_costs()
+
+    assert costs["serper_search"] == {
+        "requests": 1,
+        "by_reason": {"portfolio core": 1},
+        "total_usd": 0.001,
+    }
+    assert costs["perplexity_search"] == {
+        "requests": 1,
+        "by_reason": {"quality fallback": 1},
+        "total_usd": 0.005,
+    }
+    assert costs["web_search"] == {
+        "requests": 2,
+        "by_provider": {"perplexity": 1, "serper": 1},
+        "total_usd": 0.006,
+    }
+    assert costs["total_usd"] == 0.006
+
+
+def test_run_telemetry_counts_brave_with_unknown_price() -> None:
+    collector = RunTelemetryCollector()
+    collector.record_web_search(
+        provider="brave",
+        metadata={"query": "market size", "trigger_reason": "portfolio core"},
+    )
+
+    costs = collector.build_run_costs()
+
+    assert costs["status"] == "partial"
+    assert costs["brave_search"] == {
+        "requests": 1,
+        "by_reason": {"portfolio core": 1},
+        "total_usd": None,
+    }
+    assert costs["web_search"]["requests"] == 1
+    assert costs["web_search"]["by_provider"] == {"brave": 1}
+    assert costs["total_usd"] is None
 
 
 def test_run_telemetry_collector_marks_partial_when_usage_missing() -> None:
@@ -1065,7 +1259,7 @@ def test_api_config_exposes_default_and_available_models(monkeypatch) -> None:
     assert payload["default_llm"]["model"] == "gemini-3.1-flash-lite-preview"
     assert payload["default_llm"]["label"] == "Gemini 3.1 Flash Lite"
     providers = {item["provider"] for item in payload["available_models"]}
-    assert providers == {"gemini", "anthropic", "openai", "openrouter"}
+    assert providers == {"gemini", "anthropic", "openai", "openrouter", "meta"}
     assert any(item["model"] == "gemini-3.1-flash-lite-preview" and item["available"] for item in payload["available_models"])
     assert any(item["model"] == "gpt-5.4-mini" and item["available"] for item in payload["available_models"])
     assert any(
@@ -1424,8 +1618,8 @@ def test_start_analysis_defaults_to_phase_model_policy_when_no_selection_is_prov
         assert cache["quality_tier"] is None
         assert cache["run_config"]["phase_models"] == expected_defaults
         assert cache["run_config"]["llm"] == (
-            "Per-phase · D GPT-5.4 mini · A GPT-5.4 nano"
-            " · G GPT-5.4 mini · E GPT-5.4 mini · R GPT-5.4 mini"
+            "Per-phase · D GPT-5.6 Luna · A GPT-5.6 Luna"
+            " · G GPT-5.6 Luna · E GPT-5.6 Luna · R GPT-5.6 Luna"
         )
 
 

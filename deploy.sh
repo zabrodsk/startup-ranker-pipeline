@@ -39,10 +39,10 @@ case "$LLM_PROVIDER" in
     ;;
 esac
 
-if [ -z "$PPLX_API_KEY" ] || [ "$PPLX_API_KEY" = "your_perplexity_api_key_here" ]; then
-  echo "WARNING: PPLX_API_KEY not set — web search will be disabled"
+if { [ -z "$PPLX_API_KEY" ] || [ "$PPLX_API_KEY" = "your_perplexity_api_key_here" ]; } && [ -z "$SERPER_API_KEY" ] && [ -z "$BRAVE_SEARCH_API_KEY" ]; then
+  echo "WARNING: no web-search API key is set — web search will be disabled"
 else
-  echo "Perplexity web search enabled"
+  echo "Web search enabled (provider: ${WEB_SEARCH_PROVIDER:-sonar})"
 fi
 
 echo "[1/3] Installing dependencies..."

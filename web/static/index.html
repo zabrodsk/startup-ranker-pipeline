@@ -5951,6 +5951,7 @@ function getProviderLabel(provider) {
     openai: 'OpenAI',
     anthropic: 'Anthropic',
     gemini: 'Gemini',
+    meta: 'Meta',
     openrouter: 'OpenRouter',
   };
   return labels[provider] || provider || 'Model';
@@ -6048,6 +6049,26 @@ function setPhaseModelSetting(phase, nextSetting) {
 
 function getAutoReasoningEffort(phase, model) {
   const modelId = model?.model || '';
+  if (modelId === 'muse-spark-1.2-contributor') {
+    const defaults = {
+      decomposition: 'low',
+      answering: 'low',
+      generation: 'minimal',
+      evaluation: 'medium',
+      ranking: 'high',
+    };
+    return defaults[phase] || null;
+  }
+  if (modelId === 'gpt-5.6-luna') {
+    const defaults = {
+      decomposition: 'medium',
+      answering: 'low',
+      generation: 'none',
+      evaluation: 'medium',
+      ranking: 'high',
+    };
+    return defaults[phase] || null;
+  }
   if (modelId === 'gpt-5.4-mini' || modelId === 'gpt-5.4-nano') {
     const defaults = {
       decomposition: 'none',
@@ -6102,7 +6123,11 @@ function getPhaseAdvancedNote(phase, model, setting) {
   if (!supportsTemperature && !supportsReasoning) {
     return 'This model uses fixed sampling for this stage.';
   }
-  if (phase === 'answering' && (model?.model === 'gpt-5.4-mini' || model?.model === 'gpt-5.4-nano')) {
+  if (phase === 'answering' && (
+    model?.model === 'gpt-5.6-luna'
+    || model?.model === 'gpt-5.4-mini'
+    || model?.model === 'gpt-5.4-nano'
+  )) {
     const effectiveReasoning = getEffectivePhaseReasoningEffort(phase, model, setting);
     if (!setting.reasoning_effort && effectiveReasoning === 'low') {
       return 'Auto uses low reasoning and omits temperature for stronger grounded answers.';
@@ -6125,6 +6150,16 @@ function getAutoPhaseTemperatureValue(phase, model, setting = getPhaseModelSetti
   if (model?.temperature_requires_reasoning_none) {
     const effectiveReasoning = getEffectivePhaseReasoningEffort(phase, model, setting);
     if (effectiveReasoning && effectiveReasoning !== 'none') return null;
+  }
+  if (model?.model === 'muse-spark-1.2-contributor') {
+    const defaults = {
+      decomposition: 0.2,
+      answering: 0.2,
+      generation: 0.7,
+      evaluation: 0.1,
+      ranking: 0.1,
+    };
+    return defaults[phase] ?? 0.2;
   }
   const defaults = {
     decomposition: 0.5,
@@ -6188,29 +6223,39 @@ function getPhaseModelDefaults() {
     return found ? `${found.provider}:${found.model}` : null;
   };
 
-  const decompositionKey = findKey('openai', 'gpt-5.4-mini')
+  const decompositionKey = findKey('meta', 'muse-spark-1.2-contributor')
+    || findKey('openai', 'gpt-5.6-luna')
+    || findKey('openai', 'gpt-5.4-mini')
     || findKey('gemini', 'gemini-3.1-pro-preview')
     || findKey('gemini', 'gemini-2.5-flash')
     || findKey('openai', 'gpt-5.2')
     || findKey('openai', 'gpt-5');
-  const answeringKey = findKey('openai', 'gpt-5.4-nano')
+  const answeringKey = findKey('meta', 'muse-spark-1.2-contributor')
+    || findKey('openai', 'gpt-5.6-luna')
+    || findKey('openai', 'gpt-5.4-nano')
     || findKey('gemini', 'gemini-2.5-flash')
     || findKey('gemini', 'gemini-3.1-flash-lite-preview')
     || findKey('anthropic', 'claude-haiku-4-5-20251001')
     || (available[0] ? `${available[0].provider}:${available[0].model}` : null);
-  const generationKey = findKey('openai', 'gpt-5.4-mini')
+  const generationKey = findKey('meta', 'muse-spark-1.2-contributor')
+    || findKey('openai', 'gpt-5.6-luna')
+    || findKey('openai', 'gpt-5.4-mini')
     || findKey('openai', 'gpt-5.2')
     || findKey('openai', 'gpt-5')
     || findKey('gemini', 'gemini-3.1-pro-preview')
     || decompositionKey
     || answeringKey;
-  const evaluationKey = findKey('openai', 'gpt-5.4-mini')
+  const evaluationKey = findKey('meta', 'muse-spark-1.2-contributor')
+    || findKey('openai', 'gpt-5.6-luna')
+    || findKey('openai', 'gpt-5.4-mini')
     || findKey('openai', 'o4-mini')
     || findKey('openai', 'gpt-4.1-mini')
     || findKey('anthropic', 'claude-haiku-4-5-20251001')
     || generationKey
     || answeringKey;
-  const rankingKey = findKey('openai', 'gpt-5.4-mini')
+  const rankingKey = findKey('meta', 'muse-spark-1.2-contributor')
+    || findKey('openai', 'gpt-5.6-luna')
+    || findKey('openai', 'gpt-5.4-mini')
     || findKey('openai', 'gpt-5.2')
     || findKey('openai', 'gpt-5')
     || findKey('openai', 'o4-mini')
@@ -7378,7 +7423,7 @@ function renderInfoScreen(page = activeInfoPage) {
       <div class="info-card">
         <h3>Outputs</h3>
         <ul>
-          <li>Runs produce rankings, dimension scores, decision labels, summaries, and saved analysis records.</li>
+          <li>Runs produce authoritative scores and buckets, dimension scores, advisory recommendation labels, summaries, and saved analysis records.</li>
           <li>Saved runs are visible in Analysis history and can be reopened later.</li>
           <li>Companies view groups all historical runs under each company for side-by-side review.</li>
         </ul>
@@ -7905,7 +7950,7 @@ function renderCompanyChatSection(company, run) {
         if (webCitation) {
           companyChatCitationRegistry[webCitationKey] = webCitation;
         }
-        const webSearchCost = Number(message.run_costs?.perplexity_usd || 0);
+        const webSearchCost = Number(message.run_costs?.web_search?.total_usd || message.run_costs?.perplexity_usd || 0);
         const turnMeta = message.role === 'assistant'
           ? `<div class="company-chat-turn-meta">
               ${message.llm_label ? `<span class="company-chat-turn-pill">${escapeHtml(message.llm_label)}</span>` : ''}
@@ -11254,7 +11299,10 @@ function renderRunCostStrip(runCosts, fallbackLlmLabel = '') {
   const statusNote = costs.status === 'partial'
     ? 'Some successful model calls did not include billable usage metadata, so totals are partial.'
     : '';
-  const requestCount = Number(costs.perplexity_search?.requests || 0);
+  const serperRequests = Number(costs.serper_search?.requests || 0);
+  const perplexityRequests = Number(costs.perplexity_search?.requests || 0);
+  const requestCount = Number(costs.web_search?.requests ?? (serperRequests + perplexityRequests));
+  const webSearchCost = costs.web_search?.total_usd ?? ((Number(costs.serper_usd || 0) + Number(costs.perplexity_usd || 0)) || 0);
   const byModel = Array.isArray(costs.by_model) ? costs.by_model : [];
   const modelBreakdownHtml = byModel.length
     ? `<div class="run-cost-card-note">${byModel.map((item) => {
@@ -11282,9 +11330,9 @@ function renderRunCostStrip(runCosts, fallbackLlmLabel = '') {
       </div>
       <div class="run-cost-card">
         <div class="run-cost-card-glow"></div>
-        <div class="run-cost-card-label">Perplexity Search</div>
-        <div class="run-cost-card-value">${formatUsd(costs.perplexity_usd)}</div>
-        <div class="run-cost-card-sub">${requestCount.toLocaleString()} request${requestCount === 1 ? '' : 's'} · request-based pricing</div>
+        <div class="run-cost-card-label">Web Search</div>
+        <div class="run-cost-card-value">${formatUsd(webSearchCost)}</div>
+        <div class="run-cost-card-sub">${requestCount.toLocaleString()} request${requestCount === 1 ? '' : 's'} · Serper ${serperRequests.toLocaleString()} · Perplexity ${perplexityRequests.toLocaleString()}</div>
       </div>
     </div>
   `;
@@ -11688,6 +11736,7 @@ function parseAuditDimensions(value) {
 }
 
 function formatAuditNumber(value, digits = 1) {
+  if (value == null || String(value).trim() === '') return '—';
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric.toFixed(digits) : '—';
 }
@@ -11861,13 +11910,21 @@ function renderFullAuditModal(context, query) {
   const argRows = context.argRows.filter((arg) => matchesAuditQuery(getArgumentSearchText(arg), query));
   const avgPro = context.summary?.avg_pro ?? context.payload?.avg_pro ?? 0;
   const avgContra = context.summary?.avg_contra ?? context.payload?.avg_contra ?? 0;
-  const totalScore = context.summary?.total_score ?? context.payload?.total_score ?? context.summary?.composite_score ?? context.ranking?.composite_score ?? 0;
+  const argumentBalance = context.summary?.total_score ?? context.payload?.total_score ?? 0;
+  const compositeScore = context.summary?.composite_score ?? context.ranking?.composite_score ?? null;
+  const bucket = context.summary?.bucket ?? context.ranking?.bucket ?? '';
+  const advisoryDecision = context.summary?.decision ?? context.payload?.decision ?? '';
+  const bucketLabel = String(bucket || 'unavailable').replaceAll('_', ' ');
 
   let html = renderAuditSearch(query, `Search audit evidence for ${context.companyName}`);
-  html += `<div class="audit-section"><div class="audit-section-title">Decision</div><div class="audit-section-body">`;
-  html += SHOW_AVG_PRO_CONTRA_SCORES
-    ? `<div class="audit-decision-reason">Avg pro: ${formatAuditNumber(avgPro)} · Avg contra: ${formatAuditNumber(avgContra)} → total score ${formatAuditNumber(totalScore)}.</div>`
-    : `<div class="audit-decision-reason">Total score ${formatAuditNumber(totalScore)}.</div>`;
+  html += `<div class="audit-section"><div class="audit-section-title">Authoritative assessment</div><div class="audit-section-body">`;
+  html += `<div class="audit-decision-reason"><strong>Composite score:</strong> ${formatAuditNumber(compositeScore)} · <strong>Bucket:</strong> ${escapeHtml(bucketLabel)}. Score and bucket are authoritative.</div>`;
+  if (advisoryDecision) {
+    html += `<div class="audit-note"><strong>Advisory recommendation:</strong> ${escapeHtml(String(advisoryDecision).replaceAll('_', ' '))}. This model-generated label is advisory and may vary across runs.</div>`;
+  }
+  if (SHOW_AVG_PRO_CONTRA_SCORES) {
+    html += `<div class="audit-note">Advisory argument balance: avg pro ${formatAuditNumber(avgPro)} · avg contra ${formatAuditNumber(avgContra)} · difference ${formatAuditNumber(argumentBalance)}.</div>`;
+  }
   html += `</div></div>`;
 
   html += `<div class="audit-section"><div class="audit-section-title">Evidence Used</div><div class="audit-section-body">`;

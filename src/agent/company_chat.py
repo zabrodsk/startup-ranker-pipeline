@@ -28,6 +28,7 @@ from agent.llm_catalog import serialize_selection
 from agent.retrieval import retrieve_chunks
 from agent.run_context import (
     PERPLEXITY_SEARCH_PRICE_PER_REQUEST_USD,
+    SERPER_SEARCH_PRICE_PER_REQUEST_USD,
     RunTelemetryCollector,
     use_company_context,
     use_run_context,
@@ -167,7 +168,7 @@ def _build_history_summary(runs: list[dict[str, Any]]) -> str:
         lines.append(
             f"- {run.get('created_at') or 'unknown date'} · job {run.get('job_id') or 'unknown'}"
             f" · {run.get('company_name') or 'Unknown company'}"
-            f" · decision {run.get('decision') or 'unknown'}"
+            f" · advisory recommendation {run.get('decision') or 'unknown'}"
         )
     return "\n".join(lines) or "- No persisted run history available."
 
@@ -388,14 +389,14 @@ async def answer_company_question(
                 prefers_web = _question_prefers_web_search(question)
                 if use_web_search and (_answer_indicates_no_evidence(answer) or prefers_web):
                     web_search_query = _build_web_search_query(company, question)
+                    web_search_info: dict[str, Any] = {}
                     try:
-                        raw_web_results = await asyncio.wait_for(
-                            asyncio.to_thread(
-                                _run_web_search,
-                                web_search_query,
-                                _web_search_domain_filter(company, question),
-                            ),
-                            timeout=WEB_SEARCH_TIMEOUT_SEC,
+                        raw_web_results = await asyncio.to_thread(
+                            _run_web_search,
+                            web_search_query,
+                            _web_search_domain_filter(company, question),
+                            cache_info=web_search_info,
+                            provider_deadline_seconds=WEB_SEARCH_TIMEOUT_SEC,
                         )
                         useful, reason = _web_results_add_value(question, company.name, raw_web_results)
                         if useful or (prefers_web and raw_web_results and not str(raw_web_results).lower().startswith("web search failed")):
@@ -409,7 +410,32 @@ async def answer_company_question(
                                     web_results=raw_web_results,
                                 )
                             )
-                            web_search_provider = _resolve_web_search_provider_name()
+                            web_search_provider = (
+                                web_search_info.get("provider")
+                                or _resolve_web_search_provider_name()
+                            )
+                            attempted_providers = web_search_info.get(
+                                "attempted_providers"
+                            ) or []
+                            web_search_cost_usd: float | None = 0.0
+                            if not web_search_info.get("hit"):
+                                prices = {
+                                    "serper": SERPER_SEARCH_PRICE_PER_REQUEST_USD,
+                                    "sonar": PERPLEXITY_SEARCH_PRICE_PER_REQUEST_USD,
+                                }
+                                if not attempted_providers or any(
+                                    provider not in prices
+                                    for provider in attempted_providers
+                                ):
+                                    web_search_cost_usd = None
+                                else:
+                                    web_search_cost_usd = round(
+                                        sum(
+                                            prices[provider]
+                                            for provider in attempted_providers
+                                        ),
+                                        8,
+                                    )
                             citations.insert(
                                 0,
                                 ChatCitation(
@@ -420,9 +446,7 @@ async def answer_company_question(
                                     web_search_query=web_search_query,
                                     web_search_results=web_search_results,
                                     web_search_provider=web_search_provider,
-                                    web_search_cost_usd=PERPLEXITY_SEARCH_PRICE_PER_REQUEST_USD
-                                    if web_search_provider == "sonar"
-                                    else None,
+                                    web_search_cost_usd=web_search_cost_usd,
                                 ).to_dict(),
                             )
                         else:

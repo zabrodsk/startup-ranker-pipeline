@@ -77,6 +77,17 @@ def test_prompt_signature_covers_route_tagging_instruction(monkeypatch):
     assert dcs.compute_prompt_signature() != base
 
 
+def test_prompt_signature_covers_portfolio_budget_and_category_contract():
+    base = dcs.compute_prompt_signature()
+    market = dcs.compute_prompt_signature(aspect="market", question_budget=24)
+    product = dcs.compute_prompt_signature(aspect="product", question_budget=20)
+
+    assert market != base
+    assert product != base
+    assert market != product
+    assert dcs._KEY_VERSION_PREFIX == "dtree-v5"
+
+
 def test_prompt_signature_covers_prompt_overrides():
     base = dcs.compute_prompt_signature()
     overridden = dcs.compute_prompt_signature(
@@ -97,7 +108,7 @@ def test_canary_decomposition_user_prompt_takes_only_question_and_industry():
     decomposition.py calls decompose_user_prompt.format(question=..., industry=...).
     If anyone adds a company placeholder to the prompt, this format call raises
     (or the placeholder list changes) and this canary fails — the company-free
-    cache key in decomposition_cache_store must then be redesigned (dtree-v4).
+    cache key in decomposition_cache_store must then be redesigned (dtree-v5).
     """
     from agent.prompt_library.defaults import PROMPT_DEFINITIONS
     from agent.prompt_library.manager import get_prompt

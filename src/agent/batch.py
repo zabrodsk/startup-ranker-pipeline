@@ -1129,6 +1129,8 @@ def build_summary_rows(results: List[Dict[str, Any]]) -> List[Dict]:
             "startup_slug": slug,
             "company_name": company.name,
             "decision": decision,
+            "decision_authority": "advisory",
+            "authoritative_outcome": "score_and_bucket",
             "total_score": round(total_score, 2),
             "avg_pro": round(avg_pro, 2),
             "avg_contra": round(avg_contra, 2),
