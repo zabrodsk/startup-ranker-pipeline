@@ -14,6 +14,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+import web.db as db
 from agent.batch import evaluate_from_specter
 from agent.dataclasses.company import Company
 from agent.ingest.specter_ingest import _company_slug, ingest_specter_company
@@ -24,6 +25,10 @@ from agent.ingest.specter_mcp_client import (
     specter_quota_reset_hint,
 )
 from agent.ingest.store import EvidenceStore
+from agent.ingest.web_fallback import (
+    fetch_company_homepage,
+    quota_web_fallback_allowed,
+)
 from agent.llm_catalog import serialize_selection
 from agent.llm_policy import (
     build_phase_model_policy,
@@ -33,7 +38,6 @@ from agent.llm_policy import (
     normalize_quality_tier,
 )
 from agent.run_context import RunTelemetryCollector, use_run_context
-import web.db as db
 from web import app as web_app
 
 EVENT_PREFIX = "__SPECTER_COMPANY_EVENT__"
@@ -220,6 +224,7 @@ async def _process_company(args: argparse.Namespace) -> int:
     # guard a failure here (e.g. Specter auth outage) kills the child with a
     # bare non-zero exit: no structured event, no analysis_errors row, and the
     # UI only shows a generic "exited with code 1" (the 2026-06-11 outage UX).
+    used_quota_web_fallback = False
     try:
         if args.specter_url:
             company, store = fetch_specter_company(
@@ -239,6 +244,24 @@ async def _process_company(args: argparse.Namespace) -> int:
                 args.specter_people,
                 company_index=args.company_index,
             )
+    except SpecterQuotaLimitError as exc:
+        if not quota_web_fallback_allowed(
+            run_config,
+            use_web_search=use_web_search,
+            specter_url=args.specter_url,
+            expected_name=args.expected_name,
+        ):
+            traceback.print_exc()
+            return _handle_fetch_failure(args, job_id, run_config, versions, exc)
+        try:
+            company, store = fetch_company_homepage(
+                args.specter_url,
+                expected_name=args.expected_name,
+            )
+            used_quota_web_fallback = True
+        except Exception:
+            traceback.print_exc()
+            return _handle_fetch_failure(args, job_id, run_config, versions, exc)
     except Exception as exc:
         traceback.print_exc()
         return _handle_fetch_failure(args, job_id, run_config, versions, exc)
@@ -253,6 +276,12 @@ async def _process_company(args: argparse.Namespace) -> int:
                 "absolute_index": args.absolute_index,
                 "message": message,
             }
+        )
+
+    if used_quota_web_fallback:
+        _on_progress(
+            "Specter daily quota is exhausted; continuing with identity-checked "
+            "company-homepage bootstrap and web evidence search."
         )
 
     try:
