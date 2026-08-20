@@ -6681,6 +6681,7 @@ async def _run_specter_mcp_start_preflight(
     *,
     job_id: str | None,
     identifiers: list[Any] | None = None,
+    allow_quota_fallback: bool = False,
 ) -> JSONResponse | None:
     del identifiers  # Availability is shared; only the recovery lease performs a probe.
     try:
@@ -6693,6 +6694,8 @@ async def _run_specter_mcp_start_preflight(
         _record_specter_mcp_preflight_block(job_id, payload)
         return JSONResponse(status_code=503, content=payload)
     if not availability.get("accepting_new_analyses"):
+        if allow_quota_fallback:
+            return None
         detail = "Specter MCP quota is exhausted; the run was not started. Remaining quota is unknown."
         reset_hint = availability.get("reset_hint")
         if reset_hint:
@@ -7523,9 +7526,12 @@ async def _start_leadgen_url_job(
 ):
     """Start the current deployed worker-backed URL flow for one LeadGen call."""
     machine_start = run_context.get("source") == "leadgen_machine"
+    from agent.ingest.web_fallback import quota_web_fallback_enabled
+
     preflight_block = await _run_specter_mcp_start_preflight(
         job_id=None,
         identifiers=url_items,
+        allow_quota_fallback=machine_start and quota_web_fallback_enabled(),
     )
     if preflight_block is not None:
         if machine_start:
