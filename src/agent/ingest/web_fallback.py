@@ -75,6 +75,11 @@ def _truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def quota_web_fallback_enabled() -> bool:
+    """Return whether the operator explicitly enabled the quota fallback."""
+    return _truthy(os.getenv(_FALLBACK_ENV))
+
+
 def quota_web_fallback_allowed(
     run_config: dict[str, Any],
     *,
@@ -85,7 +90,7 @@ def quota_web_fallback_allowed(
     """Return whether this run is authorized to use the narrow fallback."""
     del expected_name
     return bool(
-        _truthy(os.getenv(_FALLBACK_ENV))
+        quota_web_fallback_enabled()
         and run_config.get("source") == "leadgen_machine"
         and use_web_search
         and str(specter_url or "").strip()
@@ -216,4 +221,5 @@ __all__ = [
     "HomepageFallbackError",
     "fetch_company_homepage",
     "quota_web_fallback_allowed",
+    "quota_web_fallback_enabled",
 ]

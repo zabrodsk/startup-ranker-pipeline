@@ -6582,6 +6582,7 @@ async def _run_specter_mcp_start_preflight(
     *,
     job_id: str | None,
     identifiers: list[Any] | None = None,
+    allow_quota_fallback: bool = False,
 ) -> JSONResponse | None:
     identifier = _specter_mcp_preflight_identifier(identifiers)
     try:
@@ -6611,6 +6612,8 @@ async def _run_specter_mcp_start_preflight(
     except SpecterCompanyNotFoundError:
         return None
     except SpecterQuotaLimitError as exc:
+        if allow_quota_fallback:
+            return None
         reset_hint = getattr(exc, "reset_hint", None) or specter_quota_reset_hint(str(exc))
         detail = (
             "Specter MCP quota is exhausted; the run was not started. "
@@ -7403,9 +7406,12 @@ async def _start_leadgen_url_job(
 ):
     """Start the current deployed worker-backed URL flow for one LeadGen call."""
     machine_start = run_context.get("source") == "leadgen_machine"
+    from agent.ingest.web_fallback import quota_web_fallback_enabled
+
     preflight_block = await _run_specter_mcp_start_preflight(
         job_id=None,
         identifiers=url_items,
+        allow_quota_fallback=machine_start and quota_web_fallback_enabled(),
     )
     if preflight_block is not None:
         if machine_start:
