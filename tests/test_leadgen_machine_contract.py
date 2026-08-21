@@ -73,6 +73,23 @@ def _request(**overrides: Any) -> dict[str, Any]:
     return payload
 
 
+def test_v1_cutover_keeps_reads_but_rejects_genuinely_new_intake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RDI_LEADGEN_AUTOSTART_KEY", SERVICE_KEY)
+    monkeypatch.setenv("RDI_LEADGEN_MACHINE_V1_NEW_INTAKE_ENABLED", "false")
+    client = _client(FakeMachineStore(), [])
+
+    response = client.post(
+        "/api/machine/leadgen/v1/intakes",
+        headers=SERVICE_HEADERS,
+        json=_request(),
+    )
+
+    assert response.status_code == 410
+    assert response.json()["detail"]["code"] == "machine_v1_read_only"
+
+
 class FakeMachineStore:
     def __init__(self, events: list[str] | None = None) -> None:
         self.created: list[dict[str, Any]] = []

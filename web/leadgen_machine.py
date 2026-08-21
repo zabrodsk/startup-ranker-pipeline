@@ -37,6 +37,7 @@ DAILY_START_LIMIT_ENV = "RDI_LEADGEN_DAILY_START_LIMIT"
 LEGACY_GLOBAL_START_LIMIT_ENV = "RDI_LEADGEN_GLOBAL_START_LIMIT"
 SCORING_VERSION_ENV = "RDI_SCORING_VERSION"
 TARGET_ENVIRONMENT_ENV = "RDI_LEADGEN_TARGET_ENVIRONMENT"
+V1_NEW_INTAKE_ENABLED_ENV = "RDI_LEADGEN_MACHINE_V1_NEW_INTAKE_ENABLED"
 SERVICE_KEY_HEADER = "X-LeadGen-Service-Key"
 BUSINESS_TIMEZONE = "Europe/Prague"
 
@@ -356,6 +357,23 @@ def _require_start_enabled() -> None:
         raise _problem(503, "autonomous_start_disabled", "Autonomous machine start is disabled.")
     if raw != "true":
         raise _problem(503, "invalid_start_configuration", "Autonomous start configuration is invalid.")
+
+
+def _require_v1_mutation_enabled() -> None:
+    raw = os.getenv(V1_NEW_INTAKE_ENABLED_ENV, "true")
+    if raw == "true":
+        return
+    if raw in {"", "0", "false"}:
+        raise _problem(
+            410,
+            "machine_v1_read_only",
+            "LeadGen machine v1 is read-only; use v2 for new work.",
+        )
+    raise _problem(
+        503,
+        "invalid_v1_intake_configuration",
+        "LeadGen machine v1 configuration is invalid.",
+    )
 
 
 def _daily_start_limit() -> int:
@@ -831,6 +849,7 @@ def build_leadgen_machine_router(
     async def create_intake(
         request: MachineIntakeRequest,
     ) -> dict[str, Any]:
+        _require_v1_mutation_enabled()
         target_environment = _target_environment(request.target_environment)
         _require_current_business_date(request.business_date)
         store = _require_store(dependencies)
@@ -854,6 +873,7 @@ def build_leadgen_machine_router(
         intake_id: str,
         request: MachineStartRequest,
     ) -> dict[str, Any]:
+        _require_v1_mutation_enabled()
         _require_start_enabled()
         target_environment = _target_environment(request.target_environment)
         scoring_version = _scoring_version()

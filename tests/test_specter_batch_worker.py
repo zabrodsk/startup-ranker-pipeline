@@ -28,11 +28,13 @@ def test_final_job_outcome_keeps_partial_success_runs_done() -> None:
 # ---------------------------------------------------------------------------
 
 import asyncio
+import hashlib
 import json
 from argparse import Namespace
 
 from agent import specter_company_worker as scw
 from agent.ingest.specter_mcp_client import SpecterMCPError, SpecterQuotaLimitError
+from tests.test_leadgen_machine_v2_contract import _bundle, _canonical
 
 
 def _child_args(tmp_path, **overrides) -> Namespace:
@@ -200,3 +202,30 @@ def test_fetch_failure_event_still_emitted_when_persistence_fails(tmp_path, monk
     event = _last_event(capsys)
     assert event["status"] == "error"
     assert "boom" in event["error"]
+
+
+def test_complete_frozen_bundle_reconstructs_inputs_without_specter(monkeypatch):
+    payload = _bundle(requires_specter_mcp=False)
+    bundle_sha256 = hashlib.sha256(_canonical(payload)).hexdigest()
+    monkeypatch.setattr(
+        scw.db,
+        "load_machine_v2_evidence_bundle",
+        lambda requested: {
+            "bundle_sha256": requested,
+            "payload": payload,
+        },
+    )
+
+    company, store = scw._load_frozen_leadgen_bundle(
+        {
+            "leadgen_machine_v2": {
+                "requires_specter_mcp": False,
+                "evidence_bundle_sha256": bundle_sha256,
+            }
+        },
+        expected_domain="https://acme.example",
+    )
+
+    assert company.name == "Acme"
+    assert company.domain == "acme.example"
+    assert [chunk.chunk_id for chunk in store.chunks] == ["company-profile"]

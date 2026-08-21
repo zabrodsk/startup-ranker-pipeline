@@ -7522,11 +7522,20 @@ async def _start_leadgen_url_job(
     actor: dict[str, str | None],
 ):
     """Start the current deployed worker-backed URL flow for one LeadGen call."""
-    machine_start = run_context.get("source") == "leadgen_machine"
-    preflight_block = await _run_specter_mcp_start_preflight(
-        job_id=None,
-        identifiers=url_items,
+    machine_source = str(run_context.get("source") or "")
+    machine_start = machine_source in {"leadgen_machine", "leadgen_machine_v2"}
+    v2_context = run_context.get("leadgen_machine_v2")
+    reusable_bundle = (
+        isinstance(v2_context, dict)
+        and v2_context.get("requires_specter_mcp") is False
+        and bool(v2_context.get("evidence_bundle_sha256"))
     )
+    preflight_block = None
+    if not reusable_bundle:
+        preflight_block = await _run_specter_mcp_start_preflight(
+            job_id=None,
+            identifiers=url_items,
+        )
     if preflight_block is not None:
         if machine_start:
             from web.leadgen_machine import MachineStartDefiniteRejection
@@ -7559,13 +7568,18 @@ async def _start_leadgen_url_job(
     llm_selection = dict(pipeline_policy.answering)
     llm_display = build_phase_policy_display_label(effective_phase_models)
 
-    context = run_context.get("leadgen_machine") or run_context.get("leadgen") or {}
+    context = (
+        run_context.get("leadgen_machine_v2")
+        or run_context.get("leadgen_machine")
+        or run_context.get("leadgen")
+        or {}
+    )
     batch_id = context.get("batch_id") if isinstance(context, dict) else None
     _create_url_intake_job(
         url_items,
         job_id=job_id,
         run_config_extra=run_context,
-        source="leadgen_machine" if machine_start else "leadgen",
+        source=machine_source if machine_start else "leadgen",
     )
     cache = _results_cache[job_id]
     cache.update(
@@ -7603,7 +7617,7 @@ async def _start_leadgen_url_job(
         job_id,
         "running",
         f"Queued for worker — 0/{len(url_items)} companies completed.",
-        source="leadgen_machine" if machine_start else "leadgen",
+        source=machine_source if machine_start else "leadgen",
     )
     queued, queue_message = _queue_worker_backed_specter_job(job_id)
     if not queued:
@@ -7611,7 +7625,7 @@ async def _start_leadgen_url_job(
             job_id,
             "error",
             f"Worker queue failed. {queue_message or 'Unknown worker queue error.'}",
-            source="leadgen_machine" if machine_start else "leadgen",
+            source=machine_source if machine_start else "leadgen",
         )
         raise HTTPException(
             status_code=503,
@@ -10308,6 +10322,20 @@ app.include_router(
             store=db,
             start_adapter=_start_leadgen_machine_url_job,
             availability_adapter=_specter_mcp_availability_with_recovery,
+        )
+    )
+)
+
+from web.leadgen_machine_v2 import (  # noqa: E402
+    MachineV2Dependencies,
+    build_leadgen_machine_v2_router,
+)
+
+app.include_router(
+    build_leadgen_machine_v2_router(
+        MachineV2Dependencies(
+            store=db,
+            start_adapter=_start_leadgen_machine_url_job,
         )
     )
 )

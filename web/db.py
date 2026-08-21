@@ -2074,6 +2074,107 @@ def load_machine_lifecycle(intake_id: str) -> dict[str, Any] | None:
     )
 
 
+def put_machine_v2_evidence_bundle(**record: Any) -> dict[str, Any] | None:
+    """Idempotently persist one immutable content-addressed evidence bundle."""
+    return _machine_rpc_object(
+        "put_leadgen_machine_v2_evidence_bundle",
+        {"p_record": record},
+    )
+
+
+def create_machine_v2_intake(**record: Any) -> dict[str, Any] | None:
+    """Persist v2 intake independently from current provider availability."""
+    return _machine_rpc_object(
+        "create_leadgen_machine_v2_intake",
+        {"p_record": record},
+    )
+
+
+def reserve_machine_v2_start(
+    *,
+    intake_id: str,
+    target_environment: str,
+    actual_start_business_date: str,
+    business_timezone: str,
+    job_id: str,
+    actor: str,
+    daily_start_limit: int,
+) -> dict[str, Any] | None:
+    """Reserve an actual v2 start or durably leave it pending on quota."""
+    return _machine_rpc_object(
+        "reserve_leadgen_machine_v2_start",
+        {
+            "p_intake_id": intake_id,
+            "p_target_environment": target_environment,
+            "p_actual_start_business_date": actual_start_business_date,
+            "p_business_timezone": business_timezone,
+            "p_job_id": job_id,
+            "p_actor": actor,
+            "p_daily_start_limit": daily_start_limit,
+        },
+    )
+
+
+def finalize_machine_v2_start(
+    *,
+    intake_id: str,
+    job_id: str,
+    lifecycle_state: str,
+    actor: str,
+    safe_error_code: str | None,
+) -> dict[str, Any] | None:
+    """Persist the v2 remote-start outcome against its atomic reservation."""
+    return _machine_rpc_object(
+        "finalize_leadgen_machine_v2_start",
+        {
+            "p_intake_id": intake_id,
+            "p_job_id": job_id,
+            "p_lifecycle_state": lifecycle_state,
+            "p_actor": actor,
+            "p_safe_error_code": safe_error_code,
+        },
+    )
+
+
+def release_machine_v2_start(
+    *,
+    intake_id: str,
+    job_id: str,
+    actor: str,
+    lifecycle_state: str,
+    wait_reason: str | None,
+    blocked_until: str | None,
+) -> dict[str, Any] | None:
+    """Release a v2 reservation only after a proven definite no-start."""
+    return _machine_rpc_object(
+        "release_leadgen_machine_v2_start",
+        {
+            "p_intake_id": intake_id,
+            "p_job_id": job_id,
+            "p_actor": actor,
+            "p_lifecycle_state": lifecycle_state,
+            "p_wait_reason": wait_reason,
+            "p_blocked_until": blocked_until,
+        },
+    )
+
+
+def load_machine_v2_evidence_bundle(bundle_sha256: str) -> dict[str, Any] | None:
+    """Load a verified immutable bundle for one worker execution."""
+    return _machine_rpc_object(
+        "get_leadgen_machine_v2_evidence_bundle",
+        {"p_bundle_sha256": bundle_sha256},
+    )
+
+
+def load_machine_v2_lifecycle(intake_id: str) -> dict[str, Any] | None:
+    """Load one v2 intake, including bundle and cohort identity."""
+    return _machine_rpc_object(
+        "get_leadgen_machine_v2_lifecycle",
+        {"p_intake_id": intake_id},
+    )
+
+
 def list_claimable_specter_worker_jobs(limit: int = 10) -> list[dict[str, Any]]:
     client = _get_client()
     requested_limit = max(int(limit), 0)

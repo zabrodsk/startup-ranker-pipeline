@@ -24,7 +24,7 @@ from agent.ingest.specter_mcp_client import (
     fetch_specter_company,
     specter_quota_reset_hint,
 )
-from agent.ingest.store import EvidenceStore
+from agent.ingest.store import Chunk, EvidenceStore
 from agent.llm_catalog import serialize_selection
 from agent.llm_policy import (
     build_phase_model_policy,
@@ -35,6 +35,8 @@ from agent.llm_policy import (
 )
 from agent.run_context import RunTelemetryCollector, use_run_context
 from web import app as web_app
+from web.leadgen_domain import normalize_company_domain
+from web.leadgen_machine_v2 import FrozenLeadGenEvidenceBundleV1, canonical_bundle_sha256
 from web.specter_quota_gate import SpecterQuotaGateUnavailable, trip_specter_quota_gate
 
 EVENT_PREFIX = "__SPECTER_COMPANY_EVENT__"
@@ -46,6 +48,34 @@ def _emit_event(payload: dict[str, Any]) -> None:
 
 def _read_json(path: str) -> dict[str, Any]:
     return json.loads(Path(path).read_text())
+
+
+def _load_frozen_leadgen_bundle(
+    run_config: dict[str, Any],
+    *,
+    expected_domain: str | None,
+) -> tuple[Company, EvidenceStore] | None:
+    """Reconstruct the normal RDI inputs without a new Specter request."""
+    context = run_config.get("leadgen_machine_v2")
+    if not isinstance(context, dict) or context.get("requires_specter_mcp") is not False:
+        return None
+    bundle_sha256 = str(context.get("evidence_bundle_sha256") or "")
+    record = db.load_machine_v2_evidence_bundle(bundle_sha256)
+    payload = record.get("payload") if isinstance(record, dict) else None
+    if not isinstance(payload, dict):
+        raise ValueError("Frozen LeadGen evidence bundle is unavailable")
+    if canonical_bundle_sha256(payload) != bundle_sha256:
+        raise ValueError("Frozen LeadGen evidence bundle hash mismatch")
+    bundle = FrozenLeadGenEvidenceBundleV1.model_validate(payload)
+    requested_domain = normalize_company_domain(expected_domain or "")
+    if requested_domain and requested_domain != bundle.canonical_domain:
+        raise ValueError("Frozen LeadGen evidence bundle domain mismatch")
+    company = Company.model_validate(bundle.company)
+    store = EvidenceStore(
+        startup_slug=_company_slug(company.name),
+        chunks=[Chunk(**chunk.model_dump()) for chunk in bundle.evidence_chunks],
+    )
+    return company, store
 
 
 def _pipeline_policy_from_run_config(run_config: dict[str, Any]) -> Any | None:
@@ -239,7 +269,13 @@ async def _process_company(args: argparse.Namespace) -> int:
     # bare non-zero exit: no structured event, no analysis_errors row, and the
     # UI only shows a generic "exited with code 1" (the 2026-06-11 outage UX).
     try:
-        if args.specter_url:
+        frozen_inputs = _load_frozen_leadgen_bundle(
+            run_config,
+            expected_domain=args.specter_url,
+        )
+        if frozen_inputs is not None:
+            company, store = frozen_inputs
+        elif args.specter_url:
             company, store = fetch_specter_company(
                 args.specter_url,
                 expected_name=args.expected_name or None,
