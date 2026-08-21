@@ -453,30 +453,22 @@ def test_specter_mcp_quota_preflight_blocks_before_quality_preflight(
         "specter_urls": ["variene.ai"],
     }
 
-    class SpecterMCPError(RuntimeError):
-        pass
+    async def blocked_availability():
+        return {
+            "provider": "specter_mcp",
+            "state": "blocked",
+            "enforcement_enabled": True,
+            "accepting_new_analyses": False,
+            "quota_remaining": "unknown",
+            "blocked_until": "2026-08-22T00:05:00Z",
+            "next_probe_at": "2026-08-22T00:05:00Z",
+            "retry_after_seconds": 900,
+            "reason_code": "specter_mcp_quota_exhausted",
+            "reset_hint": "00:00 UTC",
+            "observed_at": "2026-08-21T23:50:00Z",
+        }
 
-    class SpecterCompanyNotFoundError(SpecterMCPError):
-        pass
-
-    class SpecterQuotaLimitError(SpecterMCPError):
-        reset_hint = "00:00 UTC"
-
-    class Client:
-        def find_company(self, _identifier):
-            raise SpecterQuotaLimitError("Daily MCP limit reached (250 tool calls/day). Resets at 00:00 UTC.")
-
-    monkeypatch.setattr(
-        web_app,
-        "_lazy_import_specter_mcp_preflight_symbols",
-        lambda: (
-            SpecterCompanyNotFoundError,
-            SpecterMCPError,
-            SpecterQuotaLimitError,
-            lambda: Client(),
-            lambda _message: "00:00 UTC",
-        ),
-    )
+    monkeypatch.setattr(web_app, "_specter_mcp_availability_with_recovery", blocked_availability)
     monkeypatch.setattr(
         web_app,
         "_run_analysis_quality_preflight",
@@ -505,48 +497,6 @@ def test_specter_mcp_quota_preflight_blocks_before_quality_preflight(
     assert web_app._jobs[job_id].status == "pending"
 
 
-def test_specter_mcp_quota_preflight_allows_explicit_machine_fallback(
-    monkeypatch,
-    guardrail_modules,
-) -> None:
-    web_app = guardrail_modules.app
-
-    class SpecterMCPError(RuntimeError):
-        pass
-
-    class SpecterCompanyNotFoundError(SpecterMCPError):
-        pass
-
-    class SpecterQuotaLimitError(SpecterMCPError):
-        reset_hint = "00:00 UTC"
-
-    class Client:
-        def find_company(self, _identifier):
-            raise SpecterQuotaLimitError("Daily MCP limit reached")
-
-    monkeypatch.setattr(
-        web_app,
-        "_lazy_import_specter_mcp_preflight_symbols",
-        lambda: (
-            SpecterCompanyNotFoundError,
-            SpecterMCPError,
-            SpecterQuotaLimitError,
-            lambda: Client(),
-            lambda _message: "00:00 UTC",
-        ),
-    )
-
-    response = asyncio.run(
-        web_app._run_specter_mcp_start_preflight(
-            job_id=None,
-            identifiers=[{"url": "https://variene.ai"}],
-            allow_quota_fallback=True,
-        )
-    )
-
-    assert response is None
-
-
 def test_specter_mcp_unavailable_preflight_blocks_with_503(
     monkeypatch,
     tmp_path: Path,
@@ -565,30 +515,12 @@ def test_specter_mcp_unavailable_preflight_blocks_with_503(
         "specter_urls": ["variene.ai"],
     }
 
-    class SpecterMCPError(RuntimeError):
-        pass
+    from agent.ingest.specter_mcp_client import SpecterMCPError
 
-    class SpecterCompanyNotFoundError(SpecterMCPError):
-        pass
+    def unavailable_fetch(*_args, **_kwargs):
+        raise SpecterMCPError("auth unavailable")
 
-    class SpecterQuotaLimitError(SpecterMCPError):
-        pass
-
-    class Client:
-        def find_company(self, _identifier):
-            raise SpecterMCPError("auth unavailable")
-
-    monkeypatch.setattr(
-        web_app,
-        "_lazy_import_specter_mcp_preflight_symbols",
-        lambda: (
-            SpecterCompanyNotFoundError,
-            SpecterMCPError,
-            SpecterQuotaLimitError,
-            lambda: Client(),
-            lambda _message: None,
-        ),
-    )
+    monkeypatch.setattr(web_app, "_lazy_import_fetch_specter_company", lambda: unavailable_fetch)
 
     response = asyncio.run(
         web_app._start_analysis_job(
@@ -603,7 +535,8 @@ def test_specter_mcp_unavailable_preflight_blocks_with_503(
     assert response.status_code == 503
     assert body["code"] == "specter_mcp_unavailable"
     assert body["quota_remaining"] == "unknown"
-    assert "auth unavailable" in body["detail"]
+    assert "temporarily unavailable" in body["detail"]
+    assert "auth unavailable" not in body["detail"]
 
 
 def test_persisted_preflight_status_is_added_to_progress_log(

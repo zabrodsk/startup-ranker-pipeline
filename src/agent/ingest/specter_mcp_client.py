@@ -44,12 +44,25 @@ logger = logging.getLogger(__name__)
 SPECTER_PROFILE_BASE_URL = "https://app.tryspecter.com/signals/company/feed/"
 SPECTER_MCP_QUOTA_ERROR_CODE = "specter_mcp_quota_exhausted"
 
-_QUOTA_LIMIT_RE = re.compile(r"\b(?:daily\s+)?mcp\s+limit\s+reached\b", re.IGNORECASE)
+_QUOTA_LIMIT_PATTERNS = (
+    re.compile(r"\b(?:daily\s+)?mcp\s+limit\s+reached\b", re.IGNORECASE),
+    re.compile(r"\bmcp\s+quota\s+(?:is\s+)?exhausted\b", re.IGNORECASE),
+    re.compile(
+        r"\ball\s+(?:daily\s+)?mcp\s+credits?\s+(?:have\s+been\s+)?used\b|"
+        r"\b(?:you\s+have\s+)?used\s+all[^.\n]{0,80}\bmcp\s+credits?\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bmcp\s+calls?\s+(?:are\s+)?paused\s+until\s+(?:the\s+)?(?:daily\s+)?reset\b",
+        re.IGNORECASE,
+    ),
+)
 _QUOTA_RESET_RE = re.compile(r"\bresets?\s+at\s+([^.;\n]+)", re.IGNORECASE)
 
 
 def is_specter_quota_limit_message(message: str | None) -> bool:
-    return bool(_QUOTA_LIMIT_RE.search(str(message or "")))
+    text = str(message or "")
+    return any(pattern.search(text) for pattern in _QUOTA_LIMIT_PATTERNS)
 
 
 def specter_quota_reset_hint(message: str | None) -> str | None:

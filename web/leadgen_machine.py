@@ -23,6 +23,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.responses import Response
 
 from web.leadgen_domain import company_source_host, normalize_company_domain
+from web.specter_quota_gate import (
+    SpecterQuotaGateUnavailable,
+    get_specter_quota_availability,
+    public_specter_quota_availability,
+)
 
 CONTRACT_VERSION = "rdi.leadgen-machine.v1"
 SERVICE_ACTOR = "service:rockaway-leadgen"
@@ -229,6 +234,14 @@ class MachineLifecycleStore(Protocol):
 
     def load_machine_lifecycle(self, intake_id: str) -> dict[str, Any] | None: ...
 
+    def get_specter_mcp_quota_gate(self, **request: Any) -> dict[str, Any] | None: ...
+
+    def trip_specter_mcp_quota_gate(self, **request: Any) -> dict[str, Any] | None: ...
+
+    def acquire_specter_mcp_quota_probe(self, **request: Any) -> dict[str, Any] | None: ...
+
+    def finish_specter_mcp_quota_probe(self, **request: Any) -> dict[str, Any] | None: ...
+
 
 @dataclass(frozen=True)
 class MachineStartAccepted:
@@ -245,12 +258,15 @@ class MachineStartDefiniteRejection:
     status_code: Literal[400, 429, 503]
     error_code: str
     message: str
+    blocked_until: str | None = None
+    retry_after_seconds: int | None = None
 
 
 MachineStartAdapter = Callable[
     [str, list[dict[str, str] | str], dict[str, Any], dict[str, str | None]],
     Awaitable[object],
 ]
+MachineAvailabilityAdapter = Callable[[], Awaitable[dict[str, Any]]]
 
 
 class MachineLifecycleDependencies:
@@ -261,10 +277,12 @@ class MachineLifecycleDependencies:
         *,
         store: MachineLifecycleStore | None,
         start_adapter: MachineStartAdapter,
+        availability_adapter: MachineAvailabilityAdapter | None = None,
     ) -> None:
         """Capture the persistence and existing RDI start seams."""
         self.store = store
         self.start_adapter = start_adapter
+        self.availability_adapter = availability_adapter
 
 
 def _canonical_json(payload: dict[str, Any]) -> str:
@@ -279,10 +297,21 @@ def _stable_reference(prefix: str, material: dict[str, Any]) -> str:
     return f"{prefix}-{_sha256(material)[:32]}"
 
 
-def _problem(status_code: int, code: str, message: str) -> HTTPException:
+def _problem(
+    status_code: int,
+    code: str,
+    message: str,
+    *,
+    extra_detail: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+) -> HTTPException:
+    detail = {"code": code, "message": message, "contract_version": CONTRACT_VERSION}
+    if extra_detail:
+        detail.update(extra_detail)
     return HTTPException(
         status_code=status_code,
-        detail={"code": code, "message": message, "contract_version": CONTRACT_VERSION},
+        detail=detail,
+        headers=headers,
     )
 
 
@@ -501,8 +530,40 @@ def _start_response(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _provider_block_problem(record: dict[str, Any]) -> HTTPException:
+    retry_after = record.get("retry_after_seconds")
+    try:
+        retry_after_seconds = max(1, int(retry_after))
+    except (TypeError, ValueError):
+        next_probe_at = record.get("next_probe_at") or record.get("blocked_until")
+        retry_after_seconds = 1
+        if next_probe_at:
+            try:
+                parsed = datetime.fromisoformat(str(next_probe_at).replace("Z", "+00:00"))
+                retry_after_seconds = max(
+                    1,
+                    int((parsed.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()),
+                )
+            except (TypeError, ValueError):
+                pass
+    return _problem(
+        429,
+        "machine_specter_mcp_quota_exhausted",
+        "Specter MCP quota is exhausted; no new machine analysis was accepted.",
+        extra_detail={
+            "provider": "specter_mcp",
+            "blocked_until": record.get("blocked_until"),
+            "retry_after_seconds": retry_after_seconds,
+            "quota_remaining": "unknown",
+        },
+        headers={"Retry-After": str(retry_after_seconds)},
+    )
+
+
 def _reservation_problem(record: dict[str, Any]) -> HTTPException:
     action = record.get("action")
+    if action == "provider_blocked":
+        return _provider_block_problem(record)
     if action == "unknown":
         return _problem(404, "machine_intake_not_found", "Machine intake was not found.")
     if action == "environment_mismatch":
@@ -516,6 +577,24 @@ def _reservation_problem(record: dict[str, Any]) -> HTTPException:
     if action == "terminal_invalid":
         return _problem(409, "machine_intake_terminal_invalid", "Machine intake cannot be started from its terminal state.")
     return _problem(409, "machine_start_rejected", "Machine start reservation was rejected.")
+
+
+async def _machine_availability(
+    dependencies: MachineLifecycleDependencies,
+) -> dict[str, Any]:
+    store = _require_store(dependencies)
+    try:
+        if dependencies.availability_adapter is not None:
+            availability = await dependencies.availability_adapter()
+        else:
+            availability = get_specter_quota_availability(store)
+    except SpecterQuotaGateUnavailable as exc:
+        raise _problem(
+            503,
+            "machine_specter_mcp_gate_unavailable",
+            "Specter MCP availability cannot be verified safely.",
+        ) from exc
+    return public_specter_quota_availability(availability)
 
 
 def _finalize_or_fence(
@@ -740,6 +819,10 @@ def build_leadgen_machine_router(
     """Build the additive version-one machine lifecycle route family."""
     router = APIRouter(route_class=MachineAuthenticatedRoute)
 
+    @router.get("/api/machine/leadgen/v1/availability")
+    async def availability() -> dict[str, Any]:
+        return await _machine_availability(dependencies)
+
     @router.post(
         "/api/machine/leadgen/v1/intakes",
         status_code=202,
@@ -756,6 +839,8 @@ def build_leadgen_machine_router(
         )
         if result is None:
             raise _problem(503, "machine_intake_persistence_failed", "Machine intake could not be persisted.")
+        if result.get("action") == "provider_blocked":
+            raise _provider_block_problem(result)
         if result.get("action") == "conflict":
             raise _problem(409, "machine_intake_payload_conflict", "The idempotency identity already has different material payload.")
         return _intake_response(result)
@@ -849,6 +934,17 @@ def build_leadgen_machine_router(
                 remote_result.status_code,
                 remote_result.error_code,
                 remote_result.message,
+                extra_detail={
+                    "provider": "specter_mcp",
+                    "blocked_until": remote_result.blocked_until,
+                    "retry_after_seconds": remote_result.retry_after_seconds,
+                    "quota_remaining": "unknown",
+                }
+                if remote_result.error_code == "machine_specter_mcp_quota_exhausted"
+                else None,
+                headers={"Retry-After": str(max(1, remote_result.retry_after_seconds or 1))}
+                if remote_result.error_code == "machine_specter_mcp_quota_exhausted"
+                else None,
             )
 
         if not isinstance(remote_result, MachineStartAccepted):

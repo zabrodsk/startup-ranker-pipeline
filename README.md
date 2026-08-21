@@ -322,6 +322,7 @@ Copy `.env.example` to `.env` and set:
 | `RDI_LEADGEN_GLOBAL_START_LIMIT` | deprecated alias | Used only when the daily variable is unset; configuring both fails closed |
 | `RDI_SCORING_VERSION` | for LeadGen machine start | Explicit scoring version persisted with the worker job and returned in terminal results |
 | `SPECTER_WORKER_POLL_SECONDS` | optional | Poll interval for the dedicated Specter worker (code default: `5`; current Railway production override: `10`) |
+| `SPECTER_MCP_QUOTA_GATE_MODE` | optional | `observe` (default) records durable daily-quota state without blocking; `enforce` fails closed and blocks MCP-dependent intake/start until the single recovery probe succeeds |
 | `SPECTER_MCP_URL` | optional | Specter MCP endpoint (default: `https://mcp.tryspecter.com/mcp`) — used for both URL-list intake and pitch-deck augmentation |
 | `SPECTER_MCP_CLIENT_ID` | optional | Specter MCP OAuth client ID minted by `scripts/specter_oauth_login.py` |
 | `SPECTER_MCP_REFRESH_TOKEN` | optional | Specter MCP OAuth refresh token (initial value); rotated tokens persist to the `mcp_secrets` Supabase table on subsequent runs |

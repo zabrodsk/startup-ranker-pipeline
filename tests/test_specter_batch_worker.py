@@ -32,7 +32,7 @@ import json
 from argparse import Namespace
 
 from agent import specter_company_worker as scw
-from agent.ingest.specter_mcp_client import SpecterMCPError
+from agent.ingest.specter_mcp_client import SpecterMCPError, SpecterQuotaLimitError
 
 
 def _child_args(tmp_path, **overrides) -> Namespace:
@@ -57,7 +57,7 @@ def _child_args(tmp_path, **overrides) -> Namespace:
 
 
 def _capture_failure_persistence(monkeypatch):
-    calls: dict = {"errors": [], "failures": []}
+    calls: dict = {"errors": [], "failures": [], "events": []}
     # Policy building inspects configured models; CI has no API keys, so keep
     # the tests hermetic by skipping it (it runs before the fetch guard).
     monkeypatch.setattr(scw, "_pipeline_policy_from_run_config", lambda rc: None)
@@ -68,6 +68,10 @@ def _capture_failure_persistence(monkeypatch):
     monkeypatch.setattr(
         scw.db, "persist_company_failure_result",
         lambda **kw: calls["failures"].append(kw) or True,
+    )
+    monkeypatch.setattr(
+        scw.db, "insert_analysis_event",
+        lambda job_id, **kw: calls["events"].append({"job_id": job_id, **kw}),
     )
     monkeypatch.setattr(
         scw.web_app, "_failure_result_payload",
@@ -142,6 +146,42 @@ def test_csv_ingest_failure_synthesizes_identity_from_index(tmp_path, monkeypatc
     assert event["company_name"] == "company #2"
     assert "bad CSV row" in event["error"]
     assert calls["failures"][0]["result_row"]["slug"] == "company-2"
+
+
+def test_quota_fetch_failure_trips_gate_without_persisting_company_failure(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    calls = _capture_failure_persistence(monkeypatch)
+    gate_trips = []
+    monkeypatch.setattr(
+        scw,
+        "trip_specter_quota_gate",
+        lambda store, **kw: gate_trips.append({"store": store, **kw}) or {"state": "blocked"},
+    )
+    monkeypatch.setattr(
+        scw,
+        "fetch_specter_company",
+        lambda *a, **k: (_ for _ in ()).throw(
+            SpecterQuotaLimitError(
+                "All daily MCP credits have been used; MCP calls are paused until 00:00 UTC."
+            )
+        ),
+    )
+
+    rc = asyncio.run(scw._process_company(_child_args(tmp_path)))
+
+    assert rc == 0
+    event = _last_event(capsys)
+    assert event["status"] == "blocked"
+    assert event["quota_exhausted"] is True
+    assert event["error_code"] == "specter_mcp_quota_exhausted"
+    assert calls["errors"] == []
+    assert calls["failures"] == []
+    assert calls["events"][0]["event_type"] == "specter_mcp_quota_blocked"
+    assert len(gate_trips) == 1
+    assert gate_trips[0]["source_job_id"] == "job-1"
 
 
 def test_fetch_failure_event_still_emitted_when_persistence_fails(tmp_path, monkeypatch, capsys):

@@ -103,6 +103,7 @@ class _FakeWorkerDb:
         self.snapshots = []
         self.finished = None
         self.load_job_results_calls = 0
+        self.heartbeats = []
 
     def get_job_control(self, _job_id):
         self.poll_count += 1
@@ -116,7 +117,7 @@ class _FakeWorkerDb:
         self.events.append({"is_error": True, **kw})
 
     def heartbeat_specter_worker_job(self, _job_id, **kw):
-        pass
+        self.heartbeats.append(kw)
 
     def load_job_results(self, _job_id, preferred_mode=None):
         self.load_job_results_calls += 1
@@ -162,6 +163,11 @@ def _drive_process_job(
     monkeypatch.setattr(scw, "_load_completed_company_keys", lambda _job_id: (set(), 0, 0))
     monkeypatch.setattr(scw.web_app, "_parse_max_startups_from_instructions", lambda _instr: None)
 
+    async def _available():
+        return {"accepting_new_analyses": True}
+
+    monkeypatch.setattr(scw, "_specter_mcp_availability", _available)
+
     processed = []
 
     async def _fake_subprocess(*, company_descriptor, completed_companies, failed_companies, **_kw):
@@ -171,7 +177,7 @@ def _drive_process_job(
                 attempted_company_index=len(processed),
                 total_companies=n_companies,
                 completed_companies=completed_companies,
-                failed_companies=failed_companies + 1,
+                failed_companies=failed_companies,
                 reset_hint="00:00 UTC",
                 error_message="Daily MCP limit reached (250 tool calls/day). Resets at 00:00 UTC.",
             )
@@ -263,7 +269,7 @@ def test_all_failed_without_company_runs_persists_clear_error_snapshot(monkeypat
     assert any(e.get("event_type") == "worker_error" for e in fake_db.events)
 
 
-def test_quota_exhaustion_stops_remaining_companies_and_persists_error_code(monkeypatch):
+def test_quota_exhaustion_parks_job_without_failing_company_or_batch(monkeypatch):
     fake_db, processed = _drive_process_job(
         monkeypatch,
         n_companies=3,
@@ -272,15 +278,10 @@ def test_quota_exhaustion_stops_remaining_companies_and_persists_error_code(monk
     )
 
     assert processed == ["co1"]
-    assert fake_db.finished["status"] == "error"
-    assert fake_db.finished["completed_companies"] == 0
-    assert fake_db.finished["failed_companies"] == 1
-    payload = fake_db.snapshots[-1]["results_payload"]
-    assert payload["error_code"] == "specter_mcp_quota_exhausted"
-    assert payload["quota_remaining"] == "unknown"
-    assert payload["reset_hint"] == "00:00 UTC"
-    assert payload["job_message"] == (
-        "Specter MCP quota exhausted after 1/3 attempts; 2 companies were not started. Reset: 00:00 UTC."
-    )
-    worker_state = fake_db.snapshots[-1]["worker_state"]
-    assert worker_state["error_code"] == "specter_mcp_quota_exhausted"
+    assert fake_db.finished is None
+    assert fake_db.snapshots == []
+    assert fake_db.heartbeats[-1]["status"] == "queued"
+    assert fake_db.heartbeats[-1]["progress"] == "Waiting for Specter quota reset."
+    assert fake_db.heartbeats[-1]["completed_companies"] == 0
+    assert fake_db.heartbeats[-1]["failed_companies"] == 0
+    assert any(e.get("event_type") == "specter_mcp_quota_wait" for e in fake_db.events)

@@ -25,10 +25,6 @@ from agent.ingest.specter_mcp_client import (
     specter_quota_reset_hint,
 )
 from agent.ingest.store import EvidenceStore
-from agent.ingest.web_fallback import (
-    fetch_company_homepage,
-    quota_web_fallback_allowed,
-)
 from agent.llm_catalog import serialize_selection
 from agent.llm_policy import (
     build_phase_model_policy,
@@ -39,6 +35,7 @@ from agent.llm_policy import (
 )
 from agent.run_context import RunTelemetryCollector, use_run_context
 from web import app as web_app
+from web.specter_quota_gate import SpecterQuotaGateUnavailable, trip_specter_quota_gate
 
 EVENT_PREFIX = "__SPECTER_COMPANY_EVENT__"
 
@@ -125,7 +122,12 @@ def _handle_fetch_failure(
     event the evaluation except-path uses, so the parent counts the failure
     and the UI shows the specific message instead of a generic exit code.
     """
-    error_message = f"{type(exc).__name__}: {exc}"[:1000]
+    quota_exhausted = isinstance(exc, SpecterQuotaLimitError)
+    error_message = (
+        "Specter MCP quota exhausted."
+        if quota_exhausted
+        else f"{type(exc).__name__}: {exc}"[:1000]
+    )
     name = (
         args.expected_name
         or args.specter_url
@@ -134,55 +136,67 @@ def _handle_fetch_failure(
     slug = _company_slug(name) or f"company-{args.absolute_index}"
     company = Company(name=name)
     store = EvidenceStore(startup_slug=slug, chunks=[])
-    status = "error"
-    quota_exhausted = isinstance(exc, SpecterQuotaLimitError)
+    status = "blocked" if quota_exhausted else "error"
     reset_hint = getattr(exc, "reset_hint", None) or specter_quota_reset_hint(error_message)
     try:
-        db.insert_analysis_error(
-            job_id,
-            message=error_message,
-            stage="specter_company_worker.fetch",
-            error_type=type(exc).__name__,
-            company_slug=slug,
-        )
-        failure_payload = web_app._failure_result_payload(
-            job_id,
-            company=company,
-            store=store,
-            slug=slug,
-            status=status,
-            error_message=error_message,
-        )
-        result_row = {
-            "slug": slug,
-            "company": company,
-            "company_name": company.name,
-            "evidence_store": store,
-            "final_state": {
-                "final_arguments": [],
-                "final_decision": status,
-                "ranking_result": None,
-                "all_qa_pairs": [],
-            },
-            "analysis_status": status,
-            "error": error_message,
-            "skipped": False,
-        }
         if quota_exhausted:
-            failure_payload["error_code"] = SPECTER_MCP_QUOTA_ERROR_CODE
-            failure_payload["quota_remaining"] = "unknown"
-            result_row["error_code"] = SPECTER_MCP_QUOTA_ERROR_CODE
-            result_row["quota_remaining"] = "unknown"
-            if reset_hint:
-                failure_payload["reset_hint"] = reset_hint
-                result_row["reset_hint"] = reset_hint
-        db.persist_company_failure_result(
-            job_id_legacy=job_id,
-            result_row=result_row,
-            company_payload=failure_payload,
-            run_config=run_config,
-            versions=versions,
-        )
+            trip_specter_quota_gate(
+                db,
+                error=exc,
+                source_component="specter_company_worker",
+                source_job_id=job_id,
+            )
+            db.insert_analysis_event(
+                job_id,
+                message="Specter MCP quota exhausted; analysis is waiting for provider reset.",
+                event_type="specter_mcp_quota_blocked",
+                stage="specter_company_worker.fetch",
+                payload={
+                    "error_code": SPECTER_MCP_QUOTA_ERROR_CODE,
+                    "quota_remaining": "unknown",
+                    "reset_hint": reset_hint,
+                },
+            )
+        else:
+            db.insert_analysis_error(
+                job_id,
+                message=error_message,
+                stage="specter_company_worker.fetch",
+                error_type=type(exc).__name__,
+                company_slug=slug,
+            )
+            failure_payload = web_app._failure_result_payload(
+                job_id,
+                company=company,
+                store=store,
+                slug=slug,
+                status=status,
+                error_message=error_message,
+            )
+            result_row = {
+                "slug": slug,
+                "company": company,
+                "company_name": company.name,
+                "evidence_store": store,
+                "final_state": {
+                    "final_arguments": [],
+                    "final_decision": status,
+                    "ranking_result": None,
+                    "all_qa_pairs": [],
+                },
+                "analysis_status": status,
+                "error": error_message,
+                "skipped": False,
+            }
+            db.persist_company_failure_result(
+                job_id_legacy=job_id,
+                result_row=result_row,
+                company_payload=failure_payload,
+                run_config=run_config,
+                versions=versions,
+            )
+    except SpecterQuotaGateUnavailable:
+        print("Specter MCP quota gate persistence unavailable", file=sys.stderr)
     except Exception:
         # Persistence is best-effort; the structured event below still reaches
         # the parent so the failure is counted and surfaced.
@@ -224,7 +238,6 @@ async def _process_company(args: argparse.Namespace) -> int:
     # guard a failure here (e.g. Specter auth outage) kills the child with a
     # bare non-zero exit: no structured event, no analysis_errors row, and the
     # UI only shows a generic "exited with code 1" (the 2026-06-11 outage UX).
-    used_quota_web_fallback = False
     try:
         if args.specter_url:
             company, store = fetch_specter_company(
@@ -244,26 +257,11 @@ async def _process_company(args: argparse.Namespace) -> int:
                 args.specter_people,
                 company_index=args.company_index,
             )
-    except SpecterQuotaLimitError as exc:
-        if not quota_web_fallback_allowed(
-            run_config,
-            use_web_search=use_web_search,
-            specter_url=args.specter_url,
-            expected_name=args.expected_name,
-        ):
-            traceback.print_exc()
-            return _handle_fetch_failure(args, job_id, run_config, versions, exc)
-        try:
-            company, store = fetch_company_homepage(
-                args.specter_url,
-                expected_name=args.expected_name,
-            )
-            used_quota_web_fallback = True
-        except Exception:
-            traceback.print_exc()
-            return _handle_fetch_failure(args, job_id, run_config, versions, exc)
     except Exception as exc:
-        traceback.print_exc()
+        if isinstance(exc, SpecterQuotaLimitError):
+            print("Specter MCP quota exhausted during company fetch", file=sys.stderr)
+        else:
+            traceback.print_exc()
         return _handle_fetch_failure(args, job_id, run_config, versions, exc)
     collector = RunTelemetryCollector(selected_llm=llm_selection)
     web_app._results_cache[job_id]["telemetry_collector"] = collector
@@ -276,12 +274,6 @@ async def _process_company(args: argparse.Namespace) -> int:
                 "absolute_index": args.absolute_index,
                 "message": message,
             }
-        )
-
-    if used_quota_web_fallback:
-        _on_progress(
-            "Specter daily quota is exhausted; continuing with identity-checked "
-            "company-homepage bootstrap and web evidence search."
         )
 
     try:

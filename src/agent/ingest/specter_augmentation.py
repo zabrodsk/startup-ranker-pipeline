@@ -13,9 +13,9 @@ already built for URL-only intake. The flow:
    are renumbered globally) and the MCP :class:`Company` is returned so the
    evaluation pipeline can use it as canonical metadata.
 
-The helper never raises: any failure (no URL, MCP error, disambiguation
-rejection) silently falls back to the deck-only store + ``None`` company,
-preserving the existing pitch-deck behaviour.
+The helper falls back for company-level and transient failures. Definitive
+daily quota exhaustion is re-raised after an optional durable-gate callback so
+the caller can stop the batch without retrying each deck independently.
 """
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ from agent.ingest.specter_mcp_client import (
     SpecterCompanyNotFoundError,
     SpecterDisambiguationError,
     SpecterMCPError,
+    SpecterQuotaLimitError,
     fetch_specter_company,
 )
 from agent.ingest.store import Chunk, EvidenceStore
@@ -277,6 +278,7 @@ def augment_with_specter(
     expected_name: str | None = None,
     fetch_full_team: bool = False,
     on_log: Callable[[str], None] | None = None,
+    on_quota: Callable[[SpecterQuotaLimitError], None] | None = None,
 ) -> tuple[EvidenceStore, Company | None]:
     """Try to enrich a deck-derived store with Specter MCP company data.
 
@@ -293,9 +295,9 @@ def augment_with_specter(
             operators (e.g. wired to ``print`` and the run-progress stream).
 
     Returns:
-        A 2-tuple ``(augmented_store, company_or_none)``. On any failure mode
-        the returned store is the original ``deck_store`` (unchanged) and the
-        company is ``None`` — never raises.
+        A 2-tuple ``(augmented_store, company_or_none)``. Company-level and
+        transient failures return the original deck store. Daily quota
+        exhaustion is re-raised after ``on_quota`` runs.
     """
     url = extract_company_url(deck_store)
     if not url:
@@ -310,6 +312,11 @@ def augment_with_specter(
             expected_name=expected_name,
             fetch_full_team=fetch_full_team,
         )
+    except SpecterQuotaLimitError as exc:
+        if on_quota is not None:
+            on_quota(exc)
+        _safe_log(on_log, "specter-augment: daily MCP quota exhausted")
+        raise
     except SpecterDisambiguationError as exc:
         _safe_log(
             on_log,

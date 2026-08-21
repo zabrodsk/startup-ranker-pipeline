@@ -268,6 +268,102 @@ def test_machine_intake_model_is_strict_bounded_and_company_owned() -> None:
             MachineIntakeRequest.model_validate(payload)
 
 
+def test_machine_quota_gate_rejects_new_intake_but_allows_exact_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class GateAwareStore(FakeMachineStore):
+        blocked = False
+
+        def create_machine_intake(self, **record: Any) -> dict[str, Any]:
+            existing = self.intakes_by_identity.get(record["idempotency_identity"])
+            if existing is not None:
+                return {"action": "existing", **deepcopy(existing)}
+            if self.blocked:
+                return {
+                    "action": "provider_blocked",
+                    "blocked_until": "2026-08-22T00:05:00Z",
+                    "next_probe_at": "2026-08-22T00:05:00Z",
+                    "retry_after_seconds": 900,
+                }
+            return super().create_machine_intake(**record)
+
+    store = GateAwareStore()
+    starts: list[dict[str, Any]] = []
+    monkeypatch.setenv("RDI_LEADGEN_AUTOSTART_KEY", SERVICE_KEY)
+    client = _client(store, starts)
+
+    accepted = client.post(
+        "/api/machine/leadgen/v1/intakes",
+        headers=SERVICE_HEADERS,
+        json=_request(),
+    )
+    store.blocked = True
+    replay = client.post(
+        "/api/machine/leadgen/v1/intakes",
+        headers=SERVICE_HEADERS,
+        json=_request(),
+    )
+    blocked = client.post(
+        "/api/machine/leadgen/v1/intakes",
+        headers=SERVICE_HEADERS,
+        json=_request(
+            external_company_id="lg-company-002",
+            canonical_domain="second.example",
+            idempotency_key="company-002-rdi-v1",
+        ),
+    )
+
+    assert accepted.status_code == 202
+    assert replay.status_code == 202
+    assert replay.json()["intake_id"] == accepted.json()["intake_id"]
+    assert blocked.status_code == 429
+    assert blocked.headers["Retry-After"] == "900"
+    assert blocked.json()["detail"]["code"] == "machine_specter_mcp_quota_exhausted"
+    assert len(store.created) == 1
+
+
+def test_machine_availability_returns_shared_provider_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def availability_adapter() -> dict[str, Any]:
+        return {
+            "provider": "specter_mcp",
+            "target_environment": "staging",
+            "state": "blocked",
+            "enforcement_enabled": True,
+            "accepting_new_analyses": False,
+            "quota_remaining": "unknown",
+            "blocked_until": "2026-08-22T00:05:00Z",
+            "next_probe_at": "2026-08-22T00:05:00Z",
+            "retry_after_seconds": 900,
+            "reason_code": "specter_mcp_quota_exhausted",
+            "observed_at": "2026-08-21T23:50:00Z",
+            "source_job_id": "private-job",
+        }
+
+    monkeypatch.setenv("RDI_LEADGEN_AUTOSTART_KEY", SERVICE_KEY)
+    app = FastAPI()
+    app.include_router(
+        build_leadgen_machine_router(
+            MachineLifecycleDependencies(
+                store=FakeMachineStore(),
+                start_adapter=lambda *_args: None,  # endpoint does not invoke it
+                availability_adapter=availability_adapter,
+            )
+        )
+    )
+
+    response = TestClient(app).get(
+        "/api/machine/leadgen/v1/availability",
+        headers=SERVICE_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["accepting_new_analyses"] is False
+    assert response.json()["quota_remaining"] == "unknown"
+    assert "source_job_id" not in response.json()
+
+
 def test_shared_domain_normalizer_aligns_machine_human_and_persistence() -> None:
     from web import db
     from web.leadgen_domain import normalize_company_domain
@@ -1484,19 +1580,9 @@ def test_production_wrapper_post_invocation_429_is_uncertain_without_retry(
     assert store.release_calls == []
 
 
-@pytest.mark.parametrize(
-    ("provider_failure", "expected_status", "expected_code"),
-    [
-        ("quota", 429, "machine_upstream_rate_limited"),
-        ("unavailable", 503, "machine_upstream_unavailable"),
-    ],
-)
-def test_real_machine_preflight_rejection_releases_once_and_retries_safely(
+def test_real_machine_start_uses_gate_without_consuming_a_preflight_mcp_call(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    provider_failure: str,
-    expected_status: int,
-    expected_code: str,
 ) -> None:
     from agent.ingest import specter_mcp_client
     from web import app as web_app
@@ -1529,12 +1615,9 @@ def test_real_machine_preflight_rejection_releases_once_and_retries_safely(
 
         @classmethod
         def find_company(cls, identifier: str) -> dict[str, str]:
+            del identifier
             cls.calls += 1
-            if cls.calls == 1:
-                if provider_failure == "quota":
-                    raise specter_mcp_client.SpecterQuotaLimitError("private quota detail")
-                raise specter_mcp_client.SpecterMCPError("private provider detail")
-            return {"domain": identifier}
+            raise AssertionError("open-gate starts must not spend an MCP call on preflight")
 
     store = FakeMachineStore()
     monkeypatch.setenv("RDI_LEADGEN_AUTOSTART_KEY", SERVICE_KEY)
@@ -1565,8 +1648,7 @@ def test_real_machine_preflight_rejection_releases_once_and_retries_safely(
     intake = _ingest_machine(client)
 
     try:
-        rejected = _start_machine(client, intake["intake_id"])
-        retried = _start_machine(client, intake["intake_id"])
+        started = _start_machine(client, intake["intake_id"])
         replayed = _start_machine(client, intake["intake_id"])
     finally:
         job_id = store.intakes_by_id[intake["intake_id"]].get("job_id")
@@ -1574,29 +1656,16 @@ def test_real_machine_preflight_rejection_releases_once_and_retries_safely(
             web_app._jobs.pop(job_id, None)
             web_app._results_cache.pop(job_id, None)
 
-    assert rejected.status_code == expected_status
-    assert rejected.json()["detail"]["code"] == expected_code
-    assert "private" not in rejected.text.lower()
-    assert retried.status_code == 202
-    assert retried.json()["lifecycle_state"] == "queued"
-    assert replayed.content == retried.content
-    assert RetryableSpecterClient.calls == 2
+    assert started.status_code == 202
+    assert started.json()["lifecycle_state"] == "queued"
+    assert replayed.content == started.content
+    assert RetryableSpecterClient.calls == 0
     assert runtime_events == ["persisted", "queued"]
-    assert len(store.release_calls) == 1
+    assert store.release_calls == []
 
 
-@pytest.mark.parametrize(
-    ("provider_failure", "expected_status", "expected_code"),
-    [
-        ("quota", 429, "specter_mcp_quota_exhausted"),
-        ("unavailable", 503, "specter_mcp_unavailable"),
-    ],
-)
-def test_human_preflight_provider_failures_remain_json_responses(
+def test_human_preflight_reads_shared_gate_without_provider_probe(
     monkeypatch: pytest.MonkeyPatch,
-    provider_failure: str,
-    expected_status: int,
-    expected_code: str,
 ) -> None:
     from agent.ingest import specter_mcp_client
     from web import app as web_app
@@ -1617,28 +1686,26 @@ def test_human_preflight_provider_failures_remain_json_responses(
             raise AssertionError("provider preflight must not queue")
 
     class FailingSpecterClient:
+        calls = 0
+
         @staticmethod
         def find_company(_identifier: str) -> dict[str, str]:
-            if provider_failure == "quota":
-                raise specter_mcp_client.SpecterQuotaLimitError("human quota detail")
-            raise specter_mcp_client.SpecterMCPError("human provider detail")
+            FailingSpecterClient.calls += 1
+            raise AssertionError("open-gate preflight must not call Specter")
 
     monkeypatch.setattr(web_app, "ENABLE_SPECTER_WORKER_SERVICE", True)
     monkeypatch.setattr(web_app, "db", RuntimeDatabase())
     monkeypatch.setattr(specter_mcp_client, "get_default_client", lambda: FailingSpecterClient())
 
     response = asyncio.run(
-        web_app._start_leadgen_url_job(
-            "lg-human-preflight",
-            ["https://acme.example"],
-            {"source": "leadgen"},
-            {},
+        web_app._run_specter_mcp_start_preflight(
+            job_id=None,
+            identifiers=["https://acme.example"],
         )
     )
 
-    assert isinstance(response, JSONResponse)
-    assert response.status_code == expected_status
-    assert json.loads(response.body)["code"] == expected_code
+    assert response is None
+    assert FailingSpecterClient.calls == 0
 
 
 @pytest.mark.parametrize(
