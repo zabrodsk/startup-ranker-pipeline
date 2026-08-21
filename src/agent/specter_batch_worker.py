@@ -30,8 +30,14 @@ from agent.ingest.specter_ingest import (
     list_specter_companies,
 )
 from agent.ingest.store import EvidenceStore
+from agent.ingest.specter_mcp_client import get_default_client
 from web import app as web_app
 import web.db as db
+from web.specter_quota_gate import (
+    SpecterQuotaGateUnavailable,
+    maybe_recover_specter_quota_gate,
+    requires_specter_mcp,
+)
 
 EVENT_PREFIX = "__SPECTER_COMPANY_EVENT__"
 SPECTER_MCP_QUOTA_ERROR_CODE = "specter_mcp_quota_exhausted"
@@ -67,6 +73,61 @@ class _SpecterWorkerQuotaExhausted(RuntimeError):
         self.reset_hint = reset_hint
         self.error_message = error_message or "Specter MCP quota exhausted."
         super().__init__(self.error_message)
+
+
+def _job_requires_specter_mcp(job: dict[str, Any]) -> bool:
+    run_config = job.get("run_config") or {}
+    return requires_specter_mcp(
+        input_mode=str(run_config.get("input_mode") or "specter"),
+        use_specter_mcp=bool(run_config.get("use_specter_mcp")),
+        specter_urls=run_config.get("specter_urls"),
+    )
+
+
+async def _specter_mcp_availability() -> dict[str, Any] | None:
+    def probe() -> Any:
+        return get_default_client().find_company(
+            web_app._specter_mcp_preflight_identifier()
+        )
+
+    try:
+        return await asyncio.to_thread(
+            maybe_recover_specter_quota_gate,
+            db,
+            probe=probe,
+        )
+    except SpecterQuotaGateUnavailable:
+        _log("Specter MCP quota gate unavailable; failing closed")
+        return None
+
+
+def _park_job_for_specter_quota(
+    job_id: str,
+    *,
+    worker_id: str,
+    completed_companies: int,
+    failed_companies: int,
+    total_companies: int,
+) -> None:
+    message = "Waiting for Specter quota reset."
+    db.insert_analysis_event(
+        job_id,
+        message=message,
+        event_type="specter_mcp_quota_wait",
+        stage="worker_wait",
+    )
+    db.heartbeat_specter_worker_job(
+        job_id,
+        status="queued",
+        progress=message,
+        active_company_slug=None,
+        active_company_index=None,
+        completed_companies=completed_companies,
+        failed_companies=failed_companies,
+        total_companies=total_companies,
+        worker_id=worker_id,
+    )
+    _log(f"{job_id}: parked in queue until Specter MCP recovers")
 
 
 def _normalize_company_key(name: str | None, slug: str | None) -> str:
@@ -635,6 +696,17 @@ async def _run_company_subprocess(
                     quota_exhausted = bool(event.get("quota_exhausted")) or (
                         str(event.get("error_code") or "") == SPECTER_MCP_QUOTA_ERROR_CODE
                     )
+                    if quota_exhausted:
+                        with contextlib.suppress(Exception):
+                            await asyncio.wait_for(process.wait(), timeout=5)
+                        raise _SpecterWorkerQuotaExhausted(
+                            attempted_company_index=absolute_index,
+                            total_companies=total_companies,
+                            completed_companies=completed_companies,
+                            failed_companies=failed_companies,
+                            reset_hint=str(event.get("reset_hint") or "").strip() or None,
+                            error_message="Specter MCP quota exhausted.",
+                        )
                     if status in {"error", "timeout"}:
                         company_failed = True
                         failed_companies += 1
@@ -662,17 +734,6 @@ async def _run_company_subprocess(
                         total_companies=total_companies,
                         worker_id=worker_id,
                     )
-                    if quota_exhausted:
-                        with contextlib.suppress(Exception):
-                            await asyncio.wait_for(process.wait(), timeout=5)
-                        raise _SpecterWorkerQuotaExhausted(
-                            attempted_company_index=absolute_index,
-                            total_companies=total_companies,
-                            completed_companies=completed_companies,
-                            failed_companies=failed_companies,
-                            reset_hint=str(event.get("reset_hint") or "").strip() or None,
-                            error_message=str(event.get("error") or "").strip() or None,
-                        )
                 continue
             last_stdout_lines.append(text)
             db.insert_analysis_event(job_id, message=text, event_type="worker_stdout", stage="company")
@@ -789,6 +850,17 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
             if company_key in completed_keys:
                 _log(f"{job_id}: skipping already persisted company {absolute_index}/{total_companies}")
                 continue
+            if task.get("mode") == "url":
+                availability = await _specter_mcp_availability()
+                if availability is None or not availability.get("accepting_new_analyses"):
+                    _park_job_for_specter_quota(
+                        job_id,
+                        worker_id=worker_id,
+                        completed_companies=completed_companies,
+                        failed_companies=failed_companies,
+                        total_companies=total_companies,
+                    )
+                    return
             try:
                 completed_companies, failed_companies = await _run_company_subprocess(
                     job_id=job_id,
@@ -811,8 +883,14 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
                 quota_exhausted = exc
                 completed_companies = exc.completed_companies
                 failed_companies = exc.failed_companies
-                _log(f"{job_id}: Specter MCP quota exhausted — finalizing without starting remaining companies")
-                break
+                _park_job_for_specter_quota(
+                    job_id,
+                    worker_id=worker_id,
+                    completed_companies=completed_companies,
+                    failed_companies=failed_companies,
+                    total_companies=total_companies,
+                )
+                return
             completed_keys.add(company_key)
             gc.collect()
 
@@ -939,6 +1017,14 @@ async def _worker_loop(run_once: bool = False) -> None:
             candidate_ids = ", ".join(str(candidate.get("job_id") or "?") for candidate in candidates)
             _log(f"found {len(candidates)} claimable job(s): {candidate_ids}")
         for candidate in candidates:
+            if _job_requires_specter_mcp(candidate):
+                availability = await _specter_mcp_availability()
+                if availability is None or not availability.get("accepting_new_analyses"):
+                    _log(
+                        f"claim deferred for job {candidate.get('job_id')} — "
+                        "Specter MCP is not accepting analyses"
+                    )
+                    continue
             job = db.claim_specter_worker_job(str(candidate.get("job_id") or ""), worker_id=worker_id)
             if not job:
                 _log(f"claim skipped for job {candidate.get('job_id')}")

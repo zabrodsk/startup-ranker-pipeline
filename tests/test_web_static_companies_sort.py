@@ -98,10 +98,26 @@ def test_specter_url_intake_shows_quota_unknown_warning() -> None:
     html = (Path(__file__).resolve().parents[1] / "web" / "static" / "index.html").read_text()
 
     assert "specter-quota-warning" in html
-    assert "This run requires at least ${minimumCalls} MCP calls, including one preflight call." in html
+    assert "This run requires at least ${minimumCalls} MCP calls." in html
     assert "error.status = res.status;" in html
     assert "if (err?.status) throw err;" in html
     assert "if (err?.status) {" in html
+
+
+def test_specter_quota_ui_preserves_inputs_and_disables_only_mcp_actions() -> None:
+    html = (Path(__file__).resolve().parents[1] / "web" / "static" / "index.html").read_text()
+
+    assert 'id="specter-availability-banner"' in html
+    assert "function currentInputsRequireSpecterMcp()" in html
+    assert "inputMode === 'pitchdeck' && !!$('#specter-mcp-checkbox')?.checked" in html
+    assert "refreshSpecterMcpAvailability({ force: true })" in html
+    assert "}, 60000);" in html
+    assert "Approval selections are preserved." in html
+    assert "const approveDisabled = actionDisabled || providerBlocked;" in html
+    assert "status: 'error'" in html  # unrelated explicit start failures remain errors
+    quota_branch = html.index("err?.status === 429 && err?.code === 'specter_mcp_quota_exhausted'")
+    first_error_card = html.index("status: 'error'", quota_branch)
+    assert quota_branch < first_error_card
 
 
 def test_startup_navigation_does_not_override_companies_click() -> None:

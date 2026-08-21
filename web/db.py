@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import json
 import logging
 import os
 import re
@@ -1837,6 +1838,30 @@ def reject_leadgen_intake(
 # LeadGen machine lifecycle (all mutations are atomic database RPCs)
 # ---------------------------------------------------------------------------
 
+def _specter_gate_block_from_exception(exc: Exception) -> dict[str, Any] | None:
+    """Translate the race-safe database trigger into a stable machine outcome."""
+    if str(getattr(exc, "code", "") or "") != "P0001":
+        return None
+    if str(getattr(exc, "message", "") or "") != "specter_mcp_quota_gate_blocked":
+        return None
+
+    raw_details = getattr(exc, "details", None)
+    if isinstance(raw_details, str):
+        try:
+            raw_details = json.loads(raw_details)
+        except (TypeError, ValueError):
+            raw_details = {}
+    if not isinstance(raw_details, dict):
+        raw_details = {}
+    return {
+        "action": "provider_blocked",
+        "reason_code": str(
+            raw_details.get("reason_code") or "specter_mcp_quota_exhausted"
+        ),
+        "blocked_until": raw_details.get("blocked_until"),
+        "next_probe_at": raw_details.get("next_probe_at"),
+    }
+
 def _machine_rpc_object(
     function_name: str,
     params: dict[str, Any],
@@ -1852,12 +1877,118 @@ def _machine_rpc_object(
             return _serialize(data[0])
         return None
     except Exception as exc:
+        provider_block = _specter_gate_block_from_exception(exc)
+        if provider_block is not None:
+            logger.info(
+                "Machine lifecycle write rejected by Specter MCP quota gate: function=%s",
+                function_name,
+            )
+            return provider_block
         _log_supabase_error(
             function_name,
             "leadgen_machine_intakes,leadgen_machine_events",
             exc,
         )
         return None
+
+
+# ---------------------------------------------------------------------------
+# Durable Specter MCP quota gate (all state changes use database-clock RPCs)
+# ---------------------------------------------------------------------------
+
+def _specter_gate_rpc_object(
+    function_name: str,
+    params: dict[str, Any],
+) -> dict[str, Any] | None:
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        data = client.rpc(function_name, _serialize(params)).execute().data
+        if isinstance(data, dict):
+            return _serialize(data)
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            return _serialize(data[0])
+        return None
+    except Exception as exc:
+        _log_supabase_error(function_name, "specter_mcp_quota_gate", exc)
+        return None
+
+
+def get_specter_mcp_quota_gate(
+    *,
+    target_environment: str,
+    enforcement_enabled: bool,
+) -> dict[str, Any] | None:
+    return _specter_gate_rpc_object(
+        "get_specter_mcp_quota_gate",
+        {
+            "p_target_environment": target_environment,
+            "p_enforcement_enabled": enforcement_enabled,
+        },
+    )
+
+
+def trip_specter_mcp_quota_gate(
+    *,
+    target_environment: str,
+    enforcement_enabled: bool,
+    reason_code: str,
+    reset_hint: str | None,
+    source_component: str,
+    source_job_id: str | None,
+    retry_after_seconds: int | None,
+) -> dict[str, Any] | None:
+    return _specter_gate_rpc_object(
+        "trip_specter_mcp_quota_gate",
+        {
+            "p_target_environment": target_environment,
+            "p_enforcement_enabled": enforcement_enabled,
+            "p_reason_code": reason_code,
+            "p_reset_hint": reset_hint,
+            "p_source_component": source_component,
+            "p_source_job_id": source_job_id,
+            "p_retry_after_seconds": retry_after_seconds,
+        },
+    )
+
+
+def acquire_specter_mcp_quota_probe(
+    *,
+    target_environment: str,
+    enforcement_enabled: bool,
+    probe_lease_token: str,
+    lease_seconds: int,
+) -> dict[str, Any] | None:
+    return _specter_gate_rpc_object(
+        "acquire_specter_mcp_quota_probe",
+        {
+            "p_target_environment": target_environment,
+            "p_enforcement_enabled": enforcement_enabled,
+            "p_probe_lease_token": probe_lease_token,
+            "p_lease_seconds": lease_seconds,
+        },
+    )
+
+
+def finish_specter_mcp_quota_probe(
+    *,
+    target_environment: str,
+    enforcement_enabled: bool,
+    probe_lease_token: str,
+    succeeded: bool,
+    reason_code: str | None,
+) -> dict[str, Any] | None:
+    return _specter_gate_rpc_object(
+        "finish_specter_mcp_quota_probe",
+        {
+            "p_target_environment": target_environment,
+            "p_enforcement_enabled": enforcement_enabled,
+            "p_probe_lease_token": probe_lease_token,
+            "p_succeeded": succeeded,
+            "p_reason_code": reason_code,
+        },
+    )
 
 
 def create_machine_intake(**record: Any) -> dict[str, Any] | None:

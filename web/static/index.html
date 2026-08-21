@@ -661,6 +661,19 @@
       font-weight: 500;
       line-height: 1.45;
     }
+    .specter-availability-banner {
+      display: none;
+      width: min(640px, 100%);
+      margin: 0 auto 16px;
+      padding: 12px 14px;
+      border: 1px solid var(--red-border, #ef9a9a);
+      border-radius: var(--radius-md);
+      background: var(--red-surface-subtle, #fff3f2);
+      color: var(--red, #9f2d20);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .specter-availability-banner.is-visible { display: block; }
     .input-mode-callout {
       display: none;
       align-items: flex-start;
@@ -4973,6 +4986,8 @@
       <p>Upload pitch decks, financials, and documents. Get structured investment rankings with pro and contra arguments in seconds.</p>
     </div>
 
+    <div id="specter-availability-banner" class="specter-availability-banner" role="status" aria-live="polite"></div>
+
     <!-- Onboarding: First-visit welcome banner -->
     <div class="onboarding-welcome" id="onboarding-welcome">
       <div class="onboarding-welcome-header">
@@ -5506,6 +5521,9 @@ let leadgenSortMode = 'source';
 let leadgenLoading = false;
 let leadgenActionStatus = '';
 let leadgenError = '';
+let specterMcpAvailability = null;
+let specterMcpAvailabilityError = null;
+let specterMcpAvailabilityRefresh = null;
 /** Set of company_key that have runs collapsed (hidden). Empty = all expanded. */
 let companyRunsCollapsed = new Set();
 let companyChatStateByKey = {};
@@ -5596,7 +5614,12 @@ function showScreen(id) {
   const nextScreen = $(`#${id}`);
   if (!nextScreen) return;
   const currentScreen = document.querySelector('.screen.active');
-  if (currentScreen?.id === id) return;
+  if (currentScreen?.id === id) {
+    if (sessionId && ['upload-screen', 'leadgen-screen'].includes(id)) {
+      refreshSpecterMcpAvailability();
+    }
+    return;
+  }
 
   screenTransitionToken += 1;
   const token = screenTransitionToken;
@@ -5622,6 +5645,10 @@ function showScreen(id) {
 
   if (id === 'analysis-screen') startSavedJobsRefresh();
   else stopSavedJobsRefresh();
+
+  if (sessionId && ['upload-screen', 'leadgen-screen'].includes(id)) {
+    refreshSpecterMcpAvailability();
+  }
 
   syncPrimaryHeaderNav(id);
 }
@@ -6926,13 +6953,85 @@ function renderAnalysisIdentity() {
   }
 }
 
+function currentInputsRequireSpecterMcp() {
+  const usingUrls = inputMode === 'specter' && uploadedFiles.length === 0 && specterUrls.length > 0;
+  const augmentingDeck = inputMode === 'pitchdeck' && !!$('#specter-mcp-checkbox')?.checked;
+  return usingUrls || augmentingDeck;
+}
+
+function specterMcpAcceptingAnalyses() {
+  return !specterMcpAvailabilityError && specterMcpAvailability?.accepting_new_analyses !== false;
+}
+
+function specterAvailabilityBannerHtml() {
+  if (specterMcpAvailabilityError) {
+    return '<strong>Specter availability unavailable.</strong> MCP-dependent analysis starts are paused until RDI can verify provider state.';
+  }
+  if (specterMcpAvailability?.accepting_new_analyses !== false) return '';
+  const rawReset = specterMcpAvailability.blocked_until || specterMcpAvailability.next_probe_at;
+  let resetText = 'the provider reset';
+  if (rawReset) {
+    const reset = new Date(rawReset);
+    if (!Number.isNaN(reset.getTime())) {
+      const utcReset = reset.toISOString().replace('T', ' ').replace('Z', ' UTC');
+      resetText = `${reset.toLocaleString()} local (${utcReset})`;
+    }
+  }
+  return `<strong>Specter quota exhausted.</strong> MCP-dependent analyses are paused until ${escapeHtml(resetText)}. Uploaded files, URLs, selections, and instructions are preserved.`;
+}
+
+function renderSpecterAvailability() {
+  const banner = $('#specter-availability-banner');
+  const html = specterAvailabilityBannerHtml();
+  if (banner) {
+    banner.innerHTML = html;
+    banner.classList.toggle('is-visible', Boolean(html));
+  }
+  updateAnalyzeButtonState();
+  if (getActiveScreenId() === 'leadgen-screen') renderLeadgenPage();
+}
+
+async function refreshSpecterMcpAvailability({ force = false } = {}) {
+  if (specterMcpAvailabilityRefresh && !force) return specterMcpAvailabilityRefresh;
+  specterMcpAvailabilityRefresh = (async () => {
+    try {
+      specterMcpAvailability = await api('/api/specter-mcp/availability', {
+        timeoutMs: 10000,
+        retries: 0,
+      });
+      specterMcpAvailabilityError = null;
+    } catch (err) {
+      specterMcpAvailabilityError = err;
+    } finally {
+      specterMcpAvailabilityRefresh = null;
+      renderSpecterAvailability();
+    }
+    return specterMcpAvailability;
+  })();
+  return specterMcpAvailabilityRefresh;
+}
+
+window.addEventListener('focus', () => {
+  if (sessionId && ['upload-screen', 'leadgen-screen'].includes(getActiveScreenId())) {
+    refreshSpecterMcpAvailability({ force: true });
+  }
+});
+window.setInterval(() => {
+  if (sessionId && ['upload-screen', 'leadgen-screen'].includes(getActiveScreenId())) {
+    refreshSpecterMcpAvailability();
+  }
+}, 60000);
+
 function updateAnalyzeButtonState() {
   const button = $('#analyze-btn');
   if (!button) return;
   const identityReady = !isSupabaseAuthRequired() || !!getSupabaseAccessToken();
   const haveInput = uploadedFiles.length > 0 || (inputMode === 'specter' && specterUrls.length > 0);
-  button.disabled = !haveInput || !identityReady;
-  button.title = identityReady ? '' : 'Sign in with Supabase before starting an analysis.';
+  const providerReady = !currentInputsRequireSpecterMcp() || specterMcpAcceptingAnalyses();
+  button.disabled = !haveInput || !identityReady || !providerReady;
+  button.title = !identityReady
+    ? 'Sign in with Supabase before starting an analysis.'
+    : (!providerReady ? 'Specter quota is exhausted; this analysis requires MCP.' : '');
 }
 
 async function backfillRecentRunsWithLlm() {
@@ -8880,10 +8979,14 @@ function renderLeadgenPage() {
     const selectedCount = [...leadgenSelectedLeadIds].filter((id) => pendingEligible.some((lead) => String(lead.lead_id || lead.id) === id)).length;
     const selectedEstimate = estimateSpecterMcpMinimumCalls(selectedCount);
     const allEstimate = estimateSpecterMcpMinimumCalls(pendingEligible.length);
+    const providerBlocked = !specterMcpAcceptingAnalyses();
+    const providerWarning = providerBlocked
+      ? `<div class="specter-availability-banner is-visible">${specterAvailabilityBannerHtml()}</div>`
+      : '';
     const quotaWarning = !hasJob && pendingEligible.length
       ? `<div class="leadgen-alert">Specter quota remaining: unknown. Selected minimum: ${selectedCount > 0 ? selectedEstimate : 'select companies to estimate'} MCP calls. Approve-all minimum: ${allEstimate} MCP calls. Deep team profiles add more.</div>`
       : '';
-    const warning = `${identityMissing
+    const warning = `${providerWarning}${identityMissing
       ? `<div class="leadgen-alert">Supabase sign-in is required before approval.</div>`
       : ''}${quotaWarning}`;
     const rows = leads.map((lead) => {
@@ -8907,6 +9010,7 @@ function renderLeadgenPage() {
       </tr>`;
     }).join('');
     const actionDisabled = hasJob || identityMissing || pendingEligible.length === 0;
+    const approveDisabled = actionDisabled || providerBlocked;
     detailHtml = `${warning}
       <div class="leadgen-detail-head">
         <div class="leadgen-detail-title">
@@ -8917,8 +9021,8 @@ function renderLeadgenPage() {
           <button type="button" class="btn-ghost" data-leadgen-select-all ${actionDisabled ? 'disabled' : ''}>Select All</button>
           <button type="button" class="btn-ghost" data-leadgen-reject-selected ${actionDisabled || selectedCount === 0 ? 'disabled' : ''}>Reject Selected</button>
           <button type="button" class="btn-ghost" data-leadgen-reject-batch ${hasJob || identityMissing ? 'disabled' : ''}>Reject Batch</button>
-          <button type="button" class="btn-green" data-leadgen-approve-selected ${actionDisabled || selectedCount === 0 ? 'disabled' : ''}>Approve Selected & Start</button>
-          <button type="button" class="btn-green" data-leadgen-approve-all ${actionDisabled ? 'disabled' : ''}>Approve All Eligible & Start</button>
+          <button type="button" class="btn-green" data-leadgen-approve-selected ${approveDisabled || selectedCount === 0 ? 'disabled' : ''}>Approve Selected & Start</button>
+          <button type="button" class="btn-green" data-leadgen-approve-all ${approveDisabled ? 'disabled' : ''}>Approve All Eligible & Start</button>
           ${batch.job_id_legacy ? `<button type="button" class="btn-ghost" data-leadgen-open-job="${escapeHtml(batch.job_id_legacy)}">Open Job</button>` : ''}
         </div>
       </div>
@@ -9000,6 +9104,12 @@ function leadgenAuthHeaders() {
 async function approveLeadgenIntake({ approveAll = false } = {}) {
   const intakeId = leadgenSelectedIntakeId;
   if (!intakeId) return;
+  await refreshSpecterMcpAvailability({ force: true });
+  if (!specterMcpAcceptingAnalyses()) {
+    leadgenActionStatus = 'Specter quota exhausted. Approval selections are preserved.';
+    renderLeadgenPage();
+    return;
+  }
   leadgenActionStatus = 'Queuing approved companies...';
   renderLeadgenPage();
   try {
@@ -9019,7 +9129,13 @@ async function approveLeadgenIntake({ approveAll = false } = {}) {
     await fetchLeadgenDetail(intakeId);
     await fetchLeadgenIntakes({ silent: true });
   } catch (err) {
-    leadgenActionStatus = err.message || 'Failed to approve LeadGen batch.';
+    leadgenActionStatus = err?.code === 'specter_mcp_quota_exhausted'
+      ? 'Specter quota exhausted. Approval selections are preserved.'
+      : (err.message || 'Failed to approve LeadGen batch.');
+    if (err?.code === 'specter_mcp_quota_exhausted') {
+      specterMcpAvailability = { ...(specterMcpAvailability || {}), ...(err.payload || {}), accepting_new_analyses: false };
+      specterMcpAvailabilityError = null;
+    }
     renderLeadgenPage();
   }
 }
@@ -10676,7 +10792,7 @@ function updateSpecterUrlsCounter() {
     counter.innerHTML = '';
   } else {
     const minimumCalls = estimateSpecterMcpMinimumCalls(specterUrls.length);
-    counter.innerHTML = `${specterUrls.length} URL${specterUrls.length === 1 ? '' : 's'} ready · CSVs above will be ignored when URLs are present.<div class="specter-quota-warning">Specter quota remaining: unknown. This run requires at least ${minimumCalls} MCP calls, including one preflight call. Deep team profiles add more.</div>`;
+    counter.innerHTML = `${specterUrls.length} URL${specterUrls.length === 1 ? '' : 's'} ready · CSVs above will be ignored when URLs are present.<div class="specter-quota-warning">Specter quota remaining: unknown. This run requires at least ${minimumCalls} MCP calls. Deep team profiles add more.</div>`;
   }
 }
 const _specterUrlsInput = $('#specter-urls-input');
@@ -10708,6 +10824,7 @@ if (_initialUrlsSection) {
   _initialUrlsSection.style.display = inputMode === 'specter' ? 'block' : 'none';
 }
 syncUploadOptionToggles();
+$('#specter-mcp-checkbox')?.addEventListener('change', updateAnalyzeButtonState);
 
 updateRunNameVisibility();
 $('#llm-model-select')?.addEventListener('change', (event) => {
@@ -10720,9 +10837,15 @@ $('#llm-model-select')?.addEventListener('change', (event) => {
 // ── Analyze ──
 $('#analyze-btn').addEventListener('click', async () => {
   const usingUrls = inputMode === 'specter' && uploadedFiles.length === 0 && specterUrls.length > 0;
+  const useSpecterMcp = !!$('#specter-mcp-checkbox')?.checked;
   if (uploadedFiles.length === 0 && !usingUrls) return;
   if (isSupabaseAuthRequired() && !getSupabaseAccessToken()) {
     window.alert('Sign in with Supabase before starting an analysis.');
+    return;
+  }
+  await refreshSpecterMcpAvailability({ force: true });
+  if (currentInputsRequireSpecterMcp() && !specterMcpAcceptingAnalyses()) {
+    renderSpecterAvailability();
     return;
   }
 
@@ -10745,6 +10868,8 @@ $('#analyze-btn').addEventListener('click', async () => {
     } else {
       const formData = new FormData();
       for (const f of uploadedFiles) formData.append('files', f);
+      formData.append('input_mode', inputMode);
+      formData.append('use_specter_mcp', String(useSpecterMcp));
       uploadResponse = await fetch('/api/upload', {
         method: 'POST',
         body: formData,
@@ -10754,41 +10879,30 @@ $('#analyze-btn').addEventListener('click', async () => {
 
     uploadRes = await uploadResponse.json().catch(() => ({}));
     if (!uploadResponse.ok) {
+      if (uploadResponse.status === 429 && uploadRes.code === 'specter_mcp_quota_exhausted') {
+        specterMcpAvailability = { ...uploadRes, accepting_new_analyses: false };
+        specterMcpAvailabilityError = null;
+        renderSpecterAvailability();
+        return;
+      }
       throw new Error(uploadRes.detail || 'Upload failed');
     }
 
     if (!uploadRes.job_id) {
       throw new Error('Upload did not return a job id.');
     }
-    persistActiveJob(uploadRes.job_id);
     // URL-only runs always use specter mode. CSV uploads keep auto-detection.
     const autoDetectedSpecter = !usingUrls && uploadRes.mode === 'specter' && !inputModeTouched;
     const effectiveInputMode = usingUrls ? 'specter' : (autoDetectedSpecter ? 'specter' : inputMode);
     const requestedRunName = (($('#run-name-input')?.value || '').trim() || null);
     const analysisSelection = getAnalysisSelectionPayload();
-    upsertRecentRun({
-      jobId: uploadRes.job_id,
-      status: 'running',
-      progress: 'Queued for worker',
-      input_mode: effectiveInputMode,
-      runName: requestedRunName,
-      started_by_user_id: supabaseIdentity?.user_id || null,
-      started_by_email: supabaseIdentity?.email || null,
-      started_by_display_name: supabaseIdentity?.display_name || null,
-      started_by_label: supabaseIdentity?.label || null,
-      llm: analysisSelection.llmLabel || null,
-      title: effectiveInputMode === 'specter' ? undefined : uploadedFiles.map((f) => f.name).join(', '),
-    });
-    openAnalysisPage({ focusJobId: uploadRes.job_id });
-
     const useWebSearch = !!$('#web-search-checkbox')?.checked;
     const webSearchMode = currentWebSearchMode();
-    const useSpecterMcp = !!$('#specter-mcp-checkbox')?.checked;
     const fetchFullTeam = !!$('#fetch-full-team-checkbox')?.checked;
     const instructions = ($('#instructions-input')?.value || '').trim();
     if (autoDetectedSpecter) setInputMode('specter');
     try {
-      await api(`/api/analyze/${currentJobId}`, {
+      await api(`/api/analyze/${uploadRes.job_id}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -10814,6 +10928,13 @@ $('#analyze-btn').addEventListener('click', async () => {
       });
     } catch (err) {
       if (err?.status) {
+        if (err?.status === 429 && err?.code === 'specter_mcp_quota_exhausted') {
+          specterMcpAvailability = { ...(specterMcpAvailability || {}), ...(err.payload || {}), accepting_new_analyses: false };
+          specterMcpAvailabilityError = null;
+          persistActiveJob(null);
+          renderSpecterAvailability();
+          return;
+        }
         upsertRecentRun({
           jobId: uploadRes.job_id,
           status: 'error',
@@ -10845,7 +10966,26 @@ $('#analyze-btn').addEventListener('click', async () => {
         started_by_label: supabaseIdentity?.label || null,
         llm: analysisSelection.llmLabel || null,
       });
+      persistActiveJob(uploadRes.job_id);
+      openAnalysisPage({ focusJobId: uploadRes.job_id });
+      fetchSavedJobs({ silent: false });
+      return;
     }
+    persistActiveJob(uploadRes.job_id);
+    upsertRecentRun({
+      jobId: uploadRes.job_id,
+      status: 'running',
+      progress: 'Queued for worker',
+      input_mode: effectiveInputMode,
+      runName: requestedRunName,
+      started_by_user_id: supabaseIdentity?.user_id || null,
+      started_by_email: supabaseIdentity?.email || null,
+      started_by_display_name: supabaseIdentity?.display_name || null,
+      started_by_label: supabaseIdentity?.label || null,
+      llm: analysisSelection.llmLabel || null,
+      title: effectiveInputMode === 'specter' ? undefined : uploadedFiles.map((f) => f.name).join(', '),
+    });
+    openAnalysisPage({ focusJobId: uploadRes.job_id });
     fetchSavedJobs({ silent: false });
   } catch (err) {
     window.alert(`Failed to start analysis: ${err.message || 'Unknown error'}`);

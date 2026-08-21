@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 
 from agent.dataclasses.company import Company
 from agent.ingest.specter_augmentation import (
@@ -16,6 +17,7 @@ from agent.ingest.specter_mcp_client import (
     SpecterCompanyNotFoundError,
     SpecterDisambiguationError,
     SpecterMCPError,
+    SpecterQuotaLimitError,
 )
 from agent.ingest.store import Chunk, EvidenceStore
 
@@ -326,6 +328,32 @@ def test_augment_returns_unchanged_on_mcp_error(monkeypatch):
     assert out_store is deck
     assert out_company is None
     assert any("MCP failure" in m for m in logs)
+
+
+def test_augment_reports_and_reraises_daily_quota(monkeypatch):
+    deck = _store("galtea", "Visit galtea.ai")
+
+    def _raises(*a, **kw):
+        raise SpecterQuotaLimitError(
+            "All daily MCP credits used. MCP calls paused until the daily reset."
+        )
+
+    monkeypatch.setattr(
+        "agent.ingest.specter_augmentation.fetch_specter_company", _raises
+    )
+    quota_events: list[SpecterQuotaLimitError] = []
+    logs: list[str] = []
+
+    with pytest.raises(SpecterQuotaLimitError):
+        augment_with_specter(
+            deck,
+            slug="galtea",
+            on_log=logs.append,
+            on_quota=quota_events.append,
+        )
+
+    assert len(quota_events) == 1
+    assert any("quota exhausted" in message for message in logs)
 
 
 def test_augment_swallows_unexpected_exceptions(monkeypatch):

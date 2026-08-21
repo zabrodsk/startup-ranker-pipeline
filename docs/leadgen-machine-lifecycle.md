@@ -20,6 +20,7 @@ problem and never echo submitted input.
 | `GET` | `/api/machine/leadgen/v1/intakes/{intake_id}/status` | Read the closed lifecycle state. |
 | `GET` | `/api/machine/leadgen/v1/intakes/{intake_id}/result` | Read an authoritative successful terminal result only. |
 | `GET` | `/api/machine/leadgen/v1/intakes/{intake_id}/error` | Read a sanitized terminal failure only. |
+| `GET` | `/api/machine/leadgen/v1/availability` | Read the shared Specter MCP gate without creating work. |
 
 The contract version is `rdi.leadgen-machine.v1`. Request models reject extra
 fields. Identifiers are bounded, and the only target environments are `staging`
@@ -30,6 +31,23 @@ immutable persistence keys use one dedicated canonical policy: lower-case host,
 valid HTTP(S) scheme/port, path removed, and only a leading `www.` removed.
 Shared source/social hosts and their subdomains are rejected; real company
 subdomains are preserved. Existing human LeadGen routes remain unchanged.
+
+## Specter MCP availability
+
+Daily Specter quota exhaustion is a provider condition, not a company failure
+or the separate machine daily-start limit. The service-only Supabase gate is
+shared by web and worker processes and is keyed by RDI target environment.
+Known exhaustion returns HTTP 429 with `Retry-After` and
+`machine_specter_mcp_quota_exhausted`; gate-storage or transient provider
+failures return 503. Exact intake replays remain readable while genuinely new
+intakes and start reservations are rejected. CSV/export and document-only runs
+do not consult this gate.
+
+`SPECTER_MCP_QUOTA_GATE_MODE=observe` is the rollout default. In `enforce`, the
+backend fails closed if gate storage cannot be read. The first block lasts to
+00:05 UTC; afterward one process leases a 60-second harmless recovery probe.
+Success or a definitive company-not-found response reopens the gate. Other
+responses re-block it for five minutes. There is no manual clear route.
 
 An intake request carries:
 

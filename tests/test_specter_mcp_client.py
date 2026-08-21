@@ -83,6 +83,36 @@ def test_quota_message_helpers_detect_daily_limit_and_reset_hint():
     assert specter_quota_reset_hint(message) == "00:00 UTC"
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        (
+            "You have used all your 100 MCP credits today. "
+            "MCP calls are paused until the daily reset at 00:00 UTC."
+        ),
+        "All daily MCP credits used; MCP calls paused until the daily reset at 00:00 UTC.",
+        "All daily MCP credits have been used; calls resume after reset at 00:00 UTC.",
+        "MCP quota exhausted for today. Resets at 00:00 UTC.",
+    ],
+)
+def test_quota_message_helpers_detect_production_credit_wording(message: str):
+    assert is_specter_quota_limit_message(message) is True
+    assert specter_quota_reset_hint(message) == "00:00 UTC"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "HTTP 429: too many requests",
+        "Specter authentication is unavailable",
+        "No company found",
+        "Temporary MCP transport failure",
+    ],
+)
+def test_quota_message_helpers_do_not_classify_ambiguous_failures(message: str):
+    assert is_specter_quota_limit_message(message) is False
+
+
 def test_parse_response_raises_quota_limit_for_json_rpc_error():
     raw = '{"jsonrpc":"2.0","error":{"code":429,"message":"Daily MCP limit reached (250 tool calls/day). Resets at 00:00 UTC."}}'
 
@@ -99,6 +129,60 @@ def test_company_not_found_is_subclass_of_mcp_error():
 
 def test_quota_limit_is_subclass_of_mcp_error():
     assert issubclass(SpecterQuotaLimitError, SpecterMCPError)
+
+
+def test_quota_tool_error_receives_exactly_one_attempt(monkeypatch):
+    client = object.__new__(SpecterMCPClient)
+    calls = 0
+
+    monkeypatch.setattr(client, "_ensure_initialized", lambda: None)
+
+    def raw_request(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return {
+            "isError": True,
+            "content": [
+                {"type": "text", "text": "All daily MCP credits used"}
+            ],
+        }
+
+    monkeypatch.setattr(client, "_raw_request", raw_request)
+    monkeypatch.setattr(
+        "agent.ingest.specter_mcp_client.time.sleep",
+        lambda _seconds: pytest.fail("quota error entered retry backoff"),
+    )
+
+    with pytest.raises(SpecterQuotaLimitError):
+        client._call_tool("find_company", {"identifier": "galtea.ai"})
+    assert calls == 1
+
+
+def test_transient_tool_error_retains_bounded_retries(monkeypatch):
+    client = object.__new__(SpecterMCPClient)
+    calls = 0
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(client, "_ensure_initialized", lambda: None)
+
+    def raw_request(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise SpecterMCPError("temporary MCP transport failure")
+        return {"content": [{"type": "text", "text": '{"ok":true}'}]}
+
+    monkeypatch.setattr(client, "_raw_request", raw_request)
+    monkeypatch.setattr(
+        "agent.ingest.specter_mcp_client.time.sleep",
+        sleeps.append,
+    )
+
+    assert client._call_tool("find_company", {"identifier": "galtea.ai"}) == {
+        "ok": True
+    }
+    assert calls == 3
+    assert len(sleeps) == 2
 
 
 # ---------------------------------------------------------------------------

@@ -24,13 +24,14 @@ pytestmark = pytest.mark.skipif(
 ROOT = Path(__file__).resolve().parents[1]
 ORIGINAL_MIGRATION = ROOT / "supabase/migrations/20260731000000_leadgen_machine_lifecycle.sql"
 DAILY_SCOPE_MIGRATION = ROOT / "supabase/migrations/20260807102328_leadgen_machine_daily_start_scope.sql"
+SPECTER_GATE_MIGRATION = ROOT / "supabase/migrations/20260821094721_specter_mcp_quota_gate.sql"
 PRAGUE = ZoneInfo("Europe/Prague")
 CURRENT_BUSINESS_DATE = datetime.now(timezone.utc).astimezone(PRAGUE).date()
 
 _FIXTURE_SCHEMA = """
 create role anon nologin;
 create role authenticated nologin;
-create role service_role nologin;
+create role service_role nologin bypassrls;
 
 create table public.company_runs (
   job_id_legacy text,
@@ -189,6 +190,7 @@ def postgres() -> _Postgres:
         _seed_pre_fix_intake(database, 1, "campaign-b", "2026-08-01T22:30:00Z")
         _seed_pre_fix_intake(database, 2, "campaign-a", "2026-08-01T23:00:00Z")
         database.file(DAILY_SCOPE_MIGRATION)
+        database.file(SPECTER_GATE_MIGRATION)
         yield database
     finally:
         subprocess.run(
@@ -305,7 +307,8 @@ def _truncate(postgres: _Postgres) -> None:
     postgres.run(
         "truncate table public.leadgen_machine_events, "
         "public.leadgen_machine_intakes, "
-        "public.leadgen_machine_daily_scopes cascade;"
+        "public.leadgen_machine_daily_scopes, "
+        "public.specter_mcp_quota_gate cascade;"
     )
 
 
@@ -498,6 +501,128 @@ def test_scope_forgery_dst_and_privileges_fail_closed(postgres: _Postgres) -> No
         "and ((timestamptz '2026-10-25 01:30:00+00' "
         "at time zone 'Europe/Prague')::date = date '2026-10-25');"
     ) == "t"
+
+
+def _trip_gate(
+    postgres: _Postgres,
+    environment: str = "staging",
+    retry_after_seconds: int | None = None,
+) -> dict[str, object]:
+    retry = "null::integer" if retry_after_seconds is None else str(retry_after_seconds)
+    return postgres.json(
+        "set role service_role; select public.trip_specter_mcp_quota_gate("
+        f"{_literal(environment)}, true, 'specter_mcp_quota_exhausted', "
+        "'00:00 UTC', 'postgres_test', null::text, "
+        f"{retry})::text;"
+    )
+
+
+def _gate(postgres: _Postgres, environment: str = "staging") -> dict[str, object]:
+    return postgres.json(
+        "set role service_role; select public.get_specter_mcp_quota_gate("
+        f"{_literal(environment)}, true)::text;"
+    )
+
+
+def test_specter_gate_blocks_new_machine_work_but_preserves_replays_and_isolation(
+    postgres: _Postgres,
+) -> None:
+    _truncate(postgres)
+    replay_record = _record(200)
+    start_record = _record(201)
+    assert _create(postgres, replay_record)["action"] == "created"
+    assert _create(postgres, start_record)["action"] == "created"
+
+    blocked = _trip_gate(postgres)
+    assert blocked["state"] == "blocked"
+    assert blocked["accepting_new_analyses"] is False
+    assert blocked["retry_after_seconds"] > 0
+
+    replay = _create(postgres, replay_record)
+    assert replay["action"] == "existing"
+
+    new_record = _record(202)
+    encoded = _literal(json.dumps(new_record, separators=(",", ":")))
+    new_result = postgres.run(
+        "set role service_role; select public.create_leadgen_machine_intake("
+        f"{encoded}::jsonb);",
+        check=False,
+    )
+    assert new_result.returncode != 0
+    assert "specter_mcp_quota_gate_blocked" in new_result.stderr
+
+    start_result = postgres.run(
+        "set role service_role; select public.reserve_leadgen_machine_start("
+        f"{_literal(str(start_record['intake_id']))}, 'staging', "
+        f"{_literal(CURRENT_BUSINESS_DATE.isoformat())}::date, 'Europe/Prague', "
+        "'rdi-job-blocked', 'service:rockaway-leadgen', 20);",
+        check=False,
+    )
+    assert start_result.returncode != 0
+    assert "specter_mcp_quota_gate_blocked" in start_result.stderr
+    assert _capacity(postgres)["daily_started_count"] == 0
+
+    production = _record(203, environment="production")
+    assert _create(postgres, production)["action"] == "created"
+
+
+def test_specter_gate_recovery_lease_has_exactly_one_winner_and_reopens(
+    postgres: _Postgres,
+) -> None:
+    _truncate(postgres)
+    _trip_gate(postgres, retry_after_seconds=60)
+    too_early = postgres.json(
+        "set role service_role; select public.acquire_specter_mcp_quota_probe("
+        "'staging', true, '00000000-0000-4000-8000-000000000000', 60)::text;"
+    )
+    assert too_early["action"] == "blocked"
+
+    postgres.run(
+        "update public.specter_mcp_quota_gate "
+        "set next_probe_at = clock_timestamp() - interval '1 second' "
+        "where target_environment = 'staging';"
+    )
+    tokens = [
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+    ]
+
+    def acquire(token: str) -> dict[str, object]:
+        return postgres.json(
+            "set role service_role; select public.acquire_specter_mcp_quota_probe("
+            f"'staging', true, {_literal(token)}, 60)::text;"
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(acquire, tokens))
+    assert sorted(str(item["action"]) for item in outcomes) == ["acquired", "leased"]
+    winner = next(item for item in outcomes if item["action"] == "acquired")
+    token = str(winner["probe_lease_token"])
+
+    opened = postgres.json(
+        "set role service_role; select public.finish_specter_mcp_quota_probe("
+        f"'staging', true, {_literal(token)}, true, null::text)::text;"
+    )
+    assert opened["action"] == "opened"
+    assert opened["state"] == "open"
+    assert opened["accepting_new_analyses"] is True
+
+
+def test_specter_gate_security_and_index_surface_is_minimal(postgres: _Postgres) -> None:
+    _truncate(postgres)
+    assert postgres.scalar(
+        "select not has_table_privilege('anon', 'public.specter_mcp_quota_gate', 'select') "
+        "and not has_table_privilege('authenticated', 'public.specter_mcp_quota_gate', 'select') "
+        "and has_table_privilege('service_role', 'public.specter_mcp_quota_gate', 'select') "
+        "and not has_function_privilege('anon', "
+        "'public.get_specter_mcp_quota_gate(text,boolean)', 'execute') "
+        "and has_function_privilege('service_role', "
+        "'public.get_specter_mcp_quota_gate(text,boolean)', 'execute');"
+    ) == "t"
+    assert postgres.scalar(
+        "select count(*) from pg_indexes where schemaname = 'public' "
+        "and tablename = 'specter_mcp_quota_gate';"
+    ) == "1"
     assert postgres.scalar(
         "select not has_table_privilege('service_role', "
         "'public.leadgen_machine_intakes', 'insert') "
