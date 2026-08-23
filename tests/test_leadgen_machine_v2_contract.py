@@ -217,6 +217,7 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RDI_LEADGEN_MACHINE_V2_ENABLED", "true")
     monkeypatch.setenv("RDI_LEADGEN_TARGET_ENVIRONMENT", "staging")
     monkeypatch.setenv("RDI_LEADGEN_DAILY_START_LIMIT", "20")
+    monkeypatch.setenv("RDI_SCORING_VERSION", "ranking-v1")
 
 
 def test_v2_writes_are_dormant_until_explicitly_enabled(
@@ -317,7 +318,47 @@ def test_complete_bundle_starts_while_gate_is_blocked_and_is_passed_to_worker() 
     assert response.json()["lifecycle_state"] == "queued"
     assert response.json()["daily_started_count"] == 1
     assert starts[0]["context"]["leadgen_machine_v2"]["evidence_bundle_sha256"] == digest
+    assert starts[0]["context"]["rdi_scoring_version"] == "ranking-v1"
     assert "evidence_bundle" not in starts[0]["context"]["leadgen_machine_v2"]
+
+
+def test_legacy_v2_terminal_result_recovers_bounded_pipeline_scoring_version() -> None:
+    store = FakeV2Store()
+    client = _client(store, [])
+    digest = _upload(client, _bundle(requires_specter_mcp=False))
+    intake_id = client.post(
+        "/api/machine/leadgen/v2/intakes",
+        headers=SERVICE_HEADERS,
+        json=_intake(digest),
+    ).json()["intake_id"]
+    store.intakes[intake_id].update(
+        lifecycle_state="succeeded",
+        actual_start_business_date=PRAGUE_DATE,
+        job_id="rdi-v2-job-" + "a" * 32,
+        rdi_company_id="b1f4e5d0-1111-4111-8111-111111111111",
+        completed_at="2026-08-23T01:00:00Z",
+        terminal_result={
+            "external_company_id": "a1f4e5d0-1111-4111-8111-111111111111",
+            "rdi_company_id": "b1f4e5d0-1111-4111-8111-111111111111",
+            "composite_score": "76.43",
+            "strategy_fit_score": "69.12",
+            "team_score": "74.18",
+            "upside_score": "93.0",
+            "rdi_bucket": "priority_review",
+            "completed_at": "2026-08-23T01:00:00Z",
+            "pipeline_version": "v1",
+            "scoring_version": None,
+        },
+    )
+
+    response = client.get(
+        f"/api/machine/leadgen/v2/intakes/{intake_id}/result",
+        headers=SERVICE_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["composite_score"] == "76.43"
+    assert response.json()["scoring_version"] == "ranking-v1"
 
 
 def test_quota_race_after_reservation_returns_to_pending_and_releases_start() -> None:

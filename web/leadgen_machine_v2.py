@@ -29,6 +29,7 @@ from web.leadgen_machine import (
     _daily_start_limit,
     _machine_actor,
     _require_service_key,
+    _scoring_version,
     _result_payload as _v1_result_payload,
     _error_payload as _v1_error_payload,
     _timestamp,
@@ -48,6 +49,7 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SPECTER_ID_RE = re.compile(r"^[0-9a-f]{24}$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _INTAKE_RE = re.compile(r"^rdi-v2-intake-[0-9a-f]{32}$")
+_LEGACY_SCORING_VERSION_BY_PIPELINE = {"v1": "ranking-v1"}
 
 
 def _problem(
@@ -492,8 +494,19 @@ def _status_payload(record: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _terminal_record(record: Mapping[str, Any]) -> dict[str, Any]:
+    terminal = dict(record)
+    terminal_result = terminal.get("terminal_result")
+    if isinstance(terminal_result, dict):
+        terminal_result = dict(terminal_result)
+        if not terminal_result.get("scoring_version"):
+            legacy_version = _LEGACY_SCORING_VERSION_BY_PIPELINE.get(
+                str(terminal_result.get("pipeline_version") or "")
+            )
+            if legacy_version:
+                terminal_result["scoring_version"] = legacy_version
+        terminal["terminal_result"] = terminal_result
     return {
-        **dict(record),
+        **terminal,
         "external_company_id": str(record["external_company_id"]),
         "rdi_correlation_id": _correlation_id(str(record["intake_id"])),
     }
@@ -613,6 +626,7 @@ def build_leadgen_machine_v2_router(dependencies: MachineV2Dependencies) -> APIR
         if not _INTAKE_RE.fullmatch(intake_id):
             raise _problem(422, "machine_v2_intake_id_invalid", "Machine v2 intake ID is invalid.")
         target_environment = _target_environment(request.target_environment)
+        scoring_version = _scoring_version()
         actual_start_date = _prague_date()
         store = _require_store(dependencies)
         reservation = store.reserve_machine_v2_start(
@@ -650,6 +664,7 @@ def build_leadgen_machine_v2_router(dependencies: MachineV2Dependencies) -> APIR
         context = {
             "source": "leadgen_machine_v2",
             "target_environment": target_environment,
+            "rdi_scoring_version": scoring_version,
             "leadgen_machine_v2": {
                 "contract_version": CONTRACT_VERSION,
                 "intake_id": intake_id,
