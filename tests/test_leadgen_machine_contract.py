@@ -2536,6 +2536,23 @@ def test_url_worker_task_uses_requested_source_company_key() -> None:
     assert worker._task_company_key(tasks[0]) == "domain:adspawn.com"
 
 
+def test_v2_url_worker_and_persistence_use_requested_source_company_key() -> None:
+    from web import db
+
+    worker = _load_local_specter_batch_worker()
+    run_config = {
+        "source": "leadgen_machine_v2",
+        "specter_urls": ["https://productfruits.com"],
+        "leadgen_machine_v2": {"canonical_domain": "productfruits.com"},
+    }
+
+    tasks = worker._build_company_tasks(run_config, None)
+
+    assert tasks[0]["source_company_key"] == "domain:productfruits.com"
+    assert worker._task_company_key(tasks[0]) == "domain:productfruits.com"
+    assert db._machine_source_company_key(run_config) == "domain:productfruits.com"
+
+
 def test_non_machine_url_task_preserves_legacy_shape_and_resume_key() -> None:
     worker = _load_local_specter_batch_worker()
 
@@ -2699,6 +2716,26 @@ def test_machine_terminal_projection_uses_unique_requested_source_key() -> None:
     assert "v_company_run_count integer" in lowered
     assert "v_company_run_count = 1" in lowered
     assert "cr.company_key = 'domain:' || v_row.canonical_domain" not in lowered
+
+
+def test_v2_terminal_projection_recovers_exact_domain_when_legacy_source_key_is_missing() -> None:
+    migration = Path(
+        "supabase/migrations/20260823022000_leadgen_v2_terminal_projection.sql"
+    )
+    sql = " ".join(migration.read_text(encoding="utf-8").lower().split())
+
+    assert "cr.source_company_key = v_requested_company_key" in sql
+    assert (
+        "cr.source_company_key is null and cr.company_key = v_requested_company_key"
+        in sql
+    )
+    assert "v_company_run_count = 1" in sql
+    assert "security invoker set search_path = public, pg_temp" in sql
+    assert (
+        "revoke all on function public.get_leadgen_machine_v2_lifecycle(text) "
+        "from public, anon, authenticated"
+        in sql
+    )
 
 
 def test_machine_forward_migration_has_atomic_security_and_audit_contract() -> None:

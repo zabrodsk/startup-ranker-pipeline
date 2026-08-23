@@ -238,7 +238,10 @@ def _build_company_tasks(
     """
     tasks: list[dict[str, Any]] = []
     seen_domains: set[str] = set()
-    machine_job = run_config.get("source") == "leadgen_machine"
+    machine_job = run_config.get("source") in {
+        "leadgen_machine",
+        "leadgen_machine_v2",
+    }
 
     if companies_csv is not None:
         descriptors = list_specter_companies(companies_csv)

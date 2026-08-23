@@ -125,9 +125,10 @@ def _normalize_company_key(name: str | None, domain: str | None = None, slug: st
 
 def _machine_source_company_key(run_config: dict[str, Any]) -> str | None:
     """Return the immutable requested domain for machine-originated runs."""
-    if run_config.get("source") != "leadgen_machine":
+    source = run_config.get("source")
+    if source not in {"leadgen_machine", "leadgen_machine_v2"}:
         return None
-    machine_context = run_config.get("leadgen_machine")
+    machine_context = run_config.get(source)
     if not isinstance(machine_context, dict):
         return None
     requested_domain = normalize_company_domain(
