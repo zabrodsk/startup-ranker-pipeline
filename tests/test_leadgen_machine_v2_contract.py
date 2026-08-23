@@ -75,7 +75,7 @@ def _bundle(*, requires_specter_mcp: bool) -> dict[str, Any]:
             "company_id": "a1f4e5d0-1111-4111-8111-111111111111",
             "canonical_domain": "acme.example",
             "thesis_status": "pass",
-            "thesis_version": "rockaway-thesis-v4",
+            "thesis_version": "May 2026",
             "thesis_sha256": "2" * 64,
             "lite_tier": "send_to_rdi",
             "lite_scoring_version": "rockaway-lite-v2",

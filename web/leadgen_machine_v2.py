@@ -113,6 +113,17 @@ def _identifier(value: str) -> str:
     return value
 
 
+def _version_label(value: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 128
+        or value != value.strip()
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ValueError("must be a bounded clean version label")
+    return value
+
+
 class BundleComponent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -181,7 +192,6 @@ class LeadGenAuthorizationManifest(BaseModel):
         return _domain(value)
 
     @field_validator(
-        "thesis_version",
         "lite_scoring_version",
         "routing_version",
         "source_run_id",
@@ -189,6 +199,11 @@ class LeadGenAuthorizationManifest(BaseModel):
     @classmethod
     def _safe_identifier(cls, value: str) -> str:
         return _identifier(value)
+
+    @field_validator("thesis_version")
+    @classmethod
+    def _human_version_label(cls, value: str) -> str:
+        return _version_label(value)
 
     @field_validator(
         "thesis_sha256",
