@@ -668,6 +668,8 @@ def build_leadgen_machine_v2_router(dependencies: MachineV2Dependencies) -> APIR
             "leadgen_machine_v2": {
                 "contract_version": CONTRACT_VERSION,
                 "intake_id": intake_id,
+                "external_company_id": str(reservation["external_company_id"]),
+                "canonical_domain": reservation["canonical_domain"],
                 "campaign_id": reservation["campaign_id"],
                 "iteration_id": reservation["iteration_id"],
                 "source_run_id": reservation["source_run_id"],

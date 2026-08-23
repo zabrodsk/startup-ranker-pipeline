@@ -318,6 +318,11 @@ def test_complete_bundle_starts_while_gate_is_blocked_and_is_passed_to_worker() 
     assert response.json()["lifecycle_state"] == "queued"
     assert response.json()["daily_started_count"] == 1
     assert starts[0]["context"]["leadgen_machine_v2"]["evidence_bundle_sha256"] == digest
+    assert starts[0]["context"]["leadgen_machine_v2"]["canonical_domain"] == "acme.example"
+    assert (
+        starts[0]["context"]["leadgen_machine_v2"]["external_company_id"]
+        == "a1f4e5d0-1111-4111-8111-111111111111"
+    )
     assert starts[0]["context"]["rdi_scoring_version"] == "ranking-v1"
     assert "evidence_bundle" not in starts[0]["context"]["leadgen_machine_v2"]
 
