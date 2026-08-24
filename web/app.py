@@ -6628,6 +6628,15 @@ def _specter_quota_broker_context(
     )
 
 
+def _document_augmentation_company_ref(store: Any) -> str | None:
+    """Derive the exact company-scoped broker key used by augmentation."""
+
+    from agent.ingest.specter_augmentation import extract_company_url
+
+    identifier = extract_company_url(store)
+    return f"domain:{identifier}" if identifier else None
+
+
 def _specter_mcp_preflight_identifier(identifiers: list[Any] | None = None) -> str:
     for item in identifiers or []:
         value = _url_value_for_intake_item(item)
@@ -9107,6 +9116,7 @@ async def _run_document_analysis(
                     consumer="document_augmentation",
                     operation=None,
                     quota_class="flex",
+                    company_ref=_document_augmentation_company_ref(deck_store),
                     metadata={"source_component": "document_augmentation", "job_id": job_id},
                 ):
                     seed_store, seed_company = augment_with_specter(
@@ -9256,6 +9266,7 @@ async def _run_document_analysis(
                             consumer="document_augmentation",
                             operation=None,
                             quota_class="flex",
+                            company_ref=_document_augmentation_company_ref(deck_store),
                             metadata={"source_component": "document_augmentation", "job_id": job_id},
                         ):
                             seed_store, seed_company = augment_with_specter(

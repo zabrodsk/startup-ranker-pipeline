@@ -16,11 +16,15 @@ from agent.ingest.specter_mcp_client import (
     SpecterCompanyNotFoundError,
     SpecterQuotaLimitError,
 )
+from agent.ingest.store import Chunk, EvidenceStore
 from web import app as web_app
 from web import db
 from web.specter_quota_broker import (
+    BROKER_MODE_ENV,
+    LEGACY_MODE_ENV,
     SpecterQuotaPolicy,
     SpecterQuotaUsage,
+    specter_quota_broker_configured,
     specter_quota_decision,
 )
 from web.specter_quota_gate import (
@@ -39,6 +43,29 @@ def test_requires_specter_mcp_covers_all_analysis_shapes() -> None:
     assert not requires_specter_mcp(input_mode="specter", specter_urls=[])
     assert not requires_specter_mcp(input_mode="pitchdeck", use_specter_mcp=False)
     assert not requires_specter_mcp(input_mode="original", use_specter_mcp=True)
+
+
+def test_legacy_broker_mode_configures_all_callers(monkeypatch) -> None:
+    monkeypatch.delenv(BROKER_MODE_ENV, raising=False)
+    monkeypatch.setenv(LEGACY_MODE_ENV, "enforce")
+
+    assert specter_quota_broker_configured() is True
+
+
+def test_document_augmentation_broker_key_uses_detected_company_domain() -> None:
+    store = EvidenceStore(
+        startup_slug="acme",
+        chunks=[
+            Chunk(
+                chunk_id="chunk_1",
+                text="Company website: https://acme.example",
+                source_file="deck.pdf",
+                page_or_slide="1",
+            )
+        ],
+    )
+
+    assert web_app._document_augmentation_company_ref(store) == "domain:acme.example"
 
 
 def test_policy_simulation_preserves_safety_reserve_at_observed_limit() -> None:

@@ -131,7 +131,11 @@ def specter_quota_broker_mode() -> str:
 
 def specter_quota_broker_configured() -> bool:
     raw = (os.getenv(BROKER_MODE_ENV) or "").strip().lower()
-    return raw in {BROKER_MODE_OBSERVE, BROKER_MODE_ENFORCE}
+    legacy = (os.getenv(LEGACY_MODE_ENV) or "").strip().lower()
+    return raw in {BROKER_MODE_OBSERVE, BROKER_MODE_ENFORCE} or legacy in {
+        BROKER_MODE_OBSERVE,
+        BROKER_MODE_ENFORCE,
+    }
 
 
 def specter_quota_broker_enforced() -> bool:
