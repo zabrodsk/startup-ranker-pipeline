@@ -253,6 +253,37 @@ def test_shadow_mode_records_coverage_proposed_vs_actual_without_changing_search
     assert prov["web_search_plan"]["actual_search_calls"] == 1
 
 
+def test_coverage_telemetry_counts_primary_and_fallback_provider_calls(
+    harness, monkeypatch
+):
+    del harness
+    monkeypatch.setenv("RDI_WEB_EVIDENCE_PLANNER", "on")
+    monkeypatch.setenv("RDI_COVERAGE_AWARE_SEARCH", "shadow")
+    monkeypatch.setattr(ea, "_resolve_web_search_provider_name", lambda: "hybrid")
+    calls: list[str] = []
+
+    def fake_search(*args, **kwargs):
+        cache_info = args[7]
+        provider = kwargs.get("provider_override") or "hybrid"
+        calls.append(provider)
+        cache_info["hit"] = False
+        cache_info["attempted_providers"] = [provider]
+        if provider == "serper":
+            return "No relevant web results"
+        return COMPANY_COMPETITOR_RESULT
+
+    monkeypatch.setattr(ea, "_run_web_search", fake_search)
+
+    _, provenance = _answer(
+        "Who are the main competitors and alternatives?",
+        _company(),
+        _state(),
+    )
+
+    assert calls == ["serper", "sonar"] * 3
+    assert provenance["web_search_plan"]["actual_search_calls"] == 6
+
+
 # --- on mode: planner controls behavior ------------------------------------------
 
 

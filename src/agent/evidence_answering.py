@@ -1078,6 +1078,7 @@ async def answer_question_from_evidence(
             accepted = 0
             accepted_providers: list[str] = []
             cache_hits = 0
+            provider_calls = 0
             cap_reached = False
             deadline = time.monotonic() + WEB_SEARCH_TIMEOUT_SEC
             total = len(active_plan.queries)
@@ -1137,6 +1138,7 @@ async def answer_question_from_evidence(
                 if cache_info.get("hit"):
                     cache_hits += 1
                 await _reconcile_web_search_slots(web_search_state, cache_info)
+                provider_calls += _web_search_attempts_used(cache_info)
                 executed.append(spec.query)
                 useful, _reason = evaluate_web_result_relevance(
                     policy=active_plan.relevance_policy,
@@ -1197,6 +1199,9 @@ async def answer_question_from_evidence(
                         await _reconcile_web_search_slots(
                             web_search_state, fallback_cache_info
                         )
+                        provider_calls += _web_search_attempts_used(
+                            fallback_cache_info
+                        )
                         fallback_useful, _fallback_reason = evaluate_web_result_relevance(
                             policy=active_plan.relevance_policy,
                             route=active_plan.route,
@@ -1230,7 +1235,7 @@ async def answer_question_from_evidence(
                     "skipped: cap reached" if cap_reached else "skipped: no queries executed"
                 )
                 return grounded
-            actual_search_calls = len(executed)
+            actual_search_calls = provider_calls
             if not accepted:
                 web_search_decision = (
                     f"skipped: {accepted}/{len(executed)} results passed {gate} gate{cache_suffix}"
@@ -1619,6 +1624,7 @@ async def answer_question_from_evidence(
                 cache_info,
                 reserved_slots=reserved_slots,
             )
+            actual_search_calls = _web_search_attempts_used(cache_info)
             web_search_results = web_results[:WEB_RESULTS_TRUNCATE]
             if len(web_results) > WEB_RESULTS_TRUNCATE:
                 web_search_results += "\n...[truncated]"
