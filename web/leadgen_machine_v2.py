@@ -93,6 +93,64 @@ def canonical_bundle_sha256(value: object) -> str:
     return _sha256(value)
 
 
+def _require_sha256(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str) or not _SHA256_RE.fullmatch(value):
+        raise ValueError(f"{field_name} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _validate_research_packet_payload(
+    payload: Mapping[str, Any],
+    *,
+    canonical_domain: str,
+) -> dict[str, Any]:
+    identity = payload.get("identity")
+    if not isinstance(identity, Mapping):
+        raise ValueError("research packet identity must be an object")
+    packet_domain = _domain(identity.get("domain") or identity.get("website_url"))
+    if packet_domain != canonical_domain:
+        raise ValueError("research packet identity does not match bundle")
+    packet_sha256 = _require_sha256(
+        payload.get("packet_sha256"),
+        field_name="research packet sha256",
+    )
+    content = dict(payload)
+    content.pop("packet_sha256", None)
+    if _sha256(content) != packet_sha256:
+        raise ValueError("research packet hash does not match canonical content")
+    return {
+        "analysis_ready": payload.get("analysis_ready"),
+        "specter_evidence_state": payload.get("specter_evidence_state"),
+        "quota_authorization_id": payload.get("quota_authorization_id"),
+        "packet_sha256": packet_sha256,
+    }
+
+
+def _validate_research_chunk_metadata(
+    chunks: list["BundleChunk"],
+    *,
+    packet_sha256: str | None,
+) -> None:
+    for chunk in chunks:
+        metadata = chunk.metadata or {}
+        source_kind = metadata.get("source_kind")
+        if source_kind != "research_evidence_claim":
+            continue
+        if packet_sha256 is None:
+            raise ValueError("research packet chunks require a research packet payload")
+        if metadata.get("packet_sha256") != packet_sha256:
+            raise ValueError("research packet chunk metadata does not match bundle packet")
+        if not isinstance(metadata.get("objective"), str) or not metadata.get("objective"):
+            raise ValueError("research packet chunk objective is required")
+        if not isinstance(metadata.get("evidence_id"), str) or not metadata.get("evidence_id"):
+            raise ValueError("research packet chunk evidence_id is required")
+        if metadata.get("content_sha256") not in {None, ""}:
+            _require_sha256(
+                metadata.get("content_sha256"),
+                field_name="research packet chunk content_sha256",
+            )
+
+
 def _require_v2_enabled() -> None:
     raw = os.getenv(V2_ENABLED_ENV)
     if raw != "true":
@@ -317,13 +375,35 @@ class FrozenLeadGenEvidenceBundleV1(BaseModel):
             for item in self.components
         ):
             raise ValueError("bundle component payload hash does not match")
+        packet_details: dict[str, Any] | None = None
         if self.schema_version == BUNDLE_SCHEMA_VERSION_V2 and self.research_evidence_packet:
-            packet_identity = self.research_evidence_packet.get("identity") or {}
-            packet_domain = _domain(
-                packet_identity.get("domain") or packet_identity.get("website_url")
+            packet_details = _validate_research_packet_payload(
+                self.research_evidence_packet,
+                canonical_domain=self.canonical_domain,
             )
-            if packet_domain != self.canonical_domain:
-                raise ValueError("research packet identity does not match bundle")
+            if (
+                self.analysis_ready is not None
+                and self.analysis_ready != packet_details["analysis_ready"]
+            ):
+                raise ValueError("bundle analysis_ready does not match research packet")
+            if (
+                self.specter_evidence_state is not None
+                and self.specter_evidence_state
+                != packet_details["specter_evidence_state"]
+            ):
+                raise ValueError("bundle specter evidence state does not match research packet")
+            if (
+                self.quota_authorization_id is not None
+                and self.quota_authorization_id
+                != packet_details["quota_authorization_id"]
+            ):
+                raise ValueError("bundle quota authorization does not match research packet")
+        _validate_research_chunk_metadata(
+            self.evidence_chunks,
+            packet_sha256=(
+                None if packet_details is None else packet_details["packet_sha256"]
+            ),
+        )
         return self
 
     def canonical_payload(self) -> dict[str, Any]:

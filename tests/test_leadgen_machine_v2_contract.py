@@ -12,7 +12,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from web.leadgen_machine import MachineStartAccepted, MachineStartDefiniteRejection
-from web.leadgen_machine_v2 import MachineV2Dependencies, build_leadgen_machine_v2_router
+from web.leadgen_machine_v2 import (
+    MachineV2Dependencies,
+    build_leadgen_machine_v2_router,
+    canonical_bundle_sha256,
+)
 
 
 SERVICE_HEADERS = {"X-LeadGen-Service-Key": "unit-test-machine-key"}
@@ -94,36 +98,39 @@ def _bundle(
         },
     }
     if schema_version == "frozen-leadgen-evidence-bundle-v2":
+        packet = {
+            "schema_version": "research-evidence-packet-v2",
+            "company_ref": "acme.example",
+            "identity": {"domain": "acme.example", "website_url": "https://acme.example"},
+            "claims": [],
+            "contradiction_checked": True,
+            "objective_coverage": {},
+            "stale_objectives": [],
+            "analysis_ready": True,
+            "specter_refresh_required": True,
+            "specter_evidence_state": "cached_partial",
+            "quota_authorization_id": "quota-auth-1",
+            "assessment": {
+                "missing_objectives": [],
+                "contradicted_objectives": [],
+                "contradiction_refs": [],
+                "contradiction_checked": True,
+                "compound_evidence": False,
+                "preferred_research_ready": False,
+            },
+        }
+        packet["packet_sha256"] = hashlib.sha256(_canonical(packet)).hexdigest()
         bundle.update(
             analysis_ready=True,
             specter_evidence_state="cached_partial",
             quota_authorization_id="quota-auth-1",
-            research_evidence_packet={
-                "schema_version": "research-evidence-packet-v2",
-                "company_ref": "acme.example",
-                "identity": {"domain": "acme.example", "website_url": "https://acme.example"},
-                "claims": [],
-                "contradiction_checked": True,
-                "objective_coverage": {},
-                "stale_objectives": [],
-                "analysis_ready": True,
-                "specter_refresh_required": True,
-                "specter_evidence_state": "cached_partial",
-                "quota_authorization_id": "quota-auth-1",
-                "assessment": {
-                    "missing_objectives": [],
-                    "contradicted_objectives": [],
-                    "contradiction_refs": [],
-                    "contradiction_checked": True,
-                    "compound_evidence": False,
-                    "preferred_research_ready": False,
-                },
-                "packet_sha256": hashlib.sha256(_canonical({"schema_version": "research-evidence-packet-v2"})).hexdigest(),
-            },
+            research_evidence_packet=packet,
         )
         bundle["evidence_chunks"][0]["metadata"] = {
             "source_kind": "research_evidence_claim",
             "packet_sha256": bundle["research_evidence_packet"]["packet_sha256"],
+            "objective": "founder_prior_execution",
+            "evidence_id": "evidence-1",
         }
     return bundle
 
@@ -472,6 +479,74 @@ def test_v2_bundle_upload_is_accepted_with_packet_metadata() -> None:
     assert stored["schema_version"] == "frozen-leadgen-evidence-bundle-v2"
     assert stored["payload"]["research_evidence_packet"]["identity"]["domain"] == "acme.example"
     assert stored["payload"]["evidence_chunks"][0]["metadata"]["source_kind"] == "research_evidence_claim"
+
+
+def test_v1_bundle_round_trips_without_hash_drift() -> None:
+    bundle = _bundle(requires_specter_mcp=False)
+    digest = hashlib.sha256(_canonical(bundle)).hexdigest()
+    validated = canonical_bundle_sha256(bundle)
+
+    assert validated == digest
+
+
+def test_v2_bundle_rejects_noncanonical_research_packet_hash() -> None:
+    store = FakeV2Store()
+    client = _client(store, [])
+    bundle = _bundle(
+        requires_specter_mcp=False,
+        schema_version="frozen-leadgen-evidence-bundle-v2",
+    )
+    bundle["research_evidence_packet"]["packet_sha256"] = "0" * 64
+    digest = hashlib.sha256(_canonical(bundle)).hexdigest()
+
+    response = client.put(
+        f"/api/machine/leadgen/v2/evidence-bundles/{digest}",
+        headers=SERVICE_HEADERS,
+        json=bundle,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "machine_v2_request_invalid"
+
+
+def test_v2_bundle_rejects_top_level_fields_that_disagree_with_packet() -> None:
+    store = FakeV2Store()
+    client = _client(store, [])
+    bundle = _bundle(
+        requires_specter_mcp=False,
+        schema_version="frozen-leadgen-evidence-bundle-v2",
+    )
+    bundle["analysis_ready"] = False
+    digest = hashlib.sha256(_canonical(bundle)).hexdigest()
+
+    response = client.put(
+        f"/api/machine/leadgen/v2/evidence-bundles/{digest}",
+        headers=SERVICE_HEADERS,
+        json=bundle,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "machine_v2_request_invalid"
+
+
+def test_v2_bundle_rejects_research_chunk_packet_mismatch() -> None:
+    store = FakeV2Store()
+    client = _client(store, [])
+    bundle = _bundle(
+        requires_specter_mcp=False,
+        schema_version="frozen-leadgen-evidence-bundle-v2",
+    )
+    bundle["evidence_chunks"][0]["metadata"]["packet_sha256"] = "f" * 64
+    digest = hashlib.sha256(_canonical(bundle)).hexdigest()
+
+    response = client.put(
+        f"/api/machine/leadgen/v2/evidence-bundles/{digest}",
+        headers=SERVICE_HEADERS,
+        json=bundle,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "machine_v2_request_invalid"
 
 
 def test_legacy_v2_terminal_result_recovers_bounded_pipeline_scoring_version() -> None:
