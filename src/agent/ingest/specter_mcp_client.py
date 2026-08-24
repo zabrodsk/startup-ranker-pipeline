@@ -38,6 +38,9 @@ from agent.dataclasses.company import Company
 from agent.dataclasses.person import Education, Experience, Person
 from agent.ingest.specter_ingest import _company_slug
 from agent.ingest.store import Chunk, EvidenceStore
+from web.specter_quota_broker import (
+    current_specter_quota_broker_request,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +110,10 @@ class SpecterQuotaLimitError(SpecterMCPError):
     def __init__(self, message: str = "Daily MCP limit reached") -> None:
         super().__init__(message)
         self.reset_hint = specter_quota_reset_hint(message)
+
+
+class SpecterQuotaAuthorizationError(RuntimeError):
+    """Local broker denied authorization before a provider call was dispatched."""
 
 
 # ---------------------------------------------------------------------------
@@ -605,32 +612,97 @@ class SpecterMCPClient:
             self._initialized = True
 
     def _call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        broker_request = current_specter_quota_broker_request()
         last_exc: Exception | None = None
         for attempt in range(_MAX_ATTEMPTS):
+            authorization_id: str | None = None
             try:
                 self._ensure_initialized()
+                if broker_request is not None:
+                    authorization = _reserve_quota_authorization_for_call(
+                        broker_request=broker_request,
+                        operation=name,
+                        attempt_number=attempt + 1,
+                    )
+                    authorization_id = str(authorization.get("authorization_id") or "")
+                    if not authorization_id or str(authorization.get("status") or "") != "authorized":
+                        reason = str(
+                            authorization.get("reason")
+                            or authorization.get("reason_code")
+                            or "specter_quota_denied"
+                        )
+                        if broker_request.enforcement_enabled:
+                            raise SpecterQuotaAuthorizationError(
+                                f"Specter quota reservation denied: {reason}"
+                            )
+                        logger.warning(
+                            "Specter quota broker observe-mode bypass: operation=%s status=%s reason=%s",
+                            name,
+                            authorization.get("status"),
+                            reason,
+                        )
+                        authorization_id = None
                 result = self._raw_request(
                     "tools/call", {"name": name, "arguments": arguments}
                 )
-                return self._unwrap_tool_result(result)
+                payload = self._unwrap_tool_result(result)
+                if authorization_id:
+                    _commit_quota_authorization(
+                        authorization_id,
+                        broker_request=broker_request,
+                        operation=name,
+                        outcome="succeeded",
+                    )
+                return payload
             except _AuthExpired as exc:
                 # Refresh and reset the MCP session. Some servers bind
                 # sessions to the old access token; keeping the stale
                 # Mcp-Session-Id can make every retry fail until process
                 # restart.
                 last_exc = exc
+                if authorization_id:
+                    _commit_quota_authorization(
+                        authorization_id,
+                        broker_request=broker_request,
+                        operation=name,
+                        outcome="provider_unavailable",
+                    )
                 self._tokens.get_access_token(force_refresh=True)
                 self._reset_session()
                 continue
             except SpecterCompanyNotFoundError:
                 # Definitive 'no match' — Specter searched and found nothing.
                 # Retrying won't change the answer, so don't burn the budget.
+                if authorization_id:
+                    _commit_quota_authorization(
+                        authorization_id,
+                        broker_request=broker_request,
+                        operation=name,
+                        outcome="succeeded",
+                    )
                 raise
             except SpecterQuotaLimitError:
                 # Account/day quota is definitive until Specter's reset window.
+                if authorization_id:
+                    _commit_quota_authorization(
+                        authorization_id,
+                        broker_request=broker_request,
+                        operation=name,
+                        outcome="failed",
+                        provider_quota_error=True,
+                        reason_code="specter_mcp_quota_exhausted",
+                    )
                 raise
             except (urllib.error.URLError, TimeoutError, SpecterMCPError) as exc:
                 last_exc = exc
+                if authorization_id:
+                    _commit_quota_authorization(
+                        authorization_id,
+                        broker_request=broker_request,
+                        operation=name,
+                        outcome="failed",
+                        reason_code="specter_mcp_unavailable",
+                    )
                 if attempt + 1 == _MAX_ATTEMPTS:
                     break
                 time.sleep(_BACKOFF_BASE_SEC * (2 ** attempt))
@@ -1237,6 +1309,76 @@ def _build_person_detail_chunk(
 # token refresh is internally synchronized.
 _default_client: SpecterMCPClient | None = None
 _default_client_lock = threading.Lock()
+
+
+def _reserve_quota_authorization_for_call(
+    *,
+    broker_request: Any,
+    operation: str,
+    attempt_number: int,
+) -> dict[str, Any]:
+    try:
+        from web import db as _db
+    except Exception:  # pragma: no cover - defensive import boundary
+        return {
+            "status": "unavailable",
+            "reason": "specter_quota_broker_unavailable",
+        }
+    attempt_id = str(uuid.uuid4())
+    record = _db.reserve_specter_quota_authorization(
+        target_environment=broker_request.target_environment,
+        business_date=broker_request.business_date,
+        business_timezone=broker_request.business_timezone,
+        consumer=broker_request.consumer,
+        company_ref=broker_request.company_ref,
+        operation=operation,
+        quota_class=broker_request.quota_class,
+        idempotency_key=f"{attempt_number}:{attempt_id}",
+        enforcement_enabled=broker_request.enforcement_enabled,
+        remaining_rdi_slots=broker_request.remaining_rdi_slots,
+        actor=broker_request.actor,
+        metadata={
+            **dict(broker_request.metadata or {}),
+            "attempt_number": attempt_number,
+            "operation": operation,
+        },
+    )
+    if not isinstance(record, dict):
+        return {
+            "status": "unavailable",
+            "reason": "specter_quota_broker_unavailable",
+        }
+    return record
+
+
+def _commit_quota_authorization(
+    authorization_id: str,
+    *,
+    broker_request: Any,
+    operation: str,
+    outcome: str,
+    provider_quota_error: bool = False,
+    reason_code: str | None = None,
+) -> None:
+    if not authorization_id:
+        return
+    try:
+        from web import db as _db
+    except Exception:
+        return
+    try:
+        _db.commit_specter_quota_authorization(
+            authorization_id=authorization_id,
+            target_environment=broker_request.target_environment,
+            operation=operation,
+            outcome=outcome,
+            provider_quota_error=provider_quota_error,
+            reason_code=reason_code,
+            intake_id=broker_request.intake_id,
+            actor=broker_request.actor,
+        )
+    except Exception:
+        logger.warning("Failed to finalize Specter quota authorization", exc_info=True)
 
 
 def get_default_client() -> SpecterMCPClient:

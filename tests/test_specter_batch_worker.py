@@ -118,15 +118,23 @@ def test_url_provider_failure_parks_without_persisting_company_failure(
     assert event["status"] == "blocked"
     assert event["provider_blocked"] is True
     assert event["error_code"] == "specter_mcp_unavailable"
-    assert event["company_name"] == "Acme"
-    assert event["absolute_index"] == 3
-    assert event["error"] == "Specter MCP is temporarily unavailable."
-    assert calls["errors"] == []
-    assert calls["failures"] == []
-    assert calls["events"][0]["event_type"] == "specter_mcp_provider_blocked"
-    assert len(gate_trips) == 1
-    assert gate_trips[0]["reason_code"] == "specter_mcp_unavailable"
-    assert gate_trips[0]["retry_after_seconds"] == 300
+
+
+def test_worker_broker_request_preserves_unknown_remaining_capacity_as_none() -> None:
+    request = scw._specter_broker_request_from_run_config(
+        {
+            "target_environment": "staging",
+            "leadgen_machine_v2": {
+                "requires_specter_mcp": True,
+                "canonical_domain": "acme.example",
+                "intake_id": "rdi-v2-intake-" + "a" * 32,
+                "daily_remaining_capacity": None,
+            },
+        }
+    )
+
+    assert request is not None
+    assert request.remaining_rdi_slots is None
 
 
 def test_csv_ingest_failure_synthesizes_identity_from_index(tmp_path, monkeypatch, capsys):

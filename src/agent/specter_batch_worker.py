@@ -42,6 +42,11 @@ from web.specter_quota_gate import (
     maybe_recover_specter_quota_gate,
     requires_specter_mcp,
 )
+from web.specter_quota_broker import (
+    build_specter_quota_broker_request,
+    specter_quota_broker_configured,
+    use_specter_quota_broker,
+)
 
 EVENT_PREFIX = "__SPECTER_COMPANY_EVENT__"
 POLL_SECONDS = max(1, int(os.getenv("SPECTER_WORKER_POLL_SECONDS", "5")))
@@ -96,9 +101,19 @@ def _job_requires_specter_mcp(job: dict[str, Any]) -> bool:
 
 async def _specter_mcp_availability() -> dict[str, Any] | None:
     def probe() -> Any:
-        return get_default_client().find_company(
-            web_app._specter_mcp_preflight_identifier()
-        )
+        identifier = web_app._specter_mcp_preflight_identifier()
+        if not specter_quota_broker_configured():
+            return get_default_client().find_company(identifier)
+        with use_specter_quota_broker(
+            build_specter_quota_broker_request(
+                consumer="dependency_canary",
+                operation="find_company",
+                quota_class="recovery_probe",
+                company_ref=f"domain:{identifier}",
+                metadata={"source_component": "specter_batch_worker_probe"},
+            )
+        ):
+            return get_default_client().find_company(identifier)
 
     try:
         return await asyncio.to_thread(

@@ -154,6 +154,11 @@ from web.specter_quota_gate import (
     specter_quota_gate_enforced,
     trip_specter_quota_gate,
 )
+from web.specter_quota_broker import (
+    build_specter_quota_broker_request,
+    specter_quota_broker_configured,
+    use_specter_quota_broker,
+)
 from agent.ingest.specter_mcp_client import SpecterQuotaLimitError
 from agent.person_intel.models import (
     BulkFounderJobRequest,
@@ -6558,6 +6563,31 @@ SPECTER_MCP_PREFLIGHT_IDENTIFIER_ENV = "SPECTER_MCP_PREFLIGHT_IDENTIFIER"
 SPECTER_MCP_PREFLIGHT_DEFAULT_IDENTIFIER = "openai.com"
 
 
+def _specter_quota_broker_context(
+    *,
+    consumer: str,
+    operation: str | None,
+    quota_class: str,
+    company_ref: str | None = None,
+    remaining_rdi_slots: int | None = None,
+    intake_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> contextlib.AbstractContextManager[Any]:
+    if not specter_quota_broker_configured():
+        return contextlib.nullcontext()
+    return use_specter_quota_broker(
+        build_specter_quota_broker_request(
+            consumer=consumer,
+            operation=operation,
+            quota_class=quota_class,
+            company_ref=company_ref,
+            remaining_rdi_slots=remaining_rdi_slots,
+            intake_id=intake_id,
+            metadata=metadata,
+        )
+    )
+
+
 def _specter_mcp_preflight_identifier(identifiers: list[Any] | None = None) -> str:
     for item in identifiers or []:
         value = _url_value_for_intake_item(item)
@@ -6625,7 +6655,15 @@ def _specter_mcp_blocked_response(
 async def _specter_mcp_availability_with_recovery() -> dict[str, Any]:
     def recovery_probe() -> Any:
         (*_, get_default_client, _reset_hint) = _lazy_import_specter_mcp_preflight_symbols()
-        return get_default_client().find_company(_specter_mcp_preflight_identifier())
+        identifier = _specter_mcp_preflight_identifier()
+        with _specter_quota_broker_context(
+            consumer="dependency_canary",
+            operation="find_company",
+            quota_class="recovery_probe",
+            company_ref=f"domain:{identifier}",
+            metadata={"source_component": "availability_probe"},
+        ):
+            return get_default_client().find_company(identifier)
 
     availability = await asyncio.to_thread(
         maybe_recover_specter_quota_gate,
@@ -6972,12 +7010,21 @@ async def _resolve_specter_url_for_preflight(item: Any) -> tuple[Any | None, str
     expected_name = _specter_expected_name_for_item(item)
     try:
         fetch_specter_company = _lazy_import_fetch_specter_company()
-        company, _store = await asyncio.to_thread(
-            fetch_specter_company,
-            identifier,
-            expected_name=expected_name,
-            fetch_full_team=False,
-        )
+        def _fetch() -> tuple[Any, Any]:
+            with _specter_quota_broker_context(
+                consumer="analysis_preflight",
+                operation=None,
+                quota_class="flex",
+                company_ref=f"domain:{identifier}",
+                metadata={"source_component": "analysis_quality_preflight"},
+            ):
+                return fetch_specter_company(
+                    identifier,
+                    expected_name=expected_name,
+                    fetch_full_team=False,
+                )
+
+        company, _store = await asyncio.to_thread(_fetch)
         return company, None
     except Exception as exc:
         from agent.ingest.specter_mcp_client import (  # noqa: PLC0415
@@ -8997,18 +9044,24 @@ async def _run_document_analysis(
                 # client's domain-root check already catches Specter
                 # cross-resolves like Scribe→Shopscribe.
                 deck_store = ingest_startup_folder(upload_dir)
-                seed_store, seed_company = augment_with_specter(
-                    deck_store,
-                    slug=upload_dir.name,
-                    fetch_full_team=fetch_full_team,
-                    on_log=lambda m: (_append_progress(job_id, m), print(m)),
-                    on_quota=lambda exc: trip_specter_quota_gate(
-                        db,
-                        error=exc,
-                        source_component="document_augmentation",
-                        source_job_id=job_id,
-                    ),
-                )
+                with _specter_quota_broker_context(
+                    consumer="document_augmentation",
+                    operation=None,
+                    quota_class="flex",
+                    metadata={"source_component": "document_augmentation", "job_id": job_id},
+                ):
+                    seed_store, seed_company = augment_with_specter(
+                        deck_store,
+                        slug=upload_dir.name,
+                        fetch_full_team=fetch_full_team,
+                        on_log=lambda m: (_append_progress(job_id, m), print(m)),
+                        on_quota=lambda exc: trip_specter_quota_gate(
+                            db,
+                            error=exc,
+                            source_component="document_augmentation",
+                            source_job_id=job_id,
+                        ),
+                    )
             except (SpecterQuotaLimitError, SpecterQuotaGateUnavailable):
                 raise
             except Exception as exc:  # noqa: BLE001 — augmentation is best-effort
@@ -9140,18 +9193,24 @@ async def _run_document_analysis(
                         # names are noisy and the domain-root check is
                         # already a strong safeguard).
                         deck_store = ingest_startup_folder(doc_dir)
-                        seed_store, seed_company = augment_with_specter(
-                            deck_store,
-                            slug=doc_dir.name,
-                            fetch_full_team=fetch_full_team,
-                            on_log=lambda m: (_append_progress(job_id, m), print(m)),
-                            on_quota=lambda exc: trip_specter_quota_gate(
-                                db,
-                                error=exc,
-                                source_component="document_augmentation",
-                                source_job_id=job_id,
-                            ),
-                        )
+                        with _specter_quota_broker_context(
+                            consumer="document_augmentation",
+                            operation=None,
+                            quota_class="flex",
+                            metadata={"source_component": "document_augmentation", "job_id": job_id},
+                        ):
+                            seed_store, seed_company = augment_with_specter(
+                                deck_store,
+                                slug=doc_dir.name,
+                                fetch_full_team=fetch_full_team,
+                                on_log=lambda m: (_append_progress(job_id, m), print(m)),
+                                on_quota=lambda exc: trip_specter_quota_gate(
+                                    db,
+                                    error=exc,
+                                    source_component="document_augmentation",
+                                    source_job_id=job_id,
+                                ),
+                            )
                     except (SpecterQuotaLimitError, SpecterQuotaGateUnavailable):
                         raise
                     except Exception as exc:  # noqa: BLE001 — augmentation is best-effort

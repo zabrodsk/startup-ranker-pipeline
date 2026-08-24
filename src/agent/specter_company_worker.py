@@ -41,6 +41,11 @@ from agent.run_context import RunTelemetryCollector, use_run_context
 from web import app as web_app
 from web.leadgen_domain import normalize_company_domain
 from web.leadgen_machine_v2 import FrozenLeadGenEvidenceBundleV1, canonical_bundle_sha256
+from web.specter_quota_broker import (
+    SpecterQuotaBrokerRequest,
+    build_specter_quota_broker_request,
+    use_specter_quota_broker,
+)
 from web.specter_quota_gate import SpecterQuotaGateUnavailable, trip_specter_quota_gate
 
 EVENT_PREFIX = "__SPECTER_COMPANY_EVENT__"
@@ -103,6 +108,31 @@ def _llm_selection_from_run_config(run_config: dict[str, Any]) -> dict[str, str]
     return serialize_selection(
         run_config.get("llm_provider"),
         run_config.get("llm_model"),
+    )
+
+
+def _specter_broker_request_from_run_config(
+    run_config: dict[str, Any],
+) -> SpecterQuotaBrokerRequest | None:
+    context = run_config.get("leadgen_machine_v2")
+    if not isinstance(context, dict) or context.get("requires_specter_mcp") is not True:
+        return None
+    canonical_domain = normalize_company_domain(str(context.get("canonical_domain") or ""))
+    if not canonical_domain:
+        return None
+    remaining_slots = context.get("daily_remaining_capacity")
+    try:
+        normalized_remaining_slots = max(int(remaining_slots), 0)
+    except (TypeError, ValueError):
+        normalized_remaining_slots = None
+    return build_specter_quota_broker_request(
+        consumer="rdi",
+        operation=None,
+        quota_class="autonomous_campaign",
+        company_ref=f"domain:{canonical_domain}",
+        remaining_rdi_slots=normalized_remaining_slots,
+        intake_id=str(context.get("intake_id") or "") or None,
+        metadata={"source": "leadgen_machine_v2"},
     )
 
 
@@ -297,6 +327,7 @@ async def _process_company(args: argparse.Namespace) -> int:
     # bare non-zero exit: no structured event, no analysis_errors row, and the
     # UI only shows a generic "exited with code 1" (the 2026-06-11 outage UX).
     try:
+        broker_request = _specter_broker_request_from_run_config(run_config)
         frozen_inputs = _load_frozen_leadgen_bundle(
             run_config,
             expected_domain=args.specter_url,
@@ -304,12 +335,13 @@ async def _process_company(args: argparse.Namespace) -> int:
         if frozen_inputs is not None:
             company, store = frozen_inputs
         elif args.specter_url:
-            company, store = fetch_specter_company(
-                args.specter_url,
-                expected_name=args.expected_name or None,
-                fetch_full_team=bool(args.fetch_full_team),
-                known_company_id=args.specter_company_id or None,
-            )
+            with use_specter_quota_broker(broker_request):
+                company, store = fetch_specter_company(
+                    args.specter_url,
+                    expected_name=args.expected_name or None,
+                    fetch_full_team=bool(args.fetch_full_team),
+                    known_company_id=args.specter_company_id or None,
+                )
         else:
             if not args.specter_companies or args.company_index is None:
                 raise ValueError(

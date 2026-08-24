@@ -16,6 +16,7 @@ from agent.ingest.specter_mcp_client import (
     SpecterDisambiguationError,
     SpecterMCPClient,
     SpecterMCPError,
+    SpecterQuotaAuthorizationError,
     SpecterQuotaLimitError,
     _brand_stem,
     _build_funding_chunk,
@@ -32,6 +33,7 @@ from agent.ingest.specter_mcp_client import (
     specter_quota_reset_hint,
 )
 from agent.ingest.store import EvidenceStore
+from web.specter_quota_broker import SpecterQuotaBrokerRequest, use_specter_quota_broker
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +199,206 @@ def test_exact_production_quota_tool_error_receives_exactly_one_attempt(monkeypa
 
     assert calls == 1
     assert exc_info.value.reset_hint == "00:00 UTC"
+
+
+def test_call_tool_uses_quota_broker_reservation_and_commit(monkeypatch):
+    client = object.__new__(SpecterMCPClient)
+    client._ensure_initialized = lambda: None
+    client._raw_request = lambda *_args, **_kwargs: {
+        "content": [{"type": "text", "text": '{"ok": true}'}]
+    }
+    reservations: list[dict[str, Any]] = []
+    commits: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(
+        "web.db.reserve_specter_quota_authorization",
+        lambda **kwargs: reservations.append(kwargs)
+        or {
+            "authorization_id": "specter-auth-0001",
+            "status": "authorized",
+            "circuit_state": "closed",
+            "state": "open",
+        },
+    )
+    monkeypatch.setattr(
+        "web.db.commit_specter_quota_authorization",
+        lambda **kwargs: commits.append(kwargs) or {"status": "committed"},
+    )
+
+    with use_specter_quota_broker(
+        SpecterQuotaBrokerRequest(
+            target_environment="staging",
+            business_date="2026-08-24",
+            business_timezone="Europe/Prague",
+            consumer="rdi",
+            operation=None,
+            quota_class="autonomous_campaign",
+            company_ref="domain:acme.example",
+            remaining_rdi_slots=12,
+            actor="service:rockaway-leadgen",
+            intake_id="rdi-v2-intake-" + "a" * 32,
+            metadata={"intake_id": "rdi-v2-intake-" + "a" * 32},
+            enforcement_enabled=True,
+        )
+    ):
+        result = client._call_tool(
+            "get_company_profile",
+            {"external_company_id": "company-1"},
+        )
+
+    assert result == {"ok": True}
+    assert reservations[0]["operation"] == "get_company_profile"
+    assert reservations[0]["quota_class"] == "autonomous_campaign"
+    assert commits == [
+        {
+            "authorization_id": "specter-auth-0001",
+            "target_environment": "staging",
+            "operation": "get_company_profile",
+            "intake_id": "rdi-v2-intake-" + "a" * 32,
+            "outcome": "succeeded",
+            "provider_quota_error": False,
+            "reason_code": None,
+            "actor": "service:rockaway-leadgen",
+        }
+    ]
+
+
+def test_call_tool_reserves_once_per_actual_dispatch_attempt(monkeypatch):
+    client = object.__new__(SpecterMCPClient)
+    calls = 0
+    reservations: list[dict[str, Any]] = []
+    commits: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(client, "_ensure_initialized", lambda: None)
+
+    def raw_request(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise SpecterMCPError("temporary MCP transport failure")
+        return {"content": [{"type": "text", "text": '{"ok": true}'}]}
+
+    monkeypatch.setattr(client, "_raw_request", raw_request)
+    monkeypatch.setattr("agent.ingest.specter_mcp_client.time.sleep", lambda *_a: None)
+    monkeypatch.setattr(
+        "web.db.reserve_specter_quota_authorization",
+        lambda **kwargs: reservations.append(kwargs)
+        or {
+            "authorization_id": f"specter-auth-{len(reservations):04d}",
+            "status": "authorized",
+            "circuit_state": "closed",
+            "state": "open",
+        },
+    )
+    monkeypatch.setattr(
+        "web.db.commit_specter_quota_authorization",
+        lambda **kwargs: commits.append(kwargs) or {"status": kwargs["outcome"]},
+    )
+
+    with use_specter_quota_broker(
+        SpecterQuotaBrokerRequest(
+            target_environment="staging",
+            business_date="2026-08-24",
+            business_timezone="Europe/Prague",
+            consumer="analysis_preflight",
+            operation=None,
+            quota_class="flex",
+            company_ref="domain:acme.example",
+            remaining_rdi_slots=None,
+            actor="service:rockaway-leadgen",
+            intake_id=None,
+            metadata={},
+            enforcement_enabled=True,
+        )
+    ):
+        assert client._call_tool("find_company", {"identifier": "acme.example"}) == {"ok": True}
+
+    assert len(reservations) == 2
+    assert reservations[0]["idempotency_key"] != reservations[1]["idempotency_key"]
+    assert [item["outcome"] for item in commits] == ["failed", "succeeded"]
+
+
+def test_call_tool_observe_mode_logs_and_bypasses_denied_broker_reservation(monkeypatch, caplog):
+    client = object.__new__(SpecterMCPClient)
+    client._ensure_initialized = lambda: None
+    client._raw_request = lambda *_args, **_kwargs: {
+        "content": [{"type": "text", "text": '{"ok": true}'}]
+    }
+
+    monkeypatch.setattr(
+        "web.db.reserve_specter_quota_authorization",
+        lambda **_kwargs: {
+            "authorization_id": "specter-auth-0001",
+            "status": "deferred",
+            "reason": "quota_estimate_exhausted",
+            "circuit_state": "closed",
+            "state": "open",
+        },
+    )
+
+    with use_specter_quota_broker(
+        SpecterQuotaBrokerRequest(
+            target_environment="staging",
+            business_date="2026-08-24",
+            business_timezone="Europe/Prague",
+            consumer="analysis_preflight",
+            operation=None,
+            quota_class="flex",
+            company_ref="domain:acme.example",
+            remaining_rdi_slots=None,
+            actor="service:rockaway-leadgen",
+            intake_id=None,
+            metadata={},
+            enforcement_enabled=False,
+        )
+    ):
+        with caplog.at_level("WARNING"):
+            assert client._call_tool("find_company", {"identifier": "acme.example"}) == {"ok": True}
+
+    assert "observe-mode bypass" in caplog.text
+
+
+def test_call_tool_enforce_mode_raises_distinct_broker_denial_error(monkeypatch):
+    client = object.__new__(SpecterMCPClient)
+    client._ensure_initialized = lambda: None
+    client._raw_request = lambda *_args, **_kwargs: pytest.fail("provider call should not dispatch")
+    commits: list[dict[str, Any]] = []
+
+    monkeypatch.setattr(
+        "web.db.reserve_specter_quota_authorization",
+        lambda **_kwargs: {
+            "authorization_id": "specter-auth-0001",
+            "status": "deferred",
+            "reason": "company_cap_exhausted",
+            "circuit_state": "closed",
+            "state": "open",
+        },
+    )
+    monkeypatch.setattr(
+        "web.db.commit_specter_quota_authorization",
+        lambda **kwargs: commits.append(kwargs) or {"status": kwargs["outcome"]},
+    )
+
+    with use_specter_quota_broker(
+        SpecterQuotaBrokerRequest(
+            target_environment="staging",
+            business_date="2026-08-24",
+            business_timezone="Europe/Prague",
+            consumer="analysis_preflight",
+            operation=None,
+            quota_class="flexible_pool",
+            company_ref="Acme deck / batch 1",
+            remaining_rdi_slots=None,
+            actor="service:rockaway-leadgen",
+            intake_id=None,
+            metadata={},
+            enforcement_enabled=True,
+        )
+    ):
+        with pytest.raises(SpecterQuotaAuthorizationError):
+            client._call_tool("find_company", {"identifier": "acme.example"})
+
+    assert commits == []
 
 
 def test_transient_tool_error_retains_bounded_retries(monkeypatch):
