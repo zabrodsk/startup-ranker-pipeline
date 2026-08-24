@@ -218,7 +218,7 @@ def test_trip_records_temporary_provider_outage_with_short_recovery_window(
     assert store.trip_calls[0]["reset_hint"] is None
 
 
-def test_recovery_probe_opens_gate_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_recovery_probe_skips_same_day_probe_after_quota_exhaustion(monkeypatch: pytest.MonkeyPatch) -> None:
     store = FakeGateStore(_blocked_state())
     monkeypatch.setenv("SPECTER_MCP_QUOTA_GATE_MODE", "enforce")
     calls: list[str] = []
@@ -228,12 +228,12 @@ def test_recovery_probe_opens_gate_on_success(monkeypatch: pytest.MonkeyPatch) -
         probe=lambda: calls.append("probe"),
     )
 
-    assert calls == ["probe"]
-    assert availability["state"] == "open"
-    assert store.finish_calls[0]["succeeded"] is True
+    assert calls == []
+    assert availability["state"] == "blocked"
+    assert store.finish_calls == []
 
 
-def test_recovery_probe_treats_not_found_as_provider_available(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_recovery_probe_does_not_run_not_found_probe_on_same_business_day(monkeypatch: pytest.MonkeyPatch) -> None:
     store = FakeGateStore(_blocked_state())
     monkeypatch.setenv("SPECTER_MCP_QUOTA_GATE_MODE", "enforce")
 
@@ -242,11 +242,11 @@ def test_recovery_probe_treats_not_found_as_provider_available(monkeypatch: pyte
 
     availability = maybe_recover_specter_quota_gate(store, probe=probe)
 
-    assert availability["state"] == "open"
-    assert store.finish_calls[0]["succeeded"] is True
+    assert availability["state"] == "blocked"
+    assert store.finish_calls == []
 
 
-def test_recovery_probe_reblocks_without_leaking_provider_message(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_recovery_probe_does_not_run_quota_probe_on_same_business_day(monkeypatch: pytest.MonkeyPatch) -> None:
     store = FakeGateStore(_blocked_state())
     monkeypatch.setenv("SPECTER_MCP_QUOTA_GATE_MODE", "enforce")
 
@@ -255,9 +255,7 @@ def test_recovery_probe_reblocks_without_leaking_provider_message(monkeypatch: p
 
     maybe_recover_specter_quota_gate(store, probe=probe)
 
-    assert store.finish_calls[0]["succeeded"] is False
-    assert store.finish_calls[0]["reason_code"] == "specter_mcp_quota_exhausted"
-    assert "secret" not in str(store.finish_calls[0])
+    assert store.finish_calls == []
 
 
 def test_public_availability_drops_internal_source_and_probe_fields() -> None:
@@ -275,6 +273,28 @@ def test_public_availability_drops_internal_source_and_probe_fields() -> None:
     assert "source_component" not in public
     assert "source_job_id" not in public
     assert "probe_lease_token" not in public
+
+
+def test_public_availability_exposes_new_circuit_state_while_preserving_legacy_state() -> None:
+    payload = {
+        "provider": "specter_mcp",
+        "target_environment": "staging",
+        "circuit_state": "closed",
+        "enforcement_enabled": True,
+        "accepting_new_analyses": True,
+        "estimated_remaining": 144,
+        "business_date": "2026-08-24",
+        "retry_at": None,
+        "reason": None,
+        "observed_at": "2026-08-24T08:00:00Z",
+    }
+
+    public = public_specter_quota_availability(payload)
+
+    assert public["circuit_state"] == "closed"
+    assert public["state"] == "open"
+    assert public["estimated_remaining"] == 144
+    assert public["business_date"] == "2026-08-24"
 
 
 class _FakePostgrestError(Exception):
@@ -348,6 +368,49 @@ def test_database_gate_adapter_uses_named_rpc_parameters(
                 "p_source_component": "api_preflight",
                 "p_source_job_id": "job-1",
                 "p_retry_after_seconds": None,
+            },
+        )
+    ]
+
+
+def test_database_broker_reservation_adapter_uses_named_rpc_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeClient()
+    monkeypatch.setattr(db, "_get_client", lambda: client)
+
+    result = db.reserve_specter_quota_authorization(
+        target_environment="staging",
+        business_date="2026-08-24",
+        business_timezone="Europe/Prague",
+        consumer="rdi",
+        company_ref="domain:acme.example",
+        operation="get_company_profile",
+        quota_class="autonomous_campaign",
+        idempotency_key="auth-1",
+        enforcement_enabled=True,
+        remaining_rdi_slots=12,
+        actor="service:rockaway-leadgen",
+        metadata={"intake_id": "rdi-v2-intake-" + "a" * 32},
+    )
+
+    assert result == {"state": "open"}
+    assert client.calls == [
+        (
+            "reserve_specter_quota_authorization",
+            {
+                "p_target_environment": "staging",
+                "p_business_date": "2026-08-24",
+                "p_business_timezone": "Europe/Prague",
+                "p_consumer": "rdi",
+                "p_company_ref": "domain:acme.example",
+                "p_operation": "get_company_profile",
+                "p_quota_class": "autonomous_campaign",
+                "p_idempotency_key": "auth-1",
+                "p_enforcement_enabled": True,
+                "p_remaining_rdi_slots": 12,
+                "p_actor": "service:rockaway-leadgen",
+                "p_metadata": {"intake_id": "rdi-v2-intake-" + "a" * 32},
             },
         )
     ]

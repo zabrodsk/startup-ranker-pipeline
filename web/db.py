@@ -2192,6 +2192,104 @@ def load_machine_v2_lifecycle(intake_id: str) -> dict[str, Any] | None:
     )
 
 
+def get_specter_quota_broker_circuit(
+    *,
+    target_environment: str,
+    business_date: str,
+    enforcement_enabled: bool,
+) -> dict[str, Any] | None:
+    return _specter_gate_rpc_object(
+        "get_specter_quota_broker_circuit",
+        {
+            "p_target_environment": target_environment,
+            "p_business_date": business_date,
+            "p_enforcement_enabled": enforcement_enabled,
+        },
+    )
+
+
+def reserve_specter_quota_authorization(
+    *,
+    target_environment: str,
+    business_date: str,
+    business_timezone: str,
+    consumer: str,
+    company_ref: str | None,
+    operation: str,
+    quota_class: str,
+    idempotency_key: str,
+    enforcement_enabled: bool,
+    remaining_rdi_slots: int | None,
+    actor: str,
+    metadata: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    return _specter_gate_rpc_object(
+        "reserve_specter_quota_authorization",
+        {
+            "p_target_environment": target_environment,
+            "p_business_date": business_date,
+            "p_business_timezone": business_timezone,
+            "p_consumer": consumer,
+            "p_company_ref": company_ref,
+            "p_operation": operation,
+            "p_quota_class": quota_class,
+            "p_idempotency_key": idempotency_key,
+            "p_enforcement_enabled": enforcement_enabled,
+            "p_remaining_rdi_slots": remaining_rdi_slots,
+            "p_actor": actor,
+            "p_metadata": metadata or {},
+        },
+    )
+
+
+def commit_specter_quota_authorization(
+    *,
+    authorization_id: str,
+    target_environment: str,
+    operation: str,
+    outcome: str,
+    provider_quota_error: bool,
+    reason_code: str | None,
+    intake_id: str | None,
+    actor: str,
+) -> dict[str, Any] | None:
+    return _specter_gate_rpc_object(
+        "commit_specter_quota_authorization",
+        {
+            "p_authorization_id": authorization_id,
+            "p_target_environment": target_environment,
+            "p_operation": operation,
+            "p_outcome": outcome,
+            "p_provider_quota_error": provider_quota_error,
+            "p_reason_code": reason_code,
+            "p_intake_id": intake_id,
+            "p_actor": actor,
+        },
+    )
+
+
+def release_specter_quota_authorization(
+    *,
+    authorization_id: str,
+    target_environment: str,
+    operation: str,
+    intake_id: str | None,
+    reason_code: str | None,
+    actor: str,
+) -> dict[str, Any] | None:
+    return _specter_gate_rpc_object(
+        "release_specter_quota_authorization",
+        {
+            "p_authorization_id": authorization_id,
+            "p_target_environment": target_environment,
+            "p_operation": operation,
+            "p_intake_id": intake_id,
+            "p_reason_code": reason_code,
+            "p_actor": actor,
+        },
+    )
+
+
 def list_claimable_specter_worker_jobs(limit: int = 10) -> list[dict[str, Any]]:
     client = _get_client()
     requested_limit = max(int(limit), 0)

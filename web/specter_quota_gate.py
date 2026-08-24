@@ -13,6 +13,11 @@ from agent.ingest.specter_mcp_client import (
     SpecterQuotaLimitError,
     specter_quota_reset_hint,
 )
+from web.specter_quota_broker import (
+    normalize_specter_quota_payload,
+    public_specter_quota_authorization,
+    specter_quota_business_date,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +51,8 @@ class SpecterQuotaGateStore(Protocol):
 
     def get_specter_mcp_quota_gate(self, **request: Any) -> dict[str, Any] | None: ...
 
+    def get_specter_quota_broker_circuit(self, **request: Any) -> dict[str, Any] | None: ...
+
     def trip_specter_mcp_quota_gate(self, **request: Any) -> dict[str, Any] | None: ...
 
     def acquire_specter_mcp_quota_probe(self, **request: Any) -> dict[str, Any] | None: ...
@@ -75,10 +82,11 @@ def specter_quota_target_environment() -> str:
 
 
 def _open_fallback(*, storage_available: bool) -> dict[str, Any]:
-    return {
+    return normalize_specter_quota_payload(
+        {
         "provider": "specter_mcp",
         "target_environment": specter_quota_target_environment(),
-        "state": "open",
+        "circuit_state": "closed",
         "enforcement_enabled": False,
         "accepting_new_analyses": True,
         "quota_remaining": "unknown",
@@ -86,9 +94,13 @@ def _open_fallback(*, storage_available: bool) -> dict[str, Any]:
         "next_probe_at": None,
         "retry_after_seconds": 0,
         "reason_code": None,
+        "reason": None,
+        "retry_at": None,
+        "business_date": specter_quota_business_date(),
         "observed_at": None,
         "gate_storage_available": storage_available,
-    }
+        }
+    )
 
 
 def _require_payload(payload: Any, operation: str) -> dict[str, Any]:
@@ -96,12 +108,12 @@ def _require_payload(payload: Any, operation: str) -> dict[str, Any]:
         raise SpecterQuotaGateUnavailable(
             f"Specter MCP quota gate {operation} did not return a record."
         )
-    state = str(payload.get("state") or "")
+    normalized = normalize_specter_quota_payload(payload)
+    state = str(normalized.get("state") or "")
     if state not in {"open", "blocked", "probing"}:
         raise SpecterQuotaGateUnavailable(
             f"Specter MCP quota gate {operation} returned an invalid state."
         )
-    normalized = dict(payload)
     normalized["gate_storage_available"] = True
     return normalized
 
@@ -110,6 +122,15 @@ def get_specter_quota_availability(
     store: SpecterQuotaGateStore | None,
 ) -> dict[str, Any]:
     enforced = specter_quota_gate_enforced()
+    broker_read = getattr(store, "get_specter_quota_broker_circuit", None)
+    if store is not None and store.is_configured() and callable(broker_read):
+        payload = broker_read(
+            target_environment=specter_quota_target_environment(),
+            business_date=specter_quota_business_date(),
+            enforcement_enabled=enforced,
+        )
+        if payload is not None:
+            return _require_payload(payload, "read")
     gate_read = getattr(store, "get_specter_mcp_quota_gate", None)
     if store is None or not store.is_configured() or not callable(gate_read):
         if enforced:
@@ -176,6 +197,12 @@ def maybe_recover_specter_quota_gate(
     availability = get_specter_quota_availability(store)
     if availability.get("accepting_new_analyses"):
         return availability
+    if (
+        availability.get("circuit_state") == "open"
+        and availability.get("reason_code") == SPECTER_MCP_QUOTA_ERROR_CODE
+        and availability.get("business_date") == specter_quota_business_date()
+    ):
+        return availability
     acquire_probe = getattr(store, "acquire_specter_mcp_quota_probe", None)
     finish_probe = getattr(store, "finish_specter_mcp_quota_probe", None)
     if store is None or not callable(acquire_probe) or not callable(finish_probe):
@@ -236,4 +263,6 @@ _PUBLIC_FIELDS = (
 
 def public_specter_quota_availability(payload: dict[str, Any]) -> dict[str, Any]:
     """Return the stable, non-sensitive availability contract."""
-    return {key: payload.get(key) for key in _PUBLIC_FIELDS if key in payload}
+    public = public_specter_quota_authorization(payload)
+    public.update({key: payload.get(key) for key in _PUBLIC_FIELDS if key in payload})
+    return public
