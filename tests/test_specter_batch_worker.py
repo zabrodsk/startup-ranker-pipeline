@@ -246,11 +246,13 @@ def test_complete_frozen_bundle_reconstructs_inputs_without_specter(monkeypatch)
     assert company.name == "Acme"
     assert company.domain == "acme.example"
     assert len(store.chunks) == 5
-    assert [chunk.chunk_id for chunk in store.chunks[:2]] == [
+    assert [chunk.chunk_id for chunk in store.chunks] == [
         "leadgen-packet:evidence-europe",
         "leadgen-packet:evidence-funding",
+        "leadgen-packet:evidence-product",
+        "leadgen-packet:evidence-market",
+        "leadgen-packet:evidence-founder",
     ]
-    assert store.chunks[-1].chunk_id == "leadgen-packet:evidence-founder"
     packet_chunk = store.chunks[0]
     assert packet_chunk.text == "Acme operates from Prague."
     assert packet_chunk.source_file == "https://news.example/acme-europe"
