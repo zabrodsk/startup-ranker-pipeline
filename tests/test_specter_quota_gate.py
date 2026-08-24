@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from io import BytesIO
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import pytest
@@ -14,6 +16,13 @@ from agent.ingest.specter_mcp_client import (
     SpecterCompanyNotFoundError,
     SpecterQuotaLimitError,
 )
+from web import app as web_app
+from web import db
+from web.specter_quota_broker import (
+    SpecterQuotaPolicy,
+    SpecterQuotaUsage,
+    specter_quota_decision,
+)
 from web.specter_quota_gate import (
     SpecterQuotaGateUnavailable,
     get_specter_quota_availability,
@@ -22,8 +31,6 @@ from web.specter_quota_gate import (
     requires_specter_mcp,
     trip_specter_quota_gate,
 )
-from web import db
-from web import app as web_app
 
 
 def test_requires_specter_mcp_covers_all_analysis_shapes() -> None:
@@ -32,6 +39,102 @@ def test_requires_specter_mcp_covers_all_analysis_shapes() -> None:
     assert not requires_specter_mcp(input_mode="specter", specter_urls=[])
     assert not requires_specter_mcp(input_mode="pitchdeck", use_specter_mcp=False)
     assert not requires_specter_mcp(input_mode="original", use_specter_mcp=True)
+
+
+def test_policy_simulation_preserves_safety_reserve_at_observed_limit() -> None:
+    policy = SpecterQuotaPolicy()
+    usage = SpecterQuotaUsage()
+    classes = (
+        ["autonomous_campaign"] * 160
+        + ["scheduled_import"] * 40
+        + ["recovery_probe"] * 5
+        + ["flexible_pool"] * 20
+    )
+    for quota_class in classes:
+        allowed, reason = specter_quota_decision(
+            policy=policy,
+            usage=usage,
+            quota_class=quota_class,
+            operation="find_company",
+            remaining_rdi_slots=20,
+        )
+        assert allowed, (quota_class, usage, reason)
+        usage = SpecterQuotaUsage(
+            total=usage.total + 1,
+            scheduled_import=usage.scheduled_import + (quota_class == "scheduled_import"),
+            recovery_probe=usage.recovery_probe + (quota_class == "recovery_probe"),
+            autonomous_campaign=usage.autonomous_campaign
+            + (quota_class == "autonomous_campaign"),
+        )
+
+    assert usage.total == 225
+    assert policy.observed_limit - usage.total == policy.safety_reserve
+    assert specter_quota_decision(
+        policy=policy,
+        usage=usage,
+        quota_class="flexible_pool",
+        operation="find_company",
+        remaining_rdi_slots=0,
+    ) == (False, "quota_estimate_exhausted")
+
+
+def test_policy_simulation_enforces_company_and_founder_caps() -> None:
+    policy = SpecterQuotaPolicy()
+    assert specter_quota_decision(
+        policy=policy,
+        usage=SpecterQuotaUsage(company=8),
+        quota_class="autonomous_campaign",
+        operation="find_company",
+        remaining_rdi_slots=1,
+    ) == (False, "company_cap_exhausted")
+    assert specter_quota_decision(
+        policy=policy,
+        usage=SpecterQuotaUsage(founder_profiles=3),
+        quota_class="autonomous_campaign",
+        operation="get_person_profile",
+        remaining_rdi_slots=1,
+    ) == (False, "founder_profile_cap_exhausted")
+
+
+def test_serialized_concurrent_simulation_cannot_breach_daily_capacity() -> None:
+    policy = SpecterQuotaPolicy()
+    usage = [SpecterQuotaUsage()]
+    accepted = [0]
+    lock = Lock()
+    classes = (
+        ["flexible_pool"] * 100
+        + ["scheduled_import"] * 60
+        + ["recovery_probe"] * 20
+        + ["autonomous_campaign"] * 200
+    )
+
+    def attempt(quota_class: str) -> None:
+        with lock:
+            current = usage[0]
+            allowed, _ = specter_quota_decision(
+                policy=policy,
+                usage=current,
+                quota_class=quota_class,
+                operation="find_company",
+                remaining_rdi_slots=20,
+            )
+            if not allowed:
+                return
+            usage[0] = SpecterQuotaUsage(
+                total=current.total + 1,
+                scheduled_import=current.scheduled_import
+                + (quota_class == "scheduled_import"),
+                recovery_probe=current.recovery_probe + (quota_class == "recovery_probe"),
+                autonomous_campaign=current.autonomous_campaign
+                + (quota_class == "autonomous_campaign"),
+            )
+            accepted[0] += 1
+
+    with ThreadPoolExecutor(max_workers=32) as executor:
+        list(executor.map(attempt, classes))
+
+    assert accepted[0] == 225
+    assert usage[0].total == policy.observed_limit - policy.safety_reserve
 
 
 def test_open_gate_resumes_preserved_document_job_once(monkeypatch) -> None:

@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from typing import Any, Iterator
 from zoneinfo import ZoneInfo
 
-
 BROKER_MODE_ENV = "SPECTER_MCP_QUOTA_BROKER_MODE"
 LEGACY_MODE_ENV = "SPECTER_MCP_QUOTA_GATE_MODE"
 BROKER_MODE_OBSERVE = "observe"
@@ -28,6 +27,74 @@ _LEGACY_TO_CIRCUIT_STATE = {
     "blocked": "open",
     "probing": "probing",
 }
+
+
+@dataclass(frozen=True)
+class SpecterQuotaPolicy:
+    observed_limit: int = 250
+    safety_reserve: int = 25
+    company_cap: int = 8
+    founder_profile_cap: int = 3
+    scheduled_import_allowance: int = 40
+    recovery_allowance: int = 5
+    campaign_reserve_cap: int = 160
+
+
+@dataclass(frozen=True)
+class SpecterQuotaUsage:
+    total: int = 0
+    company: int = 0
+    founder_profiles: int = 0
+    scheduled_import: int = 0
+    recovery_probe: int = 0
+    autonomous_campaign: int = 0
+
+
+def specter_quota_decision(
+    *,
+    policy: SpecterQuotaPolicy,
+    usage: SpecterQuotaUsage,
+    quota_class: str,
+    operation: str,
+    remaining_rdi_slots: int | None,
+    circuit_state: str = "closed",
+) -> tuple[bool, str | None]:
+    """Mirror the SQL policy for deterministic preflight and acceptance simulation."""
+    if circuit_state != "closed":
+        return False, "specter_mcp_quota_exhausted"
+    if usage.company >= policy.company_cap:
+        return False, "company_cap_exhausted"
+    if operation == "get_person_profile" and usage.founder_profiles >= policy.founder_profile_cap:
+        return False, "founder_profile_cap_exhausted"
+    if (
+        quota_class == "scheduled_import"
+        and usage.scheduled_import >= policy.scheduled_import_allowance
+    ):
+        return False, "scheduled_import_allowance_exhausted"
+    if quota_class == "recovery_probe" and usage.recovery_probe >= policy.recovery_allowance:
+        return False, "recovery_allowance_exhausted"
+
+    slots = 20 if remaining_rdi_slots is None else max(remaining_rdi_slots, 0)
+    campaign_target = min(policy.campaign_reserve_cap, slots * policy.company_cap)
+    remaining_import = max(policy.scheduled_import_allowance - usage.scheduled_import, 0)
+    remaining_recovery = max(policy.recovery_allowance - usage.recovery_probe, 0)
+    remaining_campaign = max(campaign_target - usage.autonomous_campaign, 0)
+    if quota_class == "autonomous_campaign":
+        floor = policy.safety_reserve + remaining_import + remaining_recovery
+    elif quota_class == "scheduled_import":
+        floor = policy.safety_reserve + remaining_recovery + remaining_campaign
+    elif quota_class == "recovery_probe":
+        floor = policy.safety_reserve + remaining_import + remaining_campaign
+    else:
+        floor = (
+            policy.safety_reserve
+            + remaining_import
+            + remaining_recovery
+            + remaining_campaign
+        )
+    if usage.total >= policy.observed_limit - floor:
+        return False, "quota_estimate_exhausted"
+    return True, None
 
 
 @dataclass(frozen=True)
