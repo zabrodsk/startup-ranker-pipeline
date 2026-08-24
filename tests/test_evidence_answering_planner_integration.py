@@ -284,6 +284,47 @@ def test_coverage_telemetry_counts_primary_and_fallback_provider_calls(
     assert provenance["web_search_plan"]["actual_search_calls"] == 6
 
 
+def test_coverage_on_independently_skips_supported_objective(
+    harness, monkeypatch
+):
+    monkeypatch.setenv("RDI_WEB_EVIDENCE_PLANNER", "off")
+    monkeypatch.setenv("RDI_COVERAGE_AWARE_SEARCH", "on")
+    store = EvidenceStore(
+        startup_slug="mantic",
+        chunks=[
+            Chunk(
+                chunk_id="leadgen-packet:funding",
+                text="Mantic announced a seed round.",
+                source_file="https://mantic.example/funding",
+                page_or_slide="stage_and_funding",
+                metadata={
+                    "lineage_source": "leadgen_research_packet",
+                    "objective": "stage_and_funding",
+                    "status": "supports",
+                    "confidence": "medium",
+                    "stale_objective": False,
+                },
+            )
+        ],
+    )
+
+    answer, provenance = asyncio.run(
+        ea.answer_question_from_evidence(
+            "Has the company announced funding?",
+            _company(),
+            store=store,
+            use_web_search=True,
+            web_search_state=_state(),
+        )
+    )
+
+    assert answer == THIN_ANSWER
+    assert harness.searches == []
+    assert provenance["web_search_plan"]["mode"] == "off"
+    assert provenance["web_search_plan"]["coverage_planner"]["mode"] == "on"
+    assert provenance["web_search_plan"]["actual_search_calls"] == 0
+
+
 # --- on mode: planner controls behavior ------------------------------------------
 
 

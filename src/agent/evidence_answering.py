@@ -1497,7 +1497,6 @@ async def answer_question_from_evidence(
                 proposed_search_calls = coverage_plan.proposed_search_count
                 if (
                     coverage_mode == "on"
-                    and planner_mode == "on"
                     and not coverage_plan.external_route
                 ):
                     if coverage_plan.proposed_search_count == 0:
@@ -1532,7 +1531,10 @@ async def answer_question_from_evidence(
             web_search_plan_dict = {"mode": planner_mode, **plan.to_telemetry_dict()}
             if coverage_plan_dict is None:
                 proposed_search_calls = len(plan.queries)
-        planner_controls = planner_mode == "on" and plan is not None
+        coverage_controls = coverage_mode == "on" and coverage_plan_dict is not None
+        planner_controls = (
+            planner_mode == "on" or coverage_controls
+        ) and plan is not None
 
         # Planner skip routes run zero searches and consume no cap slot.
         if needs_search and planner_controls and plan.is_skip:
