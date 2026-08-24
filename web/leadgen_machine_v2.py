@@ -21,6 +21,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from starlette.responses import Response
 
 from web.leadgen_domain import company_source_host, normalize_company_domain
 from web.leadgen_machine import (
@@ -29,22 +30,26 @@ from web.leadgen_machine import (
     _daily_start_limit,
     _machine_actor,
     _require_service_key,
-    _scoring_version,
-    _result_payload as _v1_result_payload,
-    _error_payload as _v1_error_payload,
-    _timestamp,
     _require_start_enabled,
+    _scoring_version,
     _stable_reference,
     _target_environment,
+    _timestamp,
+)
+from web.leadgen_machine import (
+    _error_payload as _v1_error_payload,
+)
+from web.leadgen_machine import (
+    _result_payload as _v1_result_payload,
 )
 from web.specter_quota_broker import (
     BUSINESS_TIMEZONE as BROKER_TIMEZONE,
+)
+from web.specter_quota_broker import (
     public_specter_quota_authorization,
     specter_quota_broker_enforced,
     specter_quota_business_date,
 )
-from starlette.responses import Response
-
 
 CONTRACT_VERSION = "rdi.leadgen-machine.v2"
 SERVICE_ACTOR = "service:rockaway-leadgen"
@@ -53,11 +58,92 @@ BUNDLE_SCHEMA_VERSION_V2 = "frozen-leadgen-evidence-bundle-v2"
 BUNDLE_SCHEMA_VERSION = BUNDLE_SCHEMA_VERSION_V2
 BUSINESS_TIMEZONE = "Europe/Prague"
 V2_ENABLED_ENV = "RDI_LEADGEN_MACHINE_V2_ENABLED"
+RESEARCH_PACKET_SCHEMA_VERSION = "research-evidence-packet-v2"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _SPECTER_ID_RE = re.compile(r"^[0-9a-f]{24}$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _INTAKE_RE = re.compile(r"^rdi-v2-intake-[0-9a-f]{32}$")
 _LEGACY_SCORING_VERSION_BY_PIPELINE = {"v1": "ranking-v1"}
+_RESEARCH_PACKET_FIELDS = frozenset(
+    {
+        "schema_version",
+        "company_ref",
+        "identity",
+        "claims",
+        "contradiction_checked",
+        "objective_coverage",
+        "stale_objectives",
+        "analysis_ready",
+        "specter_refresh_required",
+        "specter_evidence_state",
+        "quota_authorization_id",
+        "assessment",
+        "packet_sha256",
+    }
+)
+_RESEARCH_PACKET_IDENTITY_FIELDS = frozenset({"domain", "website_url"})
+_RESEARCH_PACKET_STATES = frozenset(
+    {
+        "not_required",
+        "cached_complete",
+        "cached_partial",
+        "fresh_authorized",
+        "fresh_deferred_quota",
+        "unavailable",
+    }
+)
+_RESEARCH_OBJECTIVES = (
+    "european_connection",
+    "stage_and_funding",
+    "founder_prior_execution",
+    "founder_market_fit",
+    "product_software_usp",
+    "customer_or_deployment",
+    "commercial_traction",
+    "moat_or_defensibility",
+    "market_problem_and_buyer",
+    "momentum",
+)
+_RESEARCH_OBJECTIVE_CATEGORIES = {
+    "european_connection": "geography",
+    "stage_and_funding": "funding",
+    "founder_prior_execution": "team",
+    "founder_market_fit": "team",
+    "product_software_usp": "product",
+    "customer_or_deployment": "traction",
+    "commercial_traction": "traction",
+    "moat_or_defensibility": "product",
+    "market_problem_and_buyer": "market",
+    "momentum": "talent",
+}
+_RESEARCH_CORE_OBJECTIVES = (
+    "european_connection",
+    "stage_and_funding",
+    "product_software_usp",
+    "market_problem_and_buyer",
+)
+_RESEARCH_FOUNDER_OBJECTIVES = (
+    "founder_prior_execution",
+    "founder_market_fit",
+)
+_RESEARCH_CLAIM_METADATA_FIELDS = frozenset(
+    {
+        "source_kind",
+        "packet_sha256",
+        "schema_version",
+        "objective",
+        "evidence_id",
+        "category",
+        "status",
+        "publisher_domain",
+        "observed_at",
+        "published_at",
+        "retrieved_at",
+        "confidence",
+        "confidence_reason_codes",
+        "content_sha256",
+    }
+)
 
 
 def _problem(
@@ -99,17 +185,218 @@ def _require_sha256(value: Any, *, field_name: str) -> str:
     return value
 
 
+def _require_exact_fields(
+    payload: Mapping[str, Any],
+    *,
+    expected_fields: frozenset[str],
+    field_name: str,
+) -> None:
+    if frozenset(payload) != expected_fields:
+        raise ValueError(f"{field_name} fields do not match the canonical schema")
+
+
+def _normalize_packet_host(value: Any, *, field_name: str) -> str:
+    normalized = normalize_company_domain(str(value or ""))
+    if not normalized:
+        raise ValueError(f"{field_name} must be a canonical hostname")
+    return normalized
+
+
+def _derived_research_packet_fields(
+    payload: Mapping[str, Any],
+    *,
+    canonical_domain: str,
+) -> dict[str, Any]:
+    raw_claims = payload.get("claims")
+    if not isinstance(raw_claims, list):
+        raise ValueError("research packet claims must be an array")
+    stale_objectives = payload.get("stale_objectives")
+    if not isinstance(stale_objectives, list):
+        raise ValueError("research packet stale_objectives must be an array")
+    stale_objective_set = {str(item) for item in stale_objectives}
+    supported: set[str] = set()
+    contradicted: set[str] = set()
+    contradiction_refs: list[str] = []
+    supporting_signals: list[dict[str, Any]] = []
+    primary_signals: list[dict[str, Any]] = []
+    for claim in raw_claims:
+        if not isinstance(claim, Mapping) or frozenset(claim) != {"objective", "evidence"}:
+            raise ValueError("research packet claims must contain canonical objective/evidence pairs")
+        objective = str(claim.get("objective") or "")
+        if objective not in _RESEARCH_OBJECTIVES:
+            raise ValueError("research packet claim objective is invalid")
+        evidence = claim.get("evidence")
+        if not isinstance(evidence, Mapping):
+            raise ValueError("research packet evidence must be an object")
+        expected_category = _RESEARCH_OBJECTIVE_CATEGORIES[objective]
+        if str(evidence.get("category") or "") != expected_category:
+            raise ValueError("research packet evidence category does not match its objective")
+        if str(evidence.get("subject_company_ref") or "") != canonical_domain:
+            raise ValueError("research packet evidence subject does not match bundle domain")
+        publisher_domain = _normalize_packet_host(
+            evidence.get("publisher_domain"),
+            field_name="research packet evidence publisher_domain",
+        )
+        source_domain = _normalize_packet_host(
+            evidence.get("source_url"),
+            field_name="research packet evidence source_url",
+        )
+        if publisher_domain != source_domain:
+            raise ValueError("research packet evidence publisher_domain does not match source_url")
+        status = str(evidence.get("status") or "")
+        if status == "supports":
+            supported.add(objective)
+            supporting_signals.append(
+                {
+                    "evidence_id": str(evidence.get("evidence_id") or ""),
+                    "producer_origin": str(evidence.get("producer_origin") or ""),
+                    "publisher_domain": publisher_domain,
+                    "source_url": str(evidence.get("source_url") or ""),
+                    "category": expected_category,
+                    "is_primary": bool(evidence.get("is_primary")),
+                    "is_company_owned": bool(evidence.get("is_company_owned")),
+                }
+            )
+            if bool(evidence.get("is_primary")) and bool(evidence.get("is_company_owned")):
+                primary_signals.append(supporting_signals[-1])
+        elif status == "contradicts":
+            contradicted.add(objective)
+            contradiction_refs.append(str(evidence.get("evidence_id") or ""))
+    objective_coverage = {
+        objective: (
+            "contradicted"
+            if objective in contradicted
+            else "stale"
+            if objective in stale_objective_set
+            else "supported"
+            if objective in supported
+            else "missing"
+        )
+        for objective in _RESEARCH_OBJECTIVES
+    }
+    missing_objectives = sorted(
+        objective
+        for objective in _RESEARCH_OBJECTIVES
+        if objective not in supported and objective not in contradicted
+    )
+    independent = {
+        candidate["evidence_id"]
+        for anchor in primary_signals
+        for candidate in supporting_signals
+        if candidate["evidence_id"] != anchor["evidence_id"]
+        and candidate["source_url"] != anchor["source_url"]
+        and candidate["publisher_domain"] != anchor["publisher_domain"]
+        and candidate["producer_origin"] != anchor["producer_origin"]
+        and not company_source_host(candidate["publisher_domain"])
+    }
+    compound_evidence = bool(
+        primary_signals
+        and independent
+        and len({candidate["category"] for candidate in supporting_signals}) >= 2
+        and not contradiction_refs
+    )
+    contradiction_checked = bool(payload.get("contradiction_checked"))
+    assessment = {
+        "missing_objectives": missing_objectives,
+        "contradicted_objectives": sorted(contradicted),
+        "contradiction_refs": contradiction_refs,
+        "contradiction_checked": contradiction_checked,
+        "compound_evidence": compound_evidence,
+        "preferred_research_ready": bool(
+            contradiction_checked
+            and not missing_objectives
+            and compound_evidence
+            and not contradiction_refs
+        ),
+    }
+    has_verified_company_owned_identity = any(
+        candidate["is_primary"]
+        and candidate["is_company_owned"]
+        and (
+            candidate["publisher_domain"] == canonical_domain
+            or candidate["publisher_domain"].endswith(f".{canonical_domain}")
+        )
+        for candidate in supporting_signals
+    )
+    analysis_ready = bool(
+        contradiction_checked
+        and all(objective_coverage[objective] == "supported" for objective in _RESEARCH_CORE_OBJECTIVES)
+        and any(
+            objective_coverage[objective] == "supported"
+            for objective in _RESEARCH_FOUNDER_OBJECTIVES
+        )
+        and has_verified_company_owned_identity
+        and not any(
+            str((claim.get("evidence") or {}).get("category") or "") == "identity"
+            and str((claim.get("evidence") or {}).get("status") or "") == "contradicts"
+            for claim in raw_claims
+            if isinstance(claim, Mapping)
+        )
+    )
+    specter_evidence_state = str(payload.get("specter_evidence_state") or "")
+    specter_refresh_required = specter_evidence_state in {
+        "cached_partial",
+        "fresh_authorized",
+        "fresh_deferred_quota",
+        "unavailable",
+    }
+    return {
+        "objective_coverage": objective_coverage,
+        "assessment": assessment,
+        "analysis_ready": analysis_ready,
+        "specter_refresh_required": specter_refresh_required,
+    }
+
+
 def _validate_research_packet_payload(
     payload: Mapping[str, Any],
     *,
     canonical_domain: str,
 ) -> dict[str, Any]:
+    _require_exact_fields(
+        payload,
+        expected_fields=_RESEARCH_PACKET_FIELDS,
+        field_name="research packet",
+    )
+    if payload.get("schema_version") != RESEARCH_PACKET_SCHEMA_VERSION:
+        raise ValueError("research packet schema_version is invalid")
     identity = payload.get("identity")
     if not isinstance(identity, Mapping):
         raise ValueError("research packet identity must be an object")
+    _require_exact_fields(
+        identity,
+        expected_fields=_RESEARCH_PACKET_IDENTITY_FIELDS,
+        field_name="research packet identity",
+    )
+    company_ref = _domain(payload.get("company_ref"))
+    if company_ref != canonical_domain:
+        raise ValueError("research packet company_ref does not match bundle")
     packet_domain = _domain(identity.get("domain") or identity.get("website_url"))
     if packet_domain != canonical_domain:
         raise ValueError("research packet identity does not match bundle")
+    if not isinstance(payload.get("claims"), list):
+        raise ValueError("research packet claims must be an array")
+    if not isinstance(payload.get("contradiction_checked"), bool):
+        raise ValueError("research packet contradiction_checked must be bool")
+    if not isinstance(payload.get("objective_coverage"), Mapping):
+        raise ValueError("research packet objective_coverage must be an object")
+    if not isinstance(payload.get("stale_objectives"), list):
+        raise ValueError("research packet stale_objectives must be an array")
+    if not isinstance(payload.get("analysis_ready"), bool):
+        raise ValueError("research packet analysis_ready must be bool")
+    if not isinstance(payload.get("specter_refresh_required"), bool):
+        raise ValueError("research packet specter_refresh_required must be bool")
+    specter_evidence_state = payload.get("specter_evidence_state")
+    if (
+        not isinstance(specter_evidence_state, str)
+        or specter_evidence_state not in _RESEARCH_PACKET_STATES
+    ):
+        raise ValueError("research packet specter_evidence_state is invalid")
+    quota_authorization_id = payload.get("quota_authorization_id")
+    if quota_authorization_id not in {None, ""}:
+        _identifier(str(quota_authorization_id))
+    if not isinstance(payload.get("assessment"), Mapping):
+        raise ValueError("research packet assessment must be an object")
     packet_sha256 = _require_sha256(
         payload.get("packet_sha256"),
         field_name="research packet sha256",
@@ -118,32 +405,70 @@ def _validate_research_packet_payload(
     content.pop("packet_sha256", None)
     if _sha256(content) != packet_sha256:
         raise ValueError("research packet hash does not match canonical content")
+    derived = _derived_research_packet_fields(
+        payload,
+        canonical_domain=canonical_domain,
+    )
+    if dict(payload.get("objective_coverage") or {}) != derived["objective_coverage"]:
+        raise ValueError("research packet objective_coverage does not match canonical content")
+    if dict(payload.get("assessment") or {}) != derived["assessment"]:
+        raise ValueError("research packet assessment does not match canonical content")
+    if payload.get("analysis_ready") != derived["analysis_ready"]:
+        raise ValueError("research packet analysis_ready does not match canonical content")
+    if payload.get("specter_refresh_required") != derived["specter_refresh_required"]:
+        raise ValueError(
+            "research packet specter_refresh_required does not match canonical content"
+        )
     return {
         "analysis_ready": payload.get("analysis_ready"),
-        "specter_evidence_state": payload.get("specter_evidence_state"),
-        "quota_authorization_id": payload.get("quota_authorization_id"),
+        "specter_evidence_state": specter_evidence_state,
+        "quota_authorization_id": (
+            None if quota_authorization_id in {None, ""} else str(quota_authorization_id)
+        ),
         "packet_sha256": packet_sha256,
     }
 
 
 def _validate_research_chunk_metadata(
-    chunks: list["BundleChunk"],
+    chunks: list[BundleChunk],
     *,
     packet_sha256: str | None,
 ) -> None:
     for chunk in chunks:
         metadata = chunk.metadata or {}
+        if len(metadata) > 16:
+            raise ValueError("chunk metadata exceeds bounded limits")
         source_kind = metadata.get("source_kind")
         if source_kind != "research_evidence_claim":
             continue
+        if frozenset(metadata) - _RESEARCH_CLAIM_METADATA_FIELDS:
+            raise ValueError("research packet chunk metadata is invalid")
         if packet_sha256 is None:
             raise ValueError("research packet chunks require a research packet payload")
         if metadata.get("packet_sha256") != packet_sha256:
             raise ValueError("research packet chunk metadata does not match bundle packet")
+        if metadata.get("schema_version") != RESEARCH_PACKET_SCHEMA_VERSION:
+            raise ValueError("research packet chunk schema_version is invalid")
         if not isinstance(metadata.get("objective"), str) or not metadata.get("objective"):
             raise ValueError("research packet chunk objective is required")
         if not isinstance(metadata.get("evidence_id"), str) or not metadata.get("evidence_id"):
             raise ValueError("research packet chunk evidence_id is required")
+        for required_text_field in (
+            "category",
+            "status",
+            "publisher_domain",
+            "observed_at",
+            "retrieved_at",
+            "confidence",
+        ):
+            if (
+                not isinstance(metadata.get(required_text_field), str)
+                or not metadata.get(required_text_field)
+            ):
+                raise ValueError(f"research packet chunk {required_text_field} is required")
+        confidence_reason_codes = metadata.get("confidence_reason_codes")
+        if not isinstance(confidence_reason_codes, list):
+            raise ValueError("research packet chunk confidence_reason_codes must be an array")
         if metadata.get("content_sha256") not in {None, ""}:
             _require_sha256(
                 metadata.get("content_sha256"),
@@ -232,6 +557,8 @@ class BundleChunk(BaseModel):
 
 
 class LeadGenAuthorizationManifest(BaseModel):
+    """Immutable LeadGen authorization fields embedded in a frozen bundle."""
+
     model_config = ConfigDict(extra="forbid")
 
     company_id: str
@@ -303,6 +630,8 @@ class BundleSpecterOperation(BaseModel):
 
 
 class FrozenLeadGenEvidenceBundleV1(BaseModel):
+    """Validated frozen LeadGen evidence bundle accepted by the v2 intake API."""
+
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal["frozen-leadgen-evidence-bundle-v1", "frozen-leadgen-evidence-bundle-v2"]
@@ -355,7 +684,7 @@ class FrozenLeadGenEvidenceBundleV1(BaseModel):
         return _identifier(value)
 
     @model_validator(mode="after")
-    def _lineage_matches(self) -> "FrozenLeadGenEvidenceBundleV1":
+    def _lineage_matches(self) -> FrozenLeadGenEvidenceBundleV1:
         if self.authorization.company_id != self.external_company_id:
             raise ValueError("authorization company does not match bundle")
         if self.authorization.canonical_domain != self.canonical_domain:
@@ -376,7 +705,17 @@ class FrozenLeadGenEvidenceBundleV1(BaseModel):
         ):
             raise ValueError("bundle component payload hash does not match")
         packet_details: dict[str, Any] | None = None
-        if self.schema_version == BUNDLE_SCHEMA_VERSION_V2 and self.research_evidence_packet:
+        if self.schema_version == BUNDLE_SCHEMA_VERSION_V2:
+            required_fields = {
+                "analysis_ready",
+                "specter_evidence_state",
+                "quota_authorization_id",
+                "research_evidence_packet",
+            }
+            if not required_fields.issubset(self.model_fields_set):
+                raise ValueError("bundle v2 requires packet mirror fields")
+            if not self.research_evidence_packet:
+                raise ValueError("bundle v2 requires a research packet")
             packet_details = _validate_research_packet_payload(
                 self.research_evidence_packet,
                 canonical_domain=self.canonical_domain,
@@ -398,6 +737,8 @@ class FrozenLeadGenEvidenceBundleV1(BaseModel):
                 != packet_details["quota_authorization_id"]
             ):
                 raise ValueError("bundle quota authorization does not match research packet")
+            if self.analysis_ready and self.requires_specter_mcp:
+                raise ValueError("analysis-ready bundle-complete packets must not require Specter")
         _validate_research_chunk_metadata(
             self.evidence_chunks,
             packet_sha256=(
@@ -407,6 +748,7 @@ class FrozenLeadGenEvidenceBundleV1(BaseModel):
         return self
 
     def canonical_payload(self) -> dict[str, Any]:
+        """Return the persisted canonical payload without introducing hash drift."""
         # Preserve the exact canonical shape accepted from older v2 producers:
         # newly optional audit fields must not silently change their hash.
         return self.model_dump(mode="json", exclude_none=False, exclude_unset=True)
@@ -509,7 +851,7 @@ class MachineV2SpecterReservationRequest(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def _require_scope_anchor(self) -> "MachineV2SpecterReservationRequest":
+    def _require_scope_anchor(self) -> MachineV2SpecterReservationRequest:
         if self.intake_id is None and self.company_ref is None:
             raise ValueError("company_ref or intake_id is required")
         return self
@@ -576,7 +918,10 @@ StartAdapter = Callable[
 
 
 class MachineV2Dependencies:
+    """Runtime collaborators required by the LeadGen machine v2 router."""
+
     def __init__(self, *, store: MachineV2Store | None, start_adapter: StartAdapter) -> None:
+        """Store the persistence adapter and delegated start implementation."""
         self.store = store
         self.start_adapter = start_adapter
 
@@ -743,6 +1088,7 @@ def _v2_error_payload(record: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def build_leadgen_machine_v2_router(dependencies: MachineV2Dependencies) -> APIRouter:
+    """Build the authenticated LeadGen machine v2 API surface."""
     router = APIRouter(route_class=MachineV2AuthenticatedRoute)
 
     @router.put(

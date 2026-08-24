@@ -18,13 +18,172 @@ from web.leadgen_machine_v2 import (
     canonical_bundle_sha256,
 )
 
-
 SERVICE_HEADERS = {"X-LeadGen-Service-Key": "unit-test-machine-key"}
 PRAGUE_DATE = datetime.now(timezone.utc).astimezone(ZoneInfo("Europe/Prague")).date().isoformat()
 
 
 def _canonical(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode()
+
+
+def _canonical_packet() -> dict[str, Any]:
+    claims = [
+        {
+            "objective": "european_connection",
+            "evidence": {
+                "evidence_id": "evidence-europe",
+                "producer_origin": "public-web-research:http:news.example",
+                "source_family": "public-web-research",
+                "subject_company_ref": "acme.example",
+                "publisher_domain": "news.example",
+                "category": "geography",
+                "claim": "Acme operates from Prague.",
+                "status": "supports",
+                "source_url": "https://news.example/acme-europe",
+                "observed_at": "2026-08-21T08:00:00Z",
+                "is_primary": False,
+                "is_company_owned": False,
+                "provenance_ref": "test:europe",
+                "published_at": None,
+                "retrieved_at": "2026-08-21T08:00:00Z",
+                "confidence": "medium",
+                "confidence_reason_codes": [],
+                "content_sha256": None,
+            },
+        },
+        {
+            "objective": "stage_and_funding",
+            "evidence": {
+                "evidence_id": "evidence-funding",
+                "producer_origin": "public-web-research:http:news.example",
+                "source_family": "public-web-research",
+                "subject_company_ref": "acme.example",
+                "publisher_domain": "news.example",
+                "category": "funding",
+                "claim": "Acme raised a pre-seed round.",
+                "status": "supports",
+                "source_url": "https://news.example/acme-funding",
+                "observed_at": "2026-08-21T08:01:00Z",
+                "is_primary": False,
+                "is_company_owned": False,
+                "provenance_ref": "test:funding",
+                "published_at": None,
+                "retrieved_at": "2026-08-21T08:01:00Z",
+                "confidence": "medium",
+                "confidence_reason_codes": [],
+                "content_sha256": None,
+            },
+        },
+        {
+            "objective": "product_software_usp",
+            "evidence": {
+                "evidence_id": "evidence-product",
+                "producer_origin": "public-web-research:company:acme.example",
+                "source_family": "public-web-research",
+                "subject_company_ref": "acme.example",
+                "publisher_domain": "acme.example",
+                "category": "product",
+                "claim": "Acme sells workflow automation software.",
+                "status": "supports",
+                "source_url": "https://acme.example/product",
+                "observed_at": "2026-08-21T08:02:00Z",
+                "is_primary": True,
+                "is_company_owned": True,
+                "provenance_ref": "test:product",
+                "published_at": None,
+                "retrieved_at": "2026-08-21T08:02:00Z",
+                "confidence": "medium",
+                "confidence_reason_codes": [],
+                "content_sha256": None,
+            },
+        },
+        {
+            "objective": "market_problem_and_buyer",
+            "evidence": {
+                "evidence_id": "evidence-market",
+                "producer_origin": "public-web-research:http:news.example",
+                "source_family": "public-web-research",
+                "subject_company_ref": "acme.example",
+                "publisher_domain": "news.example",
+                "category": "market",
+                "claim": "Acme sells to industrial procurement teams.",
+                "status": "supports",
+                "source_url": "https://news.example/acme-market",
+                "observed_at": "2026-08-21T08:03:00Z",
+                "is_primary": False,
+                "is_company_owned": False,
+                "provenance_ref": "test:market",
+                "published_at": None,
+                "retrieved_at": "2026-08-21T08:03:00Z",
+                "confidence": "medium",
+                "confidence_reason_codes": [],
+                "content_sha256": None,
+            },
+        },
+        {
+            "objective": "founder_prior_execution",
+            "evidence": {
+                "evidence_id": "evidence-founder",
+                "producer_origin": "public-web-research:http:news.example",
+                "source_family": "public-web-research",
+                "subject_company_ref": "acme.example",
+                "publisher_domain": "news.example",
+                "category": "team",
+                "claim": "The founder previously built supply-chain software.",
+                "status": "supports",
+                "source_url": "https://news.example/acme-founder",
+                "observed_at": "2026-08-21T08:04:00Z",
+                "is_primary": False,
+                "is_company_owned": False,
+                "provenance_ref": "test:founder",
+                "published_at": None,
+                "retrieved_at": "2026-08-21T08:04:00Z",
+                "confidence": "medium",
+                "confidence_reason_codes": [],
+                "content_sha256": None,
+            },
+        },
+    ]
+    packet = {
+        "schema_version": "research-evidence-packet-v2",
+        "company_ref": "acme.example",
+        "identity": {"domain": "acme.example", "website_url": "https://acme.example"},
+        "claims": claims,
+        "contradiction_checked": True,
+        "objective_coverage": {
+            "commercial_traction": "missing",
+            "customer_or_deployment": "missing",
+            "european_connection": "supported",
+            "founder_market_fit": "missing",
+            "founder_prior_execution": "supported",
+            "market_problem_and_buyer": "supported",
+            "moat_or_defensibility": "missing",
+            "momentum": "missing",
+            "product_software_usp": "supported",
+            "stage_and_funding": "supported",
+        },
+        "stale_objectives": [],
+        "analysis_ready": True,
+        "specter_refresh_required": True,
+        "specter_evidence_state": "cached_partial",
+        "quota_authorization_id": "quota-auth-1",
+        "assessment": {
+            "missing_objectives": [
+                "commercial_traction",
+                "customer_or_deployment",
+                "founder_market_fit",
+                "moat_or_defensibility",
+                "momentum",
+            ],
+            "contradicted_objectives": [],
+            "contradiction_refs": [],
+            "contradiction_checked": True,
+            "compound_evidence": True,
+            "preferred_research_ready": False,
+        },
+    }
+    packet["packet_sha256"] = hashlib.sha256(_canonical(packet)).hexdigest()
+    return packet
 
 
 def _bundle(
@@ -98,28 +257,7 @@ def _bundle(
         },
     }
     if schema_version == "frozen-leadgen-evidence-bundle-v2":
-        packet = {
-            "schema_version": "research-evidence-packet-v2",
-            "company_ref": "acme.example",
-            "identity": {"domain": "acme.example", "website_url": "https://acme.example"},
-            "claims": [],
-            "contradiction_checked": True,
-            "objective_coverage": {},
-            "stale_objectives": [],
-            "analysis_ready": True,
-            "specter_refresh_required": True,
-            "specter_evidence_state": "cached_partial",
-            "quota_authorization_id": "quota-auth-1",
-            "assessment": {
-                "missing_objectives": [],
-                "contradicted_objectives": [],
-                "contradiction_refs": [],
-                "contradiction_checked": True,
-                "compound_evidence": False,
-                "preferred_research_ready": False,
-            },
-        }
-        packet["packet_sha256"] = hashlib.sha256(_canonical(packet)).hexdigest()
+        packet = _canonical_packet()
         bundle.update(
             analysis_ready=True,
             specter_evidence_state="cached_partial",
@@ -129,8 +267,16 @@ def _bundle(
         bundle["evidence_chunks"][0]["metadata"] = {
             "source_kind": "research_evidence_claim",
             "packet_sha256": bundle["research_evidence_packet"]["packet_sha256"],
+            "schema_version": "research-evidence-packet-v2",
             "objective": "founder_prior_execution",
-            "evidence_id": "evidence-1",
+            "evidence_id": "evidence-founder",
+            "category": "team",
+            "status": "supports",
+            "publisher_domain": "news.example",
+            "observed_at": "2026-08-21T08:04:00Z",
+            "retrieved_at": "2026-08-21T08:04:00Z",
+            "confidence": "medium",
+            "confidence_reason_codes": [],
         }
     return bundle
 
@@ -497,6 +643,26 @@ def test_v2_bundle_rejects_noncanonical_research_packet_hash() -> None:
         schema_version="frozen-leadgen-evidence-bundle-v2",
     )
     bundle["research_evidence_packet"]["packet_sha256"] = "0" * 64
+    digest = hashlib.sha256(_canonical(bundle)).hexdigest()
+
+    response = client.put(
+        f"/api/machine/leadgen/v2/evidence-bundles/{digest}",
+        headers=SERVICE_HEADERS,
+        json=bundle,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "machine_v2_request_invalid"
+
+
+def test_v2_bundle_rejects_missing_research_packet() -> None:
+    store = FakeV2Store()
+    client = _client(store, [])
+    bundle = _bundle(
+        requires_specter_mcp=False,
+        schema_version="frozen-leadgen-evidence-bundle-v2",
+    )
+    bundle["research_evidence_packet"] = None
     digest = hashlib.sha256(_canonical(bundle)).hexdigest()
 
     response = client.put(
