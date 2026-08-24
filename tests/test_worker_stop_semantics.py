@@ -181,6 +181,15 @@ def _drive_process_job(
                 reset_hint="00:00 UTC",
                 error_message="Daily MCP limit reached (250 tool calls/day). Resets at 00:00 UTC.",
             )
+        if subprocess_status == "provider":
+            raise scw._SpecterWorkerProviderBlocked(
+                attempted_company_index=len(processed),
+                total_companies=n_companies,
+                completed_companies=completed_companies,
+                failed_companies=failed_companies,
+                error_code="specter_mcp_unavailable",
+                error_message="Specter MCP is temporarily unavailable.",
+            )
         if subprocess_status == "error":
             return (completed_companies, failed_companies + 1)
         return (completed_companies + 1, failed_companies)
@@ -285,3 +294,21 @@ def test_quota_exhaustion_parks_job_without_failing_company_or_batch(monkeypatch
     assert fake_db.heartbeats[-1]["completed_companies"] == 0
     assert fake_db.heartbeats[-1]["failed_companies"] == 0
     assert any(e.get("event_type") == "specter_mcp_quota_wait" for e in fake_db.events)
+
+
+def test_provider_outage_parks_job_without_failing_company_or_batch(monkeypatch):
+    fake_db, processed = _drive_process_job(
+        monkeypatch,
+        n_companies=3,
+        subprocess_status="provider",
+        load_job_results_payload=None,
+    )
+
+    assert processed == ["co1"]
+    assert fake_db.finished is None
+    assert fake_db.snapshots == []
+    assert fake_db.heartbeats[-1]["status"] == "queued"
+    assert fake_db.heartbeats[-1]["progress"] == "Waiting for Specter provider recovery."
+    assert fake_db.heartbeats[-1]["completed_companies"] == 0
+    assert fake_db.heartbeats[-1]["failed_companies"] == 0
+    assert any(e.get("event_type") == "specter_mcp_provider_wait" for e in fake_db.events)

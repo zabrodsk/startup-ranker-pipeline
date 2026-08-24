@@ -91,10 +91,19 @@ def _last_event(capsys) -> dict:
     return json.loads(lines[-1][len(scw.EVENT_PREFIX):])
 
 
-def test_url_fetch_failure_emits_structured_event_and_persists(tmp_path, monkeypatch, capsys):
-    """A Specter outage during fetch must produce a company_complete{error}
-    event + persisted failure row instead of a bare non-zero exit."""
+def test_url_provider_failure_parks_without_persisting_company_failure(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    """A provider-side Specter failure remains pending for automatic recovery."""
     calls = _capture_failure_persistence(monkeypatch)
+    gate_trips = []
+    monkeypatch.setattr(
+        scw,
+        "trip_specter_quota_gate",
+        lambda store, **kw: gate_trips.append({"store": store, **kw}) or {"state": "blocked"},
+    )
 
     def _boom(*args, **kwargs):
         raise SpecterMCPError("Specter token refresh failed (400): invalid_grant")
@@ -106,21 +115,18 @@ def test_url_fetch_failure_emits_structured_event_and_persists(tmp_path, monkeyp
     assert rc == 0
     event = _last_event(capsys)
     assert event["type"] == "company_complete"
-    assert event["status"] == "error"
+    assert event["status"] == "blocked"
+    assert event["provider_blocked"] is True
+    assert event["error_code"] == "specter_mcp_unavailable"
     assert event["company_name"] == "Acme"
     assert event["absolute_index"] == 3
-    assert "invalid_grant" in event["error"]
-
-    assert len(calls["errors"]) == 1
-    assert calls["errors"][0]["stage"] == "specter_company_worker.fetch"
-    assert calls["errors"][0]["company_slug"] == "acme"
-    assert "invalid_grant" in calls["errors"][0]["message"]
-
-    assert len(calls["failures"]) == 1
-    row = calls["failures"][0]["result_row"]
-    assert row["analysis_status"] == "error"
-    assert row["company_name"] == "Acme"
-    assert row["final_state"]["all_qa_pairs"] == []
+    assert event["error"] == "Specter MCP is temporarily unavailable."
+    assert calls["errors"] == []
+    assert calls["failures"] == []
+    assert calls["events"][0]["event_type"] == "specter_mcp_provider_blocked"
+    assert len(gate_trips) == 1
+    assert gate_trips[0]["reason_code"] == "specter_mcp_unavailable"
+    assert gate_trips[0]["retry_after_seconds"] == 300
 
 
 def test_csv_ingest_failure_synthesizes_identity_from_index(tmp_path, monkeypatch, capsys):
@@ -200,8 +206,9 @@ def test_fetch_failure_event_still_emitted_when_persistence_fails(tmp_path, monk
 
     assert rc == 0
     event = _last_event(capsys)
-    assert event["status"] == "error"
-    assert "boom" in event["error"]
+    assert event["status"] == "blocked"
+    assert event["provider_blocked"] is True
+    assert event["error_code"] == "specter_mcp_unavailable"
 
 
 def test_complete_frozen_bundle_reconstructs_inputs_without_specter(monkeypatch):

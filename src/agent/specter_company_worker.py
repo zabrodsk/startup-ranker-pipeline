@@ -20,6 +20,10 @@ from agent.dataclasses.company import Company
 from agent.ingest.specter_ingest import _company_slug, ingest_specter_company
 from agent.ingest.specter_mcp_client import (
     SPECTER_MCP_QUOTA_ERROR_CODE,
+    SPECTER_MCP_UNAVAILABLE_ERROR_CODE,
+    SpecterCompanyNotFoundError,
+    SpecterDisambiguationError,
+    SpecterMCPError,
     SpecterQuotaLimitError,
     fetch_specter_company,
     specter_quota_reset_hint,
@@ -153,9 +157,21 @@ def _handle_fetch_failure(
     and the UI shows the specific message instead of a generic exit code.
     """
     quota_exhausted = isinstance(exc, SpecterQuotaLimitError)
+    provider_unavailable = isinstance(exc, SpecterMCPError) and not isinstance(
+        exc,
+        (SpecterCompanyNotFoundError, SpecterDisambiguationError),
+    )
+    provider_blocked = quota_exhausted or provider_unavailable
+    provider_error_code = (
+        SPECTER_MCP_QUOTA_ERROR_CODE
+        if quota_exhausted
+        else SPECTER_MCP_UNAVAILABLE_ERROR_CODE
+    )
     error_message = (
         "Specter MCP quota exhausted."
         if quota_exhausted
+        else "Specter MCP is temporarily unavailable."
+        if provider_unavailable
         else f"{type(exc).__name__}: {exc}"[:1000]
     )
     name = (
@@ -166,23 +182,33 @@ def _handle_fetch_failure(
     slug = _company_slug(name) or f"company-{args.absolute_index}"
     company = Company(name=name)
     store = EvidenceStore(startup_slug=slug, chunks=[])
-    status = "blocked" if quota_exhausted else "error"
+    status = "blocked" if provider_blocked else "error"
     reset_hint = getattr(exc, "reset_hint", None) or specter_quota_reset_hint(error_message)
     try:
-        if quota_exhausted:
+        if provider_blocked:
             trip_specter_quota_gate(
                 db,
                 error=exc,
                 source_component="specter_company_worker",
                 source_job_id=job_id,
+                retry_after_seconds=None if quota_exhausted else 300,
+                reason_code=provider_error_code,
             )
             db.insert_analysis_event(
                 job_id,
-                message="Specter MCP quota exhausted; analysis is waiting for provider reset.",
-                event_type="specter_mcp_quota_blocked",
+                message=(
+                    "Specter MCP quota exhausted; analysis is waiting for provider reset."
+                    if quota_exhausted
+                    else "Specter MCP is temporarily unavailable; analysis is waiting for provider recovery."
+                ),
+                event_type=(
+                    "specter_mcp_quota_blocked"
+                    if quota_exhausted
+                    else "specter_mcp_provider_blocked"
+                ),
                 stage="specter_company_worker.fetch",
                 payload={
-                    "error_code": SPECTER_MCP_QUOTA_ERROR_CODE,
+                    "error_code": provider_error_code,
                     "quota_remaining": "unknown",
                     "reset_hint": reset_hint,
                 },
@@ -239,10 +265,12 @@ def _handle_fetch_failure(
         "error": error_message[:500],
         "error_type": type(exc).__name__,
     }
-    if quota_exhausted:
-        event["quota_exhausted"] = True
-        event["error_code"] = SPECTER_MCP_QUOTA_ERROR_CODE
+    if provider_blocked:
+        event["provider_blocked"] = True
+        event["error_code"] = provider_error_code
         event["quota_remaining"] = "unknown"
+        if quota_exhausted:
+            event["quota_exhausted"] = True
         if reset_hint:
             event["reset_hint"] = reset_hint
     _emit_event(event)

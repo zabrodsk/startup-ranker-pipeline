@@ -30,7 +30,11 @@ from agent.ingest.specter_ingest import (
     list_specter_companies,
 )
 from agent.ingest.store import EvidenceStore
-from agent.ingest.specter_mcp_client import get_default_client
+from agent.ingest.specter_mcp_client import (
+    SPECTER_MCP_QUOTA_ERROR_CODE,
+    SPECTER_MCP_UNAVAILABLE_ERROR_CODE,
+    get_default_client,
+)
 from web import app as web_app
 import web.db as db
 from web.specter_quota_gate import (
@@ -40,7 +44,6 @@ from web.specter_quota_gate import (
 )
 
 EVENT_PREFIX = "__SPECTER_COMPANY_EVENT__"
-SPECTER_MCP_QUOTA_ERROR_CODE = "specter_mcp_quota_exhausted"
 POLL_SECONDS = max(1, int(os.getenv("SPECTER_WORKER_POLL_SECONDS", "5")))
 HEARTBEAT_SECONDS = max(10, int(os.getenv("SPECTER_WORKER_HEARTBEAT_SECONDS", "20")))
 FINALIZATION_ATTEMPTS = 3
@@ -55,7 +58,7 @@ def _worker_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}"
 
 
-class _SpecterWorkerQuotaExhausted(RuntimeError):
+class _SpecterWorkerProviderBlocked(RuntimeError):
     def __init__(
         self,
         *,
@@ -63,6 +66,7 @@ class _SpecterWorkerQuotaExhausted(RuntimeError):
         total_companies: int,
         completed_companies: int,
         failed_companies: int,
+        error_code: str,
         reset_hint: str | None = None,
         error_message: str | None = None,
     ) -> None:
@@ -70,9 +74,15 @@ class _SpecterWorkerQuotaExhausted(RuntimeError):
         self.total_companies = total_companies
         self.completed_companies = completed_companies
         self.failed_companies = failed_companies
+        self.error_code = error_code
         self.reset_hint = reset_hint
-        self.error_message = error_message or "Specter MCP quota exhausted."
+        self.error_message = error_message or "Specter MCP is temporarily unavailable."
         super().__init__(self.error_message)
+
+
+class _SpecterWorkerQuotaExhausted(_SpecterWorkerProviderBlocked):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(error_code=SPECTER_MCP_QUOTA_ERROR_CODE, **kwargs)
 
 
 def _job_requires_specter_mcp(job: dict[str, Any]) -> bool:
@@ -101,19 +111,29 @@ async def _specter_mcp_availability() -> dict[str, Any] | None:
         return None
 
 
-def _park_job_for_specter_quota(
+def _park_job_for_specter_provider(
     job_id: str,
     *,
     worker_id: str,
     completed_companies: int,
     failed_companies: int,
     total_companies: int,
+    error_code: str,
 ) -> None:
-    message = "Waiting for Specter quota reset."
+    quota_exhausted = error_code == SPECTER_MCP_QUOTA_ERROR_CODE
+    message = (
+        "Waiting for Specter quota reset."
+        if quota_exhausted
+        else "Waiting for Specter provider recovery."
+    )
     db.insert_analysis_event(
         job_id,
         message=message,
-        event_type="specter_mcp_quota_wait",
+        event_type=(
+            "specter_mcp_quota_wait"
+            if quota_exhausted
+            else "specter_mcp_provider_wait"
+        ),
         stage="worker_wait",
     )
     db.heartbeat_specter_worker_job(
@@ -351,13 +371,20 @@ async def _persist_final_snapshot_with_retry(
     return False
 
 
-def _quota_exhausted_final_message(info: _SpecterWorkerQuotaExhausted) -> str:
+def _provider_blocked_final_message(info: _SpecterWorkerProviderBlocked) -> str:
     remaining = max(0, info.total_companies - info.attempted_company_index)
-    message = (
-        "Specter MCP quota exhausted after "
-        f"{info.attempted_company_index}/{info.total_companies} attempts; "
-        f"{remaining} companies were not started."
-    )
+    if info.error_code == SPECTER_MCP_QUOTA_ERROR_CODE:
+        message = (
+            "Specter MCP quota exhausted after "
+            f"{info.attempted_company_index}/{info.total_companies} attempts; "
+            f"{remaining} companies were not started."
+        )
+    else:
+        message = (
+            "Specter MCP became unavailable after "
+            f"{info.attempted_company_index}/{info.total_companies} attempts; "
+            f"{remaining} companies were not started."
+        )
     if info.reset_hint:
         message = f"{message} Reset: {info.reset_hint}."
     return message
@@ -696,19 +723,35 @@ async def _run_company_subprocess(
                 elif event_type == "company_complete":
                     saw_completion_event = True
                     status = str(event.get("status") or "done").strip().lower()
+                    error_code = str(event.get("error_code") or "").strip()
                     quota_exhausted = bool(event.get("quota_exhausted")) or (
-                        str(event.get("error_code") or "") == SPECTER_MCP_QUOTA_ERROR_CODE
+                        error_code == SPECTER_MCP_QUOTA_ERROR_CODE
                     )
-                    if quota_exhausted:
+                    provider_blocked = bool(event.get("provider_blocked")) or error_code in {
+                        SPECTER_MCP_QUOTA_ERROR_CODE,
+                        SPECTER_MCP_UNAVAILABLE_ERROR_CODE,
+                    }
+                    if provider_blocked:
                         with contextlib.suppress(Exception):
                             await asyncio.wait_for(process.wait(), timeout=5)
-                        raise _SpecterWorkerQuotaExhausted(
-                            attempted_company_index=absolute_index,
-                            total_companies=total_companies,
-                            completed_companies=completed_companies,
-                            failed_companies=failed_companies,
-                            reset_hint=str(event.get("reset_hint") or "").strip() or None,
-                            error_message="Specter MCP quota exhausted.",
+                        blocked_error = (
+                            _SpecterWorkerQuotaExhausted
+                            if quota_exhausted
+                            else _SpecterWorkerProviderBlocked
+                        )
+                        blocked_kwargs = {
+                            "attempted_company_index": absolute_index,
+                            "total_companies": total_companies,
+                            "completed_companies": completed_companies,
+                            "failed_companies": failed_companies,
+                            "reset_hint": str(event.get("reset_hint") or "").strip() or None,
+                            "error_message": str(event.get("error") or "").strip()
+                            or "Specter MCP is temporarily unavailable.",
+                        }
+                        if not quota_exhausted:
+                            blocked_kwargs["error_code"] = error_code or SPECTER_MCP_UNAVAILABLE_ERROR_CODE
+                        raise blocked_error(
+                            **blocked_kwargs,
                         )
                     if status in {"error", "timeout"}:
                         company_failed = True
@@ -840,7 +883,7 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
             )
 
         stopped = False
-        quota_exhausted: _SpecterWorkerQuotaExhausted | None = None
+        provider_blocked: _SpecterWorkerProviderBlocked | None = None
         for absolute_index, task in enumerate(tasks, start=1):
             # Poll the persisted stop signal once per company (companies are the
             # atomic unit; an in-flight company finishes and persists before the
@@ -856,12 +899,16 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
             if task.get("mode") == "url":
                 availability = await _specter_mcp_availability()
                 if availability is None or not availability.get("accepting_new_analyses"):
-                    _park_job_for_specter_quota(
+                    _park_job_for_specter_provider(
                         job_id,
                         worker_id=worker_id,
                         completed_companies=completed_companies,
                         failed_companies=failed_companies,
                         total_companies=total_companies,
+                        error_code=str(
+                            (availability or {}).get("reason_code")
+                            or SPECTER_MCP_UNAVAILABLE_ERROR_CODE
+                        ),
                     )
                     return
             try:
@@ -882,16 +929,17 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
                     completed_companies=completed_companies,
                     failed_companies=failed_companies,
                 )
-            except _SpecterWorkerQuotaExhausted as exc:
-                quota_exhausted = exc
+            except _SpecterWorkerProviderBlocked as exc:
+                provider_blocked = exc
                 completed_companies = exc.completed_companies
                 failed_companies = exc.failed_companies
-                _park_job_for_specter_quota(
+                _park_job_for_specter_provider(
                     job_id,
                     worker_id=worker_id,
                     completed_companies=completed_companies,
                     failed_companies=failed_companies,
                     total_companies=total_companies,
+                    error_code=exc.error_code,
                 )
                 return
             completed_keys.add(company_key)
@@ -909,7 +957,7 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
             worker_id=worker_id,
         )
         no_persisted_company_results_expected = completed_companies <= 0 and bool(
-            stopped or quota_exhausted or failed_companies > 0
+            stopped or provider_blocked or failed_companies > 0
         )
         results = (
             None
@@ -917,7 +965,7 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
             else await _load_final_results_with_retry(job_id)
         )
         if results is None:
-            if stopped or quota_exhausted or (completed_companies <= 0 and failed_companies > 0):
+            if stopped or provider_blocked or (completed_companies <= 0 and failed_companies > 0):
                 # No company_runs exist when every company failed before a
                 # trustworthy company result could be persisted. Still write a
                 # terminal snapshot so the UI surfaces the real failure.
@@ -927,9 +975,9 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
         if stopped:
             final_status = "stopped"
             final_message = f"Stopped by user — {completed_companies}/{total_companies} companies ranked"
-        elif quota_exhausted:
+        elif provider_blocked:
             final_status = "error"
-            final_message = _quota_exhausted_final_message(quota_exhausted)
+            final_message = _provider_blocked_final_message(provider_blocked)
         else:
             final_status, final_message = _final_job_outcome(
                 completed_companies=completed_companies,
@@ -941,11 +989,11 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
         if results.get("mode") == "batch":
             results["num_companies"] = completed_companies
             results["num_skipped"] = failed_companies
-        if quota_exhausted:
-            results["error_code"] = SPECTER_MCP_QUOTA_ERROR_CODE
+        if provider_blocked:
+            results["error_code"] = provider_blocked.error_code
             results["quota_remaining"] = "unknown"
-            if quota_exhausted.reset_hint:
-                results["reset_hint"] = quota_exhausted.reset_hint
+            if provider_blocked.reset_hint:
+                results["reset_hint"] = provider_blocked.reset_hint
         if "run_costs" not in results:
             run_costs = db.load_run_costs(job_id)
             if isinstance(run_costs, dict):
@@ -959,11 +1007,11 @@ async def _process_job(job: dict[str, Any], worker_id: str) -> None:
             "total_companies": total_companies,
             "worker_service_enabled": True,
         }
-        if quota_exhausted:
-            worker_state["error_code"] = SPECTER_MCP_QUOTA_ERROR_CODE
+        if provider_blocked:
+            worker_state["error_code"] = provider_blocked.error_code
             worker_state["quota_remaining"] = "unknown"
-            if quota_exhausted.reset_hint:
-                worker_state["reset_hint"] = quota_exhausted.reset_hint
+            if provider_blocked.reset_hint:
+                worker_state["reset_hint"] = provider_blocked.reset_hint
 
         if not await _persist_final_snapshot_with_retry(
             job_id,

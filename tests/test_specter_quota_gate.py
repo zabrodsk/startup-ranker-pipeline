@@ -197,6 +197,27 @@ def test_trip_records_the_shared_gate_with_safe_metadata(monkeypatch: pytest.Mon
     ]
 
 
+def test_trip_records_temporary_provider_outage_with_short_recovery_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = FakeGateStore()
+    monkeypatch.setenv("SPECTER_MCP_QUOTA_GATE_MODE", "enforce")
+
+    availability = trip_specter_quota_gate(
+        store,
+        error=RuntimeError("provider transport unavailable"),
+        source_component="specter_company_worker",
+        source_job_id="job-1",
+        retry_after_seconds=300,
+        reason_code="specter_mcp_unavailable",
+    )
+
+    assert availability["accepting_new_analyses"] is False
+    assert store.trip_calls[0]["reason_code"] == "specter_mcp_unavailable"
+    assert store.trip_calls[0]["retry_after_seconds"] == 300
+    assert store.trip_calls[0]["reset_hint"] is None
+
+
 def test_recovery_probe_opens_gate_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
     store = FakeGateStore(_blocked_state())
     monkeypatch.setenv("SPECTER_MCP_QUOTA_GATE_MODE", "enforce")

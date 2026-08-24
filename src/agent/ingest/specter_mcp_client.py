@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 SPECTER_PROFILE_BASE_URL = "https://app.tryspecter.com/signals/company/feed/"
 SPECTER_MCP_QUOTA_ERROR_CODE = "specter_mcp_quota_exhausted"
+SPECTER_MCP_UNAVAILABLE_ERROR_CODE = "specter_mcp_unavailable"
 
 _QUOTA_LIMIT_PATTERNS = (
     re.compile(r"\b(?:daily\s+)?mcp\s+limit\s+reached\b", re.IGNORECASE),
@@ -53,7 +54,13 @@ _QUOTA_LIMIT_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(
-        r"\bmcp\s+calls?\s+(?:are\s+)?paused\s+until\s+(?:the\s+)?(?:daily\s+)?reset\b",
+        r"\byou(?:'ve|\s+have)\s+used\s+today'?s\s+\d+\s+mcp\s+credits?\b"
+        r"[^\n]{0,240}\bno\s+api\s+credits?\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bmcp\s+(?:calls?\s+(?:are\s+)?|is\s+)paused\s+until\s+"
+        r"(?:the\s+)?(?:daily\s+)?(?:limit\s+)?resets?\b",
         re.IGNORECASE,
     ),
 )

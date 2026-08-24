@@ -87,6 +87,11 @@ def test_quota_message_helpers_detect_daily_limit_and_reset_hint():
     "message",
     [
         (
+            "You've used today's 100 MCP credits. Your account has no API credits "
+            "to cover the overflow, so MCP is paused until the daily limit resets "
+            "at 00:00 UTC."
+        ),
+        (
             "You have used all your 100 MCP credits today. "
             "MCP calls are paused until the daily reset at 00:00 UTC."
         ),
@@ -156,6 +161,42 @@ def test_quota_tool_error_receives_exactly_one_attempt(monkeypatch):
     with pytest.raises(SpecterQuotaLimitError):
         client._call_tool("find_company", {"identifier": "galtea.ai"})
     assert calls == 1
+
+
+def test_exact_production_quota_tool_error_receives_exactly_one_attempt(monkeypatch):
+    client = object.__new__(SpecterMCPClient)
+    calls = 0
+
+    monkeypatch.setattr(client, "_ensure_initialized", lambda: None)
+
+    def raw_request(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return {
+            "isError": True,
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "You've used today's 100 MCP credits. Your account has no API "
+                        "credits to cover the overflow, so MCP is paused until the daily "
+                        "limit resets at 00:00 UTC."
+                    ),
+                }
+            ],
+        }
+
+    monkeypatch.setattr(client, "_raw_request", raw_request)
+    monkeypatch.setattr(
+        "agent.ingest.specter_mcp_client.time.sleep",
+        lambda _seconds: pytest.fail("quota error entered retry backoff"),
+    )
+
+    with pytest.raises(SpecterQuotaLimitError) as exc_info:
+        client._call_tool("get_company_profile", {"external_company_id": "company-1"})
+
+    assert calls == 1
+    assert exc_info.value.reset_hint == "00:00 UTC"
 
 
 def test_transient_tool_error_retains_bounded_retries(monkeypatch):

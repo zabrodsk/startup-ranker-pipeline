@@ -136,6 +136,7 @@ def trip_specter_quota_gate(
     source_component: str,
     source_job_id: str | None = None,
     retry_after_seconds: int | None = None,
+    reason_code: str = SPECTER_MCP_QUOTA_ERROR_CODE,
 ) -> dict[str, Any]:
     enforced = specter_quota_gate_enforced()
     gate_trip = getattr(store, "trip_specter_mcp_quota_gate", None)
@@ -145,7 +146,8 @@ def trip_specter_quota_gate(
                 "Specter MCP quota gate could not persist quota exhaustion."
             )
         logger.warning(
-            "Specter MCP quota exhausted but gate storage is unavailable: source=%s job=%s",
+            "Specter MCP provider block could not be persisted: reason=%s source=%s job=%s",
+            reason_code,
             source_component,
             source_job_id or "-",
         )
@@ -157,7 +159,7 @@ def trip_specter_quota_gate(
     payload = gate_trip(
         target_environment=specter_quota_target_environment(),
         enforcement_enabled=enforced,
-        reason_code=SPECTER_MCP_QUOTA_ERROR_CODE,
+        reason_code=reason_code,
         reset_hint=reset_hint,
         source_component=source_component,
         source_job_id=source_job_id,
