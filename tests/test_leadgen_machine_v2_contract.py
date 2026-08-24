@@ -118,6 +118,8 @@ class FakeV2Store:
             "reason_code": None,
         }
         self.started_count = 0
+        self.authorizations: dict[str, dict[str, Any]] = {}
+        self.authorization_events: list[dict[str, Any]] = []
 
     def is_configured(self) -> bool:
         return True
@@ -194,6 +196,98 @@ class FakeV2Store:
     def load_machine_v2_lifecycle(self, intake_id: str) -> dict[str, Any] | None:
         row = self.intakes.get(intake_id)
         return deepcopy(row) if row else None
+
+    def reserve_specter_quota_authorization(self, **request: Any) -> dict[str, Any]:
+        authorization_id = f"specter-auth-{len(self.authorizations) + 1:064x}"
+        for record in self.authorizations.values():
+            if record.get("idempotency_key") == request["idempotency_key"]:
+                return deepcopy(record)
+        if not self.availability["accepting_new_analyses"]:
+            record = {
+                "authorization_id": authorization_id,
+                "idempotency_key": request["idempotency_key"],
+                "target_environment": request["target_environment"],
+                "operation": request["operation"],
+                "quota_class": request["quota_class"],
+                "company_ref": request["company_ref"],
+                "intake_id": (request.get("metadata") or {}).get("intake_id"),
+                "status": "denied",
+                "circuit_state": self.availability["state"],
+                "business_date": request["business_date"],
+                "retry_at": self.availability["blocked_until"],
+                "reason": self.availability["reason_code"],
+                "estimated_remaining": 0,
+                "state": "blocked",
+            }
+            self.authorizations[authorization_id] = deepcopy(record)
+            self.authorization_events.append({"event_type": "deny", "authorization_id": authorization_id})
+            return record
+        record = {
+            "authorization_id": authorization_id,
+            "idempotency_key": request["idempotency_key"],
+            "target_environment": request["target_environment"],
+            "operation": request["operation"],
+            "quota_class": request["quota_class"],
+            "company_ref": request["company_ref"],
+            "intake_id": (request.get("metadata") or {}).get("intake_id"),
+            "status": "reserved",
+            "circuit_state": "closed",
+            "business_date": request["business_date"],
+            "retry_at": None,
+            "reason": None,
+            "estimated_remaining": 144,
+            "state": "open",
+        }
+        self.authorizations[authorization_id] = deepcopy(record)
+        self.authorization_events.append({"event_type": "reserve", "authorization_id": authorization_id})
+        return record
+
+    def commit_specter_quota_authorization(self, **request: Any) -> dict[str, Any]:
+        record = deepcopy(self.authorizations[request["authorization_id"]])
+        assert record["target_environment"] == request["target_environment"]
+        assert record["operation"] == request["operation"]
+        if record.get("intake_id") is not None:
+            assert request.get("intake_id") == record["intake_id"]
+        elif request.get("intake_id") is not None and record.get("intake_id") is not None:
+            assert record["intake_id"] == request["intake_id"]
+        if record["status"] != "reserved":
+            return record
+        record["status"] = (
+            "committed"
+            if request["outcome"] == "succeeded"
+            else "provider_quota_exhausted"
+            if request["provider_quota_error"]
+            else "provider_unavailable"
+        )
+        if record["status"] == "provider_quota_exhausted":
+            record["circuit_state"] = "open"
+            record["state"] = "blocked"
+            record["reason"] = request.get("reason_code") or "specter_mcp_quota_exhausted"
+            record["retry_at"] = "2026-08-25T00:00:00Z"
+            record["estimated_remaining"] = 0
+        elif record["status"] == "provider_unavailable":
+            record["circuit_state"] = "probing"
+            record["state"] = "probing"
+            record["reason"] = request.get("reason_code") or "specter_mcp_unavailable"
+        self.authorizations[request["authorization_id"]] = deepcopy(record)
+        self.authorization_events.append({"event_type": "commit", "authorization_id": request["authorization_id"]})
+        return record
+
+    def release_specter_quota_authorization(self, **request: Any) -> dict[str, Any]:
+        record = deepcopy(self.authorizations[request["authorization_id"]])
+        assert record["target_environment"] == request["target_environment"]
+        assert record["operation"] == request["operation"]
+        if record.get("intake_id") is not None:
+            assert request.get("intake_id") == record["intake_id"]
+        elif request.get("intake_id") is not None and record.get("intake_id") is not None:
+            assert record["intake_id"] == request["intake_id"]
+        if record["status"] != "reserved":
+            return record
+        record["status"] = "released"
+        record["reason"] = request.get("reason_code")
+        self.authorizations[request["authorization_id"]] = deepcopy(record)
+        self.authorization_events.append({"event_type": "release", "authorization_id": request["authorization_id"]})
+        return record
 
 
 def _client(store: FakeV2Store, starts: list[dict[str, Any]]) -> TestClient:
@@ -412,3 +506,217 @@ def test_bundle_hash_mismatch_fails_before_persistence() -> None:
 
     assert response.status_code == 409
     assert store.bundles == {}
+
+
+def test_machine_v2_broker_reservation_denial_prevents_dispatch() -> None:
+    store = FakeV2Store()
+    starts: list[dict[str, Any]] = []
+    client = _client(store, starts)
+    digest = _upload(client, _bundle(requires_specter_mcp=True))
+    client.post(
+        "/api/machine/leadgen/v2/intakes", headers=SERVICE_HEADERS, json=_intake(digest)
+    ).raise_for_status()
+    store.availability.update(
+        accepting_new_analyses=False,
+        state="open",
+        blocked_until="2026-08-25T00:00:00Z",
+        reason_code="specter_mcp_quota_exhausted",
+    )
+
+    response = client.post(
+        "/api/machine/leadgen/v2/specter/reservations",
+        headers=SERVICE_HEADERS,
+        json={
+            "target_environment": "staging",
+            "business_timezone": "Europe/Prague",
+            "consumer": "rdi",
+            "company_ref": "domain:acme.example",
+            "operation": "get_company_profile",
+            "quota_class": "autonomous_campaign",
+            "idempotency_key": "auth-1",
+            "remaining_rdi_slots": 12,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "deferred"
+    assert response.json()["status_internal"] == "denied"
+    assert response.json()["circuit_state"] == "open"
+    assert response.json()["state"] == "blocked"
+    assert response.json()["retry_at"] == "2026-08-25T00:00:00Z"
+    assert starts == []
+
+
+def test_machine_v2_broker_commit_and_release_routes_return_stable_contract() -> None:
+    store = FakeV2Store()
+    client = _client(store, [])
+    digest = _upload(client, _bundle(requires_specter_mcp=True))
+    client.post(
+        "/api/machine/leadgen/v2/intakes", headers=SERVICE_HEADERS, json=_intake(digest)
+    ).raise_for_status()
+
+    reserved = client.post(
+        "/api/machine/leadgen/v2/specter/reservations",
+        headers=SERVICE_HEADERS,
+        json={
+            "target_environment": "staging",
+            "business_timezone": "Europe/Prague",
+            "consumer": "rdi",
+            "company_ref": "domain:acme.example",
+            "operation": "get_company_profile",
+            "quota_class": "autonomous_campaign",
+            "idempotency_key": "auth-2",
+            "remaining_rdi_slots": 12,
+        },
+    ).json()
+
+    committed = client.post(
+        f"/api/machine/leadgen/v2/specter/reservations/{reserved['authorization_id']}/commit",
+        headers=SERVICE_HEADERS,
+        json={
+            "target_environment": "staging",
+            "operation": "get_company_profile",
+            "outcome": "failed",
+            "provider_quota_error": True,
+            "reason_code": "specter_mcp_quota_exhausted",
+        },
+    )
+
+    released = client.post(
+        f"/api/machine/leadgen/v2/specter/reservations/{reserved['authorization_id']}/release",
+        headers=SERVICE_HEADERS,
+        json={
+            "target_environment": "staging",
+            "operation": "get_company_profile",
+            "outcome": "released",
+            "provider_quota_error": False,
+            "reason_code": "not_dispatched",
+        },
+    )
+
+    assert committed.status_code == 200
+    assert committed.json()["authorization_id"] == reserved["authorization_id"]
+    assert committed.json()["status"] == "provider_quota_exhausted"
+    assert committed.json()["circuit_state"] == "open"
+    assert committed.json()["reason"] == "specter_mcp_quota_exhausted"
+    assert released.status_code == 200
+    assert released.json()["authorization_id"] == reserved["authorization_id"]
+    assert released.json()["status"] == "provider_quota_exhausted"
+
+
+def test_machine_v2_broker_reservation_accepts_intake_scoped_requests_without_company_ref() -> None:
+    store = FakeV2Store()
+    client = _client(store, [])
+    digest = _upload(client, _bundle(requires_specter_mcp=True))
+    intake_id = client.post(
+        "/api/machine/leadgen/v2/intakes", headers=SERVICE_HEADERS, json=_intake(digest)
+    ).json()["intake_id"]
+
+    response = client.post(
+        "/api/machine/leadgen/v2/specter/reservations",
+        headers=SERVICE_HEADERS,
+        json={
+            "intake_id": intake_id,
+            "target_environment": "staging",
+            "business_timezone": "Europe/Prague",
+            "consumer": "rdi",
+            "operation": "get_company_profile",
+            "quota_class": "flexible_pool",
+            "idempotency_key": "auth-3",
+            "remaining_rdi_slots": 12,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "authorized"
+    assert response.json()["status_internal"] == "reserved"
+
+
+def test_intake_scoped_authorization_cannot_commit_without_matching_intake() -> None:
+    store = FakeV2Store()
+    client = _client(store, [])
+    digest = _upload(client, _bundle(requires_specter_mcp=True))
+    intake_id = client.post(
+        "/api/machine/leadgen/v2/intakes", headers=SERVICE_HEADERS, json=_intake(digest)
+    ).json()["intake_id"]
+    authorization_id = client.post(
+        "/api/machine/leadgen/v2/specter/reservations",
+        headers=SERVICE_HEADERS,
+        json={
+            "intake_id": intake_id,
+            "target_environment": "staging",
+            "business_timezone": "Europe/Prague",
+            "consumer": "rdi",
+            "operation": "get_company_profile",
+            "quota_class": "autonomous_campaign",
+            "idempotency_key": "auth-4",
+            "remaining_rdi_slots": 12,
+        },
+    ).json()["authorization_id"]
+
+    with pytest.raises(AssertionError):
+        store.commit_specter_quota_authorization(
+            authorization_id=authorization_id,
+            target_environment="staging",
+            operation="get_company_profile",
+            outcome="succeeded",
+            provider_quota_error=False,
+            reason_code=None,
+            intake_id=None,
+            actor="service:rockaway-leadgen",
+        )
+
+    with pytest.raises(AssertionError):
+        store.commit_specter_quota_authorization(
+            authorization_id=authorization_id,
+            target_environment="staging",
+            operation="get_company_profile",
+            outcome="succeeded",
+            provider_quota_error=False,
+            reason_code=None,
+            intake_id="rdi-v2-intake-" + "b" * 32,
+            actor="service:rockaway-leadgen",
+        )
+
+
+def test_intake_scoped_authorization_cannot_release_without_matching_intake() -> None:
+    store = FakeV2Store()
+    client = _client(store, [])
+    digest = _upload(client, _bundle(requires_specter_mcp=True))
+    intake_id = client.post(
+        "/api/machine/leadgen/v2/intakes", headers=SERVICE_HEADERS, json=_intake(digest)
+    ).json()["intake_id"]
+    authorization_id = client.post(
+        "/api/machine/leadgen/v2/specter/reservations",
+        headers=SERVICE_HEADERS,
+        json={
+            "intake_id": intake_id,
+            "target_environment": "staging",
+            "business_timezone": "Europe/Prague",
+            "consumer": "rdi",
+            "operation": "get_company_profile",
+            "quota_class": "autonomous_campaign",
+            "idempotency_key": "auth-5",
+            "remaining_rdi_slots": 12,
+        },
+    ).json()["authorization_id"]
+
+    with pytest.raises(AssertionError):
+        store.release_specter_quota_authorization(
+            authorization_id=authorization_id,
+            target_environment="staging",
+            operation="get_company_profile",
+            intake_id=None,
+            reason_code="not_dispatched",
+            actor="service:rockaway-leadgen",
+        )
+
+    with pytest.raises(AssertionError):
+        store.release_specter_quota_authorization(
+            authorization_id=authorization_id,
+            target_environment="staging",
+            operation="get_company_profile",
+            intake_id="rdi-v2-intake-" + "b" * 32,
+            reason_code="not_dispatched",
+            actor="service:rockaway-leadgen",
+        )

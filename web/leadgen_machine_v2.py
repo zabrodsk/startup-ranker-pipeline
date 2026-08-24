@@ -37,6 +37,12 @@ from web.leadgen_machine import (
     _stable_reference,
     _target_environment,
 )
+from web.specter_quota_broker import (
+    BUSINESS_TIMEZONE as BROKER_TIMEZONE,
+    public_specter_quota_authorization,
+    specter_quota_broker_enforced,
+    specter_quota_business_date,
+)
 from starlette.responses import Response
 
 
@@ -352,6 +358,94 @@ class MachineV2StartRequest(BaseModel):
     business_timezone: Literal["Europe/Prague"]
 
 
+class MachineV2SpecterReservationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_environment: Literal["staging", "production"]
+    business_timezone: Literal["Europe/Prague"]
+    consumer: str
+    company_ref: str | None = None
+    operation: str
+    quota_class: Literal[
+        "flex",
+        "flexible_pool",
+        "manual_batch",
+        "promoted_candidate_refresh",
+        "scheduled_import",
+        "recovery_probe",
+        "autonomous_campaign",
+    ]
+    idempotency_key: str
+    remaining_rdi_slots: int | None = Field(default=None, ge=0, le=20)
+    intake_id: str | None = None
+
+    @field_validator("consumer", "operation", "idempotency_key")
+    @classmethod
+    def _safe_identifier(cls, value: str) -> str:
+        return _identifier(value)
+
+    @field_validator("company_ref")
+    @classmethod
+    def _safe_company_ref(cls, value: str | None) -> str | None:
+        if value in {None, ""}:
+            return None
+        if (
+            not isinstance(value, str)
+            or len(value) > 255
+            or value != value.strip()
+            or any(ord(character) < 32 or ord(character) == 127 for character in value)
+        ):
+            raise ValueError("must be bounded clean text")
+        return value
+
+    @field_validator("intake_id")
+    @classmethod
+    def _safe_intake_id(cls, value: str | None) -> str | None:
+        if value in {None, ""}:
+            return None
+        if not _INTAKE_RE.fullmatch(value):
+            raise ValueError("must be a machine v2 intake id")
+        return value
+
+    @model_validator(mode="after")
+    def _require_scope_anchor(self) -> "MachineV2SpecterReservationRequest":
+        if self.intake_id is None and self.company_ref is None:
+            raise ValueError("company_ref or intake_id is required")
+        return self
+
+
+class MachineV2SpecterFinalizeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_environment: Literal["staging", "production"]
+    operation: str
+    outcome: Literal["succeeded", "failed", "released"]
+    provider_quota_error: bool = False
+    reason_code: str | None = None
+    intake_id: str | None = None
+
+    @field_validator("operation")
+    @classmethod
+    def _operation(cls, value: str) -> str:
+        return _identifier(value)
+
+    @field_validator("reason_code")
+    @classmethod
+    def _reason_code(cls, value: str | None) -> str | None:
+        if value in {None, ""}:
+            return None
+        return _identifier(value)
+
+    @field_validator("intake_id")
+    @classmethod
+    def _finalize_intake_id(cls, value: str | None) -> str | None:
+        if value in {None, ""}:
+            return None
+        if not _INTAKE_RE.fullmatch(value):
+            raise ValueError("must be a machine v2 intake id")
+        return value
+
+
 class MachineV2Store(Protocol):
     def is_configured(self) -> bool: ...
 
@@ -366,6 +460,12 @@ class MachineV2Store(Protocol):
     def release_machine_v2_start(self, **record: Any) -> dict[str, Any] | None: ...
 
     def load_machine_v2_lifecycle(self, intake_id: str) -> dict[str, Any] | None: ...
+
+    def reserve_specter_quota_authorization(self, **record: Any) -> dict[str, Any] | None: ...
+
+    def commit_specter_quota_authorization(self, **record: Any) -> dict[str, Any] | None: ...
+
+    def release_specter_quota_authorization(self, **record: Any) -> dict[str, Any] | None: ...
 
 
 StartAdapter = Callable[
@@ -618,6 +718,97 @@ def build_leadgen_machine_v2_router(dependencies: MachineV2Dependencies) -> APIR
         if result.get("action") == "conflict":
             raise _problem(409, "machine_v2_intake_conflict", "The idempotent intake has different content.")
         return _status_payload(result)
+
+    @router.post("/api/machine/leadgen/v2/specter/reservations", status_code=201)
+    async def reserve_specter_quota(
+        request: MachineV2SpecterReservationRequest,
+    ) -> dict[str, Any]:
+        _require_v2_enabled()
+        target_environment = _target_environment(request.target_environment)
+        if request.business_timezone != BROKER_TIMEZONE:
+            raise _problem(409, "machine_v2_broker_timezone_invalid", "Machine v2 broker timezone is invalid.")
+        store = _require_store(dependencies)
+        company_ref = request.company_ref
+        metadata: dict[str, Any] = {}
+        if request.intake_id is not None:
+            lifecycle = store.load_machine_v2_lifecycle(request.intake_id)
+            if lifecycle is None:
+                raise _problem(404, "machine_v2_intake_not_found", "Machine v2 intake was not found.")
+            if lifecycle.get("target_environment") != target_environment:
+                raise _problem(409, "machine_v2_intake_environment_mismatch", "Machine v2 intake environment does not match.")
+            metadata["intake_id"] = request.intake_id
+            if company_ref is None:
+                company_ref = f"domain:{lifecycle['canonical_domain']}"
+        result = store.reserve_specter_quota_authorization(
+            target_environment=target_environment,
+            business_date=specter_quota_business_date(),
+            business_timezone=request.business_timezone,
+            consumer=request.consumer,
+            company_ref=company_ref,
+            operation=request.operation,
+            quota_class=request.quota_class,
+            idempotency_key=request.idempotency_key,
+            enforcement_enabled=specter_quota_broker_enforced(),
+            remaining_rdi_slots=request.remaining_rdi_slots,
+            actor=SERVICE_ACTOR,
+            metadata=metadata,
+        )
+        if result is None:
+            raise _problem(503, "machine_v2_broker_reservation_failed", "Specter quota reservation could not be persisted.")
+        return {
+            "contract_version": CONTRACT_VERSION,
+            **public_specter_quota_authorization(result),
+        }
+
+    @router.post("/api/machine/leadgen/v2/specter/reservations/{authorization_id}/commit")
+    async def commit_specter_quota(
+        authorization_id: str,
+        request: MachineV2SpecterFinalizeRequest,
+    ) -> dict[str, Any]:
+        _require_v2_enabled()
+        if request.outcome == "released":
+            raise _problem(409, "machine_v2_broker_finalize_invalid", "Specter quota commit outcome is invalid.")
+        target_environment = _target_environment(request.target_environment)
+        result = _require_store(dependencies).commit_specter_quota_authorization(
+            authorization_id=authorization_id,
+            target_environment=target_environment,
+            operation=request.operation,
+            outcome=request.outcome,
+            provider_quota_error=bool(request.provider_quota_error),
+            reason_code=request.reason_code,
+            intake_id=request.intake_id,
+            actor=SERVICE_ACTOR,
+        )
+        if result is None:
+            raise _problem(503, "machine_v2_broker_commit_failed", "Specter quota commit could not be persisted.")
+        return {
+            "contract_version": CONTRACT_VERSION,
+            **public_specter_quota_authorization(result),
+        }
+
+    @router.post("/api/machine/leadgen/v2/specter/reservations/{authorization_id}/release")
+    async def release_specter_quota(
+        authorization_id: str,
+        request: MachineV2SpecterFinalizeRequest,
+    ) -> dict[str, Any]:
+        _require_v2_enabled()
+        if request.outcome != "released":
+            raise _problem(409, "machine_v2_broker_finalize_invalid", "Specter quota release outcome is invalid.")
+        target_environment = _target_environment(request.target_environment)
+        result = _require_store(dependencies).release_specter_quota_authorization(
+            authorization_id=authorization_id,
+            target_environment=target_environment,
+            operation=request.operation,
+            intake_id=request.intake_id,
+            reason_code=request.reason_code,
+            actor=SERVICE_ACTOR,
+        )
+        if result is None:
+            raise _problem(503, "machine_v2_broker_release_failed", "Specter quota release could not be persisted.")
+        return {
+            "contract_version": CONTRACT_VERSION,
+            **public_specter_quota_authorization(result),
+        }
 
     @router.post("/api/machine/leadgen/v2/intakes/{intake_id}/start", status_code=202)
     async def start_intake(intake_id: str, request: MachineV2StartRequest) -> dict[str, Any]:
