@@ -158,12 +158,14 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from agent.dataclasses.company import Company
 from agent.dataclasses.question_tree import QuestionNode, QuestionTree
+from agent.coverage_planner import build_coverage_search_plan, resolve_coverage_search_mode
 from agent.ingest.store import Chunk, EvidenceStore
 from agent.llm import create_llm
 from agent.prompt_library.manager import get_prompt
 from agent.rate_limit import gather_with_concurrency
 from agent.retrieval import retrieve_chunks, retrieve_chunks_with_similarity
 from agent.web_search.planner import (
+    SearchQuerySpec,
     WebSearchPlan,
     build_web_search_plan,
     evaluate_web_result_relevance,
@@ -910,6 +912,16 @@ async def _prepare_shared_web_evidence(
 CHUNK_PREVIEW_CHARS = 200
 WEB_RESULTS_TRUNCATE = 8000
 
+
+def _packet_chunks(store: EvidenceStore | None) -> list[Chunk]:
+    if store is None:
+        return []
+    return [
+        chunk
+        for chunk in getattr(store, "chunks", []) or []
+        if str(getattr(chunk, "metadata", {}).get("lineage_source") or "") == "leadgen_research_packet"
+    ]
+
 async def answer_question_from_evidence(
     question: str,
     company: Company,
@@ -977,6 +989,9 @@ async def answer_question_from_evidence(
     web_search_plan_dict: dict[str, Any] | None = None
     skip_prediction_dict: dict[str, Any] | None = None
     targeted_skip_dict: dict[str, Any] | None = None
+    coverage_plan_dict: dict[str, Any] | None = None
+    proposed_search_calls = 0
+    actual_search_calls = 0
 
     def _provenance() -> dict:
         prov: dict[str, Any] = {
@@ -991,6 +1006,10 @@ async def answer_question_from_evidence(
         if web_search_plan_dict is not None:
             prov["web_search_route"] = web_search_route
             prov["web_search_plan"] = web_search_plan_dict
+            prov["web_search_plan"]["proposed_search_calls"] = proposed_search_calls
+            prov["web_search_plan"]["actual_search_calls"] = actual_search_calls
+            if coverage_plan_dict is not None:
+                prov["web_search_plan"]["coverage_planner"] = coverage_plan_dict
         # Skip-gate prediction (Sprint 4 C) — present only in shadow/on modes.
         if skip_prediction_dict is not None:
             prov["skip_unanswerable"] = skip_prediction_dict
@@ -1023,6 +1042,7 @@ async def answer_question_from_evidence(
     async def _do_llm_call() -> tuple[str, dict]:
         nonlocal web_search_query, web_search_results, web_search_used, web_search_decision
         nonlocal web_search_route, web_search_plan_dict, skip_prediction_dict, targeted_skip_dict
+        nonlocal coverage_plan_dict, proposed_search_calls, actual_search_calls
         policy = get_current_pipeline_policy()
 
         async def _hybrid_answer(web_results_text: str) -> str:
@@ -1052,7 +1072,7 @@ async def answer_question_from_evidence(
             one cap slot each, sharing a single WEB_SEARCH_TIMEOUT_SEC wall-clock
             budget so multi-query plans cannot blow the LLM_ANSWER_TIMEOUT_SEC
             envelope around the whole answer."""
-            nonlocal web_search_query, web_search_results, web_search_used, web_search_decision
+            nonlocal web_search_query, web_search_results, web_search_used, web_search_decision, actual_search_calls
             executed: list[str] = []
             accepted_blocks: list[str] = []
             accepted = 0
@@ -1210,6 +1230,7 @@ async def answer_question_from_evidence(
                     "skipped: cap reached" if cap_reached else "skipped: no queries executed"
                 )
                 return grounded
+            actual_search_calls = len(executed)
             if not accepted:
                 web_search_decision = (
                     f"skipped: {accepted}/{len(executed)} results passed {gate} gate{cache_suffix}"
@@ -1435,8 +1456,12 @@ async def answer_question_from_evidence(
         # WebEvidencePlanner (Sprint 2): build a route-aware plan in shadow/on
         # modes. Shadow only records the plan; legacy behavior runs unchanged.
         planner_mode = _web_evidence_planner_mode()
+        coverage_mode = resolve_coverage_search_mode()
         plan: WebSearchPlan | None = None
-        if needs_search and planner_mode in ("shadow", "on"):
+        if needs_search and (
+            planner_mode in ("shadow", "on")
+            or coverage_mode in ("shadow", "on")
+        ):
             from datetime import datetime
 
             plan = build_web_search_plan(
@@ -1450,8 +1475,58 @@ async def answer_question_from_evidence(
                 aspect=aspect,
                 is_root=is_root,
             )
+            coverage_plan = build_coverage_search_plan(
+                question=question,
+                company_name=company.name,
+                route=plan.route.value,
+                aspect=aspect,
+                legacy_query_count=len(plan.queries),
+                packet_entries=[
+                    dict(getattr(chunk, "metadata", {}) or {})
+                    for chunk in _packet_chunks(store)
+                ],
+                mode=coverage_mode,
+            )
+            if coverage_plan is not None:
+                coverage_plan_dict = coverage_plan.to_telemetry_dict()
+                proposed_search_calls = coverage_plan.proposed_search_count
+                if (
+                    coverage_mode == "on"
+                    and planner_mode == "on"
+                    and not coverage_plan.external_route
+                ):
+                    if coverage_plan.proposed_search_count == 0:
+                        plan = WebSearchPlan(
+                            route=plan.route,
+                            queries=(),
+                            relevance_policy=plan.relevance_policy,
+                            skip_reason="coverage planner found all mapped objectives already supported",
+                            rationale=f"{plan.rationale}|coverage:on",
+                        )
+                    else:
+                        domain_filter = (
+                            None
+                            if not plan.queries
+                            else plan.queries[0].domain_filter
+                        )
+                        plan = WebSearchPlan(
+                            route=plan.route,
+                            queries=tuple(
+                                SearchQuerySpec(
+                                    query=item["query"],
+                                    domain_filter=domain_filter,
+                                    purpose=item["reason"],
+                                )
+                                for item in coverage_plan_dict["proposed_queries"]
+                            ),
+                            relevance_policy=plan.relevance_policy,
+                            skip_reason=None,
+                            rationale=f"{plan.rationale}|coverage:on",
+                        )
             web_search_route = plan.route.value
             web_search_plan_dict = {"mode": planner_mode, **plan.to_telemetry_dict()}
+            if coverage_plan_dict is None:
+                proposed_search_calls = len(plan.queries)
         planner_controls = planner_mode == "on" and plan is not None
 
         # Planner skip routes run zero searches and consume no cap slot.
@@ -1491,6 +1566,7 @@ async def answer_question_from_evidence(
 
         if do_search:
             web_search_decision = "attempted"
+            actual_search_calls = 1
             web_search_query = _build_web_search_query(company, question)
             domain_filter = _web_search_domain_filter(company, question)
             cache_info: dict[str, Any] = {}

@@ -19,7 +19,7 @@ if str(SRC) not in sys.path:
 
 from agent import evidence_answering as ea
 from agent.dataclasses.company import Company
-from agent.ingest.store import Chunk
+from agent.ingest.store import Chunk, EvidenceStore
 
 THIN_ANSWER = "Insufficient information available."
 HYBRID_ANSWER = "Hybrid answer citing [chunk_0] and [web]."
@@ -206,6 +206,51 @@ def test_shadow_mode_skip_route_still_searches(harness, monkeypatch):
     assert len(harness.searches) == 1  # legacy search still ran
     assert prov["web_search_route"] == "skip_public_web"
     assert prov["web_search_plan"]["queries"] == []
+
+
+def test_shadow_mode_records_coverage_proposed_vs_actual_without_changing_searches(
+    harness, monkeypatch
+):
+    monkeypatch.setenv("RDI_WEB_EVIDENCE_PLANNER", "off")
+    monkeypatch.setenv("RDI_COVERAGE_AWARE_SEARCH", "shadow")
+    store = EvidenceStore(
+        startup_slug="mantic",
+        chunks=[
+            Chunk(
+                chunk_id="leadgen-packet:funding",
+                text="Mantic announced a seed round.",
+                source_file="leadgen:research_packet",
+                page_or_slide="stage_and_funding",
+                metadata={
+                    "lineage_source": "leadgen_research_packet",
+                    "objective": "stage_and_funding",
+                    "status": "supports",
+                    "confidence": "medium",
+                    "stale_objective": False,
+                },
+            )
+        ],
+    )
+
+    answer, prov = asyncio.run(
+        ea.answer_question_from_evidence(
+            "Has the company announced funding?",
+            _company(),
+            store=store,
+            use_web_search=True,
+            web_search_state=_state(),
+        )
+    )
+
+    assert answer == HYBRID_ANSWER
+    assert len(harness.searches) == 1
+    assert harness.searches[0]["query"] == ea._build_web_search_query(_company(), "Has the company announced funding?")
+    coverage = prov["web_search_plan"]["coverage_planner"]
+    assert prov["web_search_plan"]["mode"] == "off"
+    assert coverage["mode"] == "shadow"
+    assert coverage["objective_states"]["stage_and_funding"] == "supported"
+    assert prov["web_search_plan"]["proposed_search_calls"] == 0
+    assert prov["web_search_plan"]["actual_search_calls"] == 1
 
 
 # --- on mode: planner controls behavior ------------------------------------------
