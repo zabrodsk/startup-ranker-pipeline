@@ -1138,6 +1138,22 @@ def _terminal_history_overrides_active_worker(
     return heartbeat_at is None or status_at >= heartbeat_at
 
 
+def _active_worker_supersedes_terminal_analysis(
+    latest_analysis: dict[str, Any],
+    worker_state: dict[str, Any],
+) -> bool:
+    """Return whether an explicitly re-queued worker is newer than an old snapshot."""
+    worker_status = str(worker_state.get("status") or "").strip().lower()
+    analysis_status = str(latest_analysis.get("status") or "").strip().lower()
+    if worker_status not in WORKER_ACTIVE_STATUSES:
+        return False
+    if analysis_status not in {"done", "error", "stopped"}:
+        return False
+    heartbeat_at = _parse_timestamp(worker_state.get("last_heartbeat_at"))
+    analysis_at = _parse_timestamp(latest_analysis.get("created_at"))
+    return bool(heartbeat_at and analysis_at and heartbeat_at > analysis_at)
+
+
 def _merge_worker_state(
     run_config: dict[str, Any] | None,
     updates: dict[str, Any] | None,
@@ -3380,7 +3396,10 @@ def load_job_status(job_id_legacy: str) -> dict[str, Any] | None:
         status = str(latest_status.get("status") or status).strip().lower()
         progress = latest_status.get("progress") or progress
         worker_active = False
-    elif worker_active and analysis_status not in {"done", "error", "stopped"}:
+    elif worker_active and (
+        analysis_status not in {"done", "error", "stopped"}
+        or _active_worker_supersedes_terminal_analysis(latest_analysis, worker_state)
+    ):
         status = worker_status if worker_status != "claimed" else "running"
         progress = worker_progress or progress
     elif analysis_status in {"done", "error", "stopped"} and (
@@ -3588,7 +3607,10 @@ def list_saved_jobs(limit: int = 200) -> list[dict[str, Any]]:
                 status = str(latest_status.get("status") or status).strip().lower()
                 progress = latest_status.get("progress") or progress
                 worker_active = False
-            elif worker_active and analysis_status not in {"done", "error", "stopped"}:
+            elif worker_active and (
+                analysis_status not in {"done", "error", "stopped"}
+                or _active_worker_supersedes_terminal_analysis(latest_analysis, worker_state)
+            ):
                 status = worker_status if worker_status != "claimed" else "running"
                 progress = worker_progress or progress
             elif analysis_status in {"done", "error", "stopped"} and (

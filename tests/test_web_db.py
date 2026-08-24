@@ -1048,6 +1048,77 @@ def test_load_job_status_prefers_active_worker_state_over_stale_status_history(m
     }
 
 
+def test_load_job_status_prefers_requeued_worker_over_older_error_snapshot(monkeypatch) -> None:
+    import web.db as web_db
+
+    class FakeResponse:
+        def __init__(self, data):
+            self.data = data
+
+    class FakeQuery:
+        def __init__(self, table_name: str):
+            self.table_name = table_name
+
+        def select(self, *_args, **_kwargs):
+            return self
+
+        def eq(self, *_args, **_kwargs):
+            return self
+
+        def order(self, *_args, **_kwargs):
+            return self
+
+        def limit(self, *_args, **_kwargs):
+            return self
+
+        def execute(self):
+            if self.table_name == "jobs":
+                return FakeResponse(
+                    [{
+                        "run_config": {
+                            "worker_state": {
+                                "status": "queued",
+                                "progress": "Waiting for Specter quota reset.",
+                                "last_heartbeat_at": "2026-08-24T16:49:25Z",
+                            }
+                        }
+                    }]
+                )
+            if self.table_name == "job_status_history":
+                return FakeResponse(
+                    [{
+                        "status": "running",
+                        "progress": "Queued for automatic recovery...",
+                        "created_at": "2026-08-24T16:49:13Z",
+                    }]
+                )
+            raise AssertionError(f"Unexpected table lookup: {self.table_name}")
+
+    class FakeClient:
+        def table(self, table_name: str):
+            return FakeQuery(table_name)
+
+    monkeypatch.setattr(web_db, "_get_client", lambda: FakeClient())
+    monkeypatch.setattr(
+        web_db,
+        "_load_latest_analysis_snapshot",
+        lambda client, job_id_legacy: {
+            "status": "error",
+            "created_at": "2026-08-24T13:55:00Z",
+            "results_payload": {
+                "job_status": "error",
+                "job_message": "No companies were successfully evaluated. 2/2 failed.",
+            },
+        },
+    )
+
+    assert web_db.load_job_status("job-123") == {
+        "status": "queued",
+        "progress": "Waiting for Specter quota reset.",
+        "worker_active": True,
+    }
+
+
 def test_load_job_status_marks_stale_worker_execution_interrupted(monkeypatch) -> None:
     import web.db as web_db
 
