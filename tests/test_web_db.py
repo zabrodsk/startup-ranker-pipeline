@@ -1,9 +1,9 @@
 import importlib
 import logging
 import sys
-from types import SimpleNamespace
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -147,6 +147,38 @@ def test_compact_company_run_payload_preserves_company_links() -> None:
     assert payload["specter_profile_url"] == (
         "https://app.tryspecter.com/signals/company/feed/61643d92c3c073075bcb8983"
     )
+
+
+def test_compact_company_run_payload_preserves_evidence_lineage() -> None:
+    import web.db as web_db
+
+    payload = web_db._compact_company_run_payload(
+        {
+            "mode": "single",
+            "company_name": "Anthropic",
+            "evidence_lineage": {
+                "leadgen_bundle": {"evidence_bundle_sha256": "abc123"},
+                "chunks": [{"chunk_id": "leadgen-packet:evidence-founder"}],
+                "qa_pairs": [{"qa_index": 0, "chunk_ids": ["leadgen-packet:evidence-founder"]}],
+            },
+            "ranking_result": {
+                "dimension_scores": [
+                    {
+                        "dimension": "team",
+                        "top_qa_indices": [0],
+                        "top_chunk_ids": ["leadgen-packet:evidence-founder"],
+                        "scoring_signal_refs": ["evidence-founder"],
+                    }
+                ]
+            },
+        }
+    )
+
+    assert payload["evidence_lineage"]["leadgen_bundle"]["evidence_bundle_sha256"] == "abc123"
+    assert payload["evidence_lineage"]["chunks"][0]["chunk_id"] == "leadgen-packet:evidence-founder"
+    assert payload["ranking_result"]["dimension_scores"][0]["top_chunk_ids"] == [
+        "leadgen-packet:evidence-founder"
+    ]
 
 
 def test_compact_company_run_payload_backfills_url_from_company_domain() -> None:

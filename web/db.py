@@ -4270,6 +4270,7 @@ def _compact_company_run_payload(
         "summary_rows": [summary_row] if summary_row else [],
         "qa_provenance_rows": _serialize(serialized.get("qa_provenance_rows") or []),
         "argument_rows": _serialize(serialized.get("argument_rows") or []),
+        "evidence_lineage": _serialize(serialized.get("evidence_lineage") or {}),
         "founders": serialized.get("founders") or summary_row.get("founders") or [],
         "team_members": serialized.get("team_members") or summary_row.get("team_members") or [],
         "ranking_result": {

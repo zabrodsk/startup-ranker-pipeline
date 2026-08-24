@@ -390,6 +390,23 @@ def build_summary_rows(results_list: list[dict[str, Any]]) -> list[dict[str, Any
     return _lazy_import_batch().build_summary_rows(results_list)
 
 
+def build_result_lineage(
+    *,
+    store: Any,
+    qa_pairs: list[dict[str, Any]] | None,
+    final_arguments: list[Any] | None,
+    ranking: Any,
+    leadgen_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return _lazy_import_batch().build_result_lineage(
+        store=store,
+        qa_pairs=qa_pairs,
+        final_arguments=final_arguments,
+        ranking=ranking,
+        leadgen_context=leadgen_context,
+    )
+
+
 async def evaluate_from_specter(*args: Any, **kwargs: Any) -> dict[str, Any]:
     return await _lazy_import_batch().evaluate_from_specter(*args, **kwargs)
 
@@ -4847,20 +4864,37 @@ def _build_evidence_provenance(
     # --- QA provenance rows ---
     # Prefer the caller-supplied list; fall back to final_state for backward compat.
     _qa_source = all_qa_pairs if all_qa_pairs is not None else (final_state.get("all_qa_pairs") or [])
+    store = final_state.get("evidence_store")
+    lineage = build_result_lineage(
+        store=store,
+        qa_pairs=_qa_source,
+        final_arguments=final_state.get("final_arguments") or [],
+        ranking=None,
+        leadgen_context=None,
+    )
+    qa_lineage_by_index = {
+        int(row.get("qa_index", 0)): row
+        for row in lineage.get("qa_pairs") or []
+        if isinstance(row, dict)
+    }
     qa_provenance_rows: list[dict] = []
-    for qa in _qa_source:
+    for idx, qa in enumerate(_qa_source):
         chunk_ids = qa.get("chunk_ids")
         if isinstance(chunk_ids, list):
-            chunk_ids_str = ", ".join(str(c) for c in chunk_ids)
+            normalized_chunk_ids = [str(c) for c in chunk_ids if str(c)]
+            chunk_ids_str = ", ".join(normalized_chunk_ids)
         else:
+            normalized_chunk_ids = [str(chunk_ids)] if chunk_ids else []
             chunk_ids_str = str(chunk_ids) if chunk_ids else ""
         aspect = str(qa.get("aspect") or "")
+        qa_lineage = qa_lineage_by_index.get(int(qa.get("qa_index", idx)))
         qa_provenance_rows.append({
             "aspect": aspect,
             "dimension": _DIMENSION_BY_ASPECT.get(aspect.strip(), ""),
             "question": qa.get("question", ""),
             "answer": qa.get("answer", ""),
             "chunk_ids": chunk_ids_str,
+            "chunk_lineage": list((qa_lineage or {}).get("chunk_lineage") or []),
             "chunks_preview": qa.get("chunks_preview", ""),
             "web_search_query": qa.get("web_search_query") or "",
             "web_search_results": qa.get("web_search_results") or "",
@@ -4870,6 +4904,11 @@ def _build_evidence_provenance(
 
     # --- Argument rows ---
     argument_rows: list[dict] = []
+    argument_lineage_by_id = {
+        str(row.get("argument_id")): row
+        for row in lineage.get("arguments") or []
+        if isinstance(row, dict) and row.get("argument_id")
+    }
     for arg in (final_state.get("final_arguments") or []):
         arg_dict = arg.model_dump() if hasattr(arg, "model_dump") else arg
         # Build qa_pairs_used summary text (same format as batch.py)
@@ -4888,6 +4927,7 @@ def _build_evidence_provenance(
             "argument_feedback": arg_dict.get("argument_feedback") or "",
             "qa_pairs_used": qa_pairs_used,
             "qa_indices": arg_dict.get("qa_indices", []),
+            "chunk_ids": list(argument_lineage_by_id.get(str(arg_dict.get("id")), {}).get("chunk_ids") or []),
         })
 
     return qa_provenance_rows, argument_rows
@@ -7919,6 +7959,21 @@ def _compose_results_payload(
         final_state = r["final_state"]
         company = r["company"]
         final_args = final_state.get("final_arguments", [])
+        leadgen_context = (
+            ((_results_cache.get(job_id) or {}).get("run_config") or {}).get("leadgen_machine_v2")
+        )
+        evidence_lineage = build_result_lineage(
+            store=r.get("evidence_store"),
+            qa_pairs=final_state.get("all_qa_pairs") or [],
+            final_arguments=final_args,
+            ranking=final_state.get("ranking_result"),
+            leadgen_context=leadgen_context if isinstance(leadgen_context, dict) else None,
+        )
+        dimension_lineage_by_name = {
+            str(row.get("dimension")): row
+            for row in evidence_lineage.get("dimensions") or []
+            if isinstance(row, dict) and row.get("dimension")
+        }
         pro_args = sorted(
             [a for a in final_args if a.argument_type == "pro"],
             key=lambda a: a.score, reverse=True,
@@ -7953,6 +8008,9 @@ def _compose_results_payload(
                         "upside_ceiling_score": getattr(d, "upside_ceiling_score", None),
                         "risk_adjusted_potential_score": getattr(d, "risk_adjusted_potential_score", None),
                         "scoring_signal_refs": list(getattr(d, "scoring_signal_refs", []) or []),
+                        "top_chunk_ids": list(
+                            (dimension_lineage_by_name.get(d.dimension) or {}).get("top_chunk_ids") or []
+                        ),
                         "evidence_snippets": d.evidence_snippets,
                         "critical_gaps": d.critical_gaps,
                     }
@@ -8009,6 +8067,7 @@ def _compose_results_payload(
             "summary_rows": summary_rows,
             "argument_rows": argument_rows,
             "qa_provenance_rows": qa_provenance_rows,
+            "evidence_lineage": evidence_lineage,
             "founders": _extract_founders_from_company(company, r.get("slug", company.name)),
             "team_members": _extract_founders_from_company(company, r.get("slug", company.name)),
         }

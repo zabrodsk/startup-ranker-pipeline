@@ -1,15 +1,40 @@
-from agent.batch import build_argument_rows, build_qa_provenance_rows, build_summary_rows
+from agent.batch import (
+    build_argument_rows,
+    build_qa_provenance_rows,
+    build_summary_rows,
+)
 from agent.dataclasses.argument import Argument
 from agent.dataclasses.company import Company
 from agent.dataclasses.ranking import CompanyRankingResult, DimensionScore
+from agent.ingest.store import Chunk, EvidenceStore
 
 
 def test_build_qa_provenance_rows_includes_web_search_decision() -> None:
+    store = EvidenceStore(
+        startup_slug="apify",
+        chunks=[
+            Chunk(
+                chunk_id="chunk_1",
+                text="Apify supports many integrations.",
+                source_file="leadgen:research_packet",
+                page_or_slide="product_software_usp",
+                metadata={"evidence_id": "evidence-integrations"},
+            ),
+            Chunk(
+                chunk_id="chunk_3",
+                text="Zapier and Make integrations are public.",
+                source_file="leadgen:research_packet",
+                page_or_slide="product_software_usp",
+                metadata={"evidence_id": "evidence-zapier"},
+            ),
+        ],
+    )
     results = [
         {
             "slug": "apify",
             "skipped": False,
             "company": Company(name="Apify"),
+            "evidence_store": store,
             "final_state": {
                 "all_qa_pairs": [
                     {
@@ -34,6 +59,7 @@ def test_build_qa_provenance_rows_includes_web_search_decision() -> None:
     assert rows[0]["dimension"] == "strategy_fit"
     assert rows[0]["web_search_used"] is True
     assert "relevant" in rows[0]["web_search_decision"]
+    assert [item["chunk_id"] for item in rows[0]["chunk_lineage"]] == ["chunk_1", "chunk_3"]
 
 
 def test_argument_and_summary_rows_include_dimension_metadata() -> None:
@@ -97,6 +123,8 @@ def test_argument_and_summary_rows_include_dimension_metadata() -> None:
     summary_rows = build_summary_rows(results)
 
     assert argument_rows[0]["dimensions"] == ["strategy_fit", "team"]
+    assert argument_rows[0]["qa_indices"] == [0, 1]
+    assert argument_rows[0]["chunk_ids"] == []
     dimension_scores = summary_rows[0]["dimension_scores"]
     assert dimension_scores[0]["dimension"] == "strategy_fit"
     assert dimension_scores[0]["raw_score"] == 90.0

@@ -24,13 +24,16 @@ from agent.dataclasses.argument import Argument
 from agent.dataclasses.company import Company
 from agent.dataclasses.config import Config
 from agent.dataclasses.ranking import CompanyRankingResult
-from agent.evidence_answering import _answer_indicates_no_evidence, answer_all_trees_from_evidence
+from agent.evidence_answering import (
+    _answer_indicates_no_evidence,
+    answer_all_trees_from_evidence,
+)
 from agent.ingest import EvidenceStore, ingest_startup_folder
 from agent.llm import create_llm, get_llm_runtime_settings
-from agent.prompt_library.manager import get_prompt
+from agent.pipeline.scoring_signals import build_scoring_signals
 from agent.pipeline.stages.parallel_decomposition import decompose_all_questions
 from agent.pipeline.state.investment_story import IterativeInvestmentStoryState
-from agent.pipeline.scoring_signals import build_scoring_signals
+from agent.prompt_library.manager import get_prompt
 from agent.run_context import (
     get_current_collector,
     get_current_company_slug,
@@ -1051,6 +1054,110 @@ _DIMENSION_ORDER = {
 }
 
 
+def _chunk_lineage_rows(store: EvidenceStore | None) -> list[dict[str, Any]]:
+    if store is None:
+        return []
+    return [
+        {
+            "chunk_id": chunk.chunk_id,
+            "source_file": chunk.source_file,
+            "page_or_slide": chunk.page_or_slide,
+            "metadata": dict(chunk.metadata or {}),
+        }
+        for chunk in store.chunks
+    ]
+
+
+def _chunk_lineage_map(store: EvidenceStore | None) -> dict[str, dict[str, Any]]:
+    return {
+        row["chunk_id"]: row
+        for row in _chunk_lineage_rows(store)
+        if row.get("chunk_id")
+    }
+
+
+def _normalized_chunk_ids(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    if value in (None, ""):
+        return []
+    return [str(value)]
+
+
+def _chunk_ids_from_qa_indices(
+    qa_pairs: list[dict[str, Any]] | None,
+    indices: list[int] | None,
+) -> list[str]:
+    if not qa_pairs or not indices:
+        return []
+    merged: list[str] = []
+    seen: set[str] = set()
+    for index in indices:
+        if not isinstance(index, int) or index < 0 or index >= len(qa_pairs):
+            continue
+        for chunk_id in _normalized_chunk_ids(qa_pairs[index].get("chunk_ids")):
+            if chunk_id in seen:
+                continue
+            seen.add(chunk_id)
+            merged.append(chunk_id)
+    return merged
+
+
+def build_result_lineage(
+    *,
+    store: EvidenceStore | None,
+    qa_pairs: list[dict[str, Any]] | None,
+    final_arguments: list[Argument] | None,
+    ranking: CompanyRankingResult | None,
+    leadgen_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build additive chunk-to-score lineage without changing legacy payload readers."""
+    qa_rows = [qa for qa in (qa_pairs or []) if isinstance(qa, dict)]
+    chunk_lineage = _chunk_lineage_map(store)
+    return {
+        "leadgen_bundle": dict(leadgen_context or {}),
+        "chunks": list(chunk_lineage.values()),
+        "qa_pairs": [
+            {
+                "qa_index": int(qa.get("qa_index", index)),
+                "question": qa.get("question", ""),
+                "chunk_ids": _normalized_chunk_ids(qa.get("chunk_ids")),
+                "chunk_lineage": [
+                    chunk_lineage[chunk_id]
+                    for chunk_id in _normalized_chunk_ids(qa.get("chunk_ids"))
+                    if chunk_id in chunk_lineage
+                ],
+            }
+            for index, qa in enumerate(qa_rows)
+        ],
+        "arguments": [
+            {
+                "argument_id": argument.id,
+                "tracking_id": argument.tracking_id,
+                "type": argument.argument_type,
+                "qa_indices": list(argument.qa_indices or []),
+                "chunk_ids": _chunk_ids_from_qa_indices(
+                    qa_rows,
+                    list(argument.qa_indices or []),
+                ),
+            }
+            for argument in (final_arguments or [])
+        ],
+        "dimensions": [
+            {
+                "dimension": score.dimension,
+                "top_qa_indices": list(score.top_qa_indices or []),
+                "top_chunk_ids": _chunk_ids_from_qa_indices(
+                    qa_rows,
+                    list(score.top_qa_indices or []),
+                ),
+                "scoring_signal_refs": list(score.scoring_signal_refs or []),
+            }
+            for score in (ranking.dimension_scores if ranking else [])
+        ],
+    }
+
+
 def _dimension_from_aspect(aspect: Any) -> str:
     return _DIMENSION_BY_ASPECT.get(str(aspect or "").strip(), "")
 
@@ -1250,6 +1357,7 @@ def build_argument_rows(results: List[Dict[str, Any]]) -> List[Dict]:
         fs = r["final_state"]
         slug = r["slug"]
         final_args: List[Argument] = fs.get("final_arguments", [])
+        qa_pairs = [qa for qa in (fs.get("all_qa_pairs") or []) if isinstance(qa, dict)]
         current_iteration = fs.get("current_iteration", 0)
 
         for arg in final_args:
@@ -1270,6 +1378,8 @@ def build_argument_rows(results: List[Dict[str, Any]]) -> List[Dict]:
                 "refined_text": arg.refined_content or "",
                 "argument_feedback": arg.argument_feedback or "",
                 "qa_pairs_used": qa_pairs_used,
+                "qa_indices": list(arg.qa_indices or []),
+                "chunk_ids": _chunk_ids_from_qa_indices(qa_pairs, list(arg.qa_indices or [])),
                 "dimensions": _dimensions_from_qa_pairs(arg.qa_pairs),
                 "iteration": current_iteration,
             })
@@ -1289,13 +1399,11 @@ def build_qa_provenance_rows(results: List[Dict[str, Any]]) -> List[Dict]:
         slug = r["slug"]
         company: Company = r["company"]
         all_qa_pairs = fs.get("all_qa_pairs", [])
+        chunk_lineage = _chunk_lineage_map(r.get("evidence_store"))
 
         for qa in all_qa_pairs:
-            chunk_ids = qa.get("chunk_ids")
-            if isinstance(chunk_ids, list):
-                chunk_ids_str = ", ".join(str(c) for c in chunk_ids)
-            else:
-                chunk_ids_str = str(chunk_ids) if chunk_ids else ""
+            chunk_ids = _normalized_chunk_ids(qa.get("chunk_ids"))
+            chunk_ids_str = ", ".join(chunk_ids)
             aspect = str(qa.get("aspect") or "")
             dimension = _dimension_from_aspect(aspect)
 
@@ -1307,6 +1415,11 @@ def build_qa_provenance_rows(results: List[Dict[str, Any]]) -> List[Dict]:
                 "question": qa.get("question", ""),
                 "answer": qa.get("answer", ""),
                 "chunk_ids": chunk_ids_str,
+                "chunk_lineage": [
+                    chunk_lineage[chunk_id]
+                    for chunk_id in chunk_ids
+                    if chunk_id in chunk_lineage
+                ],
                 "chunks_preview": qa.get("chunks_preview", ""),
                 "web_search_query": qa.get("web_search_query") or "",
                 "web_search_results": qa.get("web_search_results") or "",

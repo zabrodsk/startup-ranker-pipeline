@@ -11,6 +11,7 @@ import asyncio
 import json
 import sys
 import traceback
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +41,10 @@ from agent.llm_policy import (
 from agent.run_context import RunTelemetryCollector, use_run_context
 from web import app as web_app
 from web.leadgen_domain import normalize_company_domain
-from web.leadgen_machine_v2 import FrozenLeadGenEvidenceBundleV1, canonical_bundle_sha256
+from web.leadgen_machine_v2 import (
+    FrozenLeadGenEvidenceBundleV1,
+    canonical_bundle_sha256,
+)
 from web.specter_quota_broker import (
     SpecterQuotaBrokerRequest,
     build_specter_quota_broker_request,
@@ -80,11 +84,128 @@ def _load_frozen_leadgen_bundle(
     if requested_domain and requested_domain != bundle.canonical_domain:
         raise ValueError("Frozen LeadGen evidence bundle domain mismatch")
     company = Company.model_validate(bundle.company)
+    bundle_chunks = [Chunk(**chunk.model_dump()) for chunk in bundle.evidence_chunks]
+    packet_chunks = _packet_claim_chunks(bundle)
+    packet_lineage_keys = {
+        key
+        for chunk in packet_chunks
+        for key in _chunk_lineage_keys(chunk)
+    }
     store = EvidenceStore(
         startup_slug=_company_slug(company.name),
-        chunks=[Chunk(**chunk.model_dump()) for chunk in bundle.evidence_chunks],
+        chunks=[
+            *packet_chunks,
+            *[
+                chunk
+                for chunk in bundle_chunks
+                if not packet_lineage_keys.intersection(_chunk_lineage_keys(chunk))
+            ],
+        ],
     )
     return company, store
+
+
+def _packet_claim_chunks(bundle: FrozenLeadGenEvidenceBundleV1) -> list[Chunk]:
+    """Materialize canonical research-packet claims as additive evidence chunks."""
+    packet = bundle.research_evidence_packet
+    if not isinstance(packet, dict):
+        return []
+
+    claims = packet.get("claims")
+    if not isinstance(claims, list):
+        return []
+
+    stale_objectives = {
+        str(item)
+        for item in (packet.get("stale_objectives") or [])
+        if isinstance(item, str)
+    }
+    packet_sha256 = str(packet.get("packet_sha256") or "")
+    chunks: list[Chunk] = []
+    seen_chunk_ids: set[str] = set()
+    for index, claim in enumerate(claims):
+        if not isinstance(claim, dict):
+            continue
+        objective = str(claim.get("objective") or "").strip()
+        evidence = claim.get("evidence")
+        if not objective or not isinstance(evidence, dict):
+            continue
+        text = str(evidence.get("claim") or "").strip()
+        if not text:
+            continue
+        raw_evidence_id = str(evidence.get("evidence_id") or "").strip()
+        chunk_id = _packet_claim_chunk_id(raw_evidence_id, objective, index)
+        if chunk_id in seen_chunk_ids:
+            continue
+        seen_chunk_ids.add(chunk_id)
+        metadata = {
+            "lineage_source": "leadgen_research_packet",
+            "schema_version": packet.get("schema_version"),
+            "packet_sha256": packet_sha256 or None,
+            "objective": objective,
+            "evidence_id": raw_evidence_id or None,
+            "category": evidence.get("category"),
+            "status": evidence.get("status"),
+            "source_url": evidence.get("source_url"),
+            "publisher_domain": evidence.get("publisher_domain"),
+            "producer_origin": evidence.get("producer_origin"),
+            "source_family": evidence.get("source_family"),
+            "observed_at": evidence.get("observed_at"),
+            "published_at": evidence.get("published_at"),
+            "retrieved_at": evidence.get("retrieved_at"),
+            "confidence": evidence.get("confidence"),
+            "confidence_reason_codes": evidence.get("confidence_reason_codes") or [],
+            "content_sha256": evidence.get("content_sha256"),
+            "provenance_ref": evidence.get("provenance_ref"),
+            "subject_company_ref": evidence.get("subject_company_ref"),
+            "is_primary": bool(evidence.get("is_primary")),
+            "is_company_owned": bool(evidence.get("is_company_owned")),
+            "stale_objective": objective in stale_objectives,
+        }
+        chunks.append(
+            Chunk(
+                chunk_id=chunk_id,
+                text=text,
+                source_file=str(
+                    evidence.get("source_url") or "leadgen:research_packet"
+                ),
+                page_or_slide=objective,
+                metadata={
+                    key: value for key, value in metadata.items() if value is not None
+                },
+            )
+        )
+    return chunks
+
+
+def _chunk_lineage_keys(chunk: Chunk) -> set[tuple[str, ...]]:
+    metadata = dict(chunk.metadata or {})
+    keys: set[tuple[str, ...]] = set()
+    evidence_id = str(metadata.get("evidence_id") or "").strip()
+    content_sha256 = str(metadata.get("content_sha256") or "").strip()
+    if evidence_id:
+        keys.add(("evidence_id", evidence_id))
+    if content_sha256:
+        keys.add(("content_sha256", content_sha256))
+    if not keys:
+        keys.add(("claim", str(chunk.source_file).strip(), str(chunk.text).strip()))
+    return keys
+
+
+def _packet_claim_chunk_id(
+    evidence_id: str,
+    objective: str,
+    index: int,
+) -> str:
+    token = evidence_id
+    normalized = "".join(
+        character if character.isalnum() or character in {"-", "_", ".", ":"} else "-"
+        for character in token.lower()
+    ).strip("-")
+    if normalized:
+        return f"leadgen-packet:{normalized[:90]}"
+    digest = sha256(f"{objective}:{index}".encode()).hexdigest()[:16]
+    return f"leadgen-packet:{digest}"
 
 
 def _pipeline_policy_from_run_config(run_config: dict[str, Any]) -> Any | None:

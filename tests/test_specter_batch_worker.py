@@ -1,4 +1,12 @@
+import asyncio
+import hashlib
+import json
+from argparse import Namespace
+
+from agent import specter_company_worker as scw
+from agent.ingest.specter_mcp_client import SpecterMCPError, SpecterQuotaLimitError
 from agent.specter_batch_worker import _final_job_outcome
+from tests.test_leadgen_machine_v2_contract import _bundle, _canonical
 
 
 def test_final_job_outcome_marks_zero_success_worker_runs_as_error() -> None:
@@ -26,15 +34,6 @@ def test_final_job_outcome_keeps_partial_success_runs_done() -> None:
 # ---------------------------------------------------------------------------
 # Child fetch/ingest failures surface as structured per-company errors (S3)
 # ---------------------------------------------------------------------------
-
-import asyncio
-import hashlib
-import json
-from argparse import Namespace
-
-from agent import specter_company_worker as scw
-from agent.ingest.specter_mcp_client import SpecterMCPError, SpecterQuotaLimitError
-from tests.test_leadgen_machine_v2_contract import _bundle, _canonical
 
 
 def _child_args(tmp_path, **overrides) -> Namespace:
@@ -97,7 +96,7 @@ def test_url_provider_failure_parks_without_persisting_company_failure(
     capsys,
 ):
     """A provider-side Specter failure remains pending for automatic recovery."""
-    calls = _capture_failure_persistence(monkeypatch)
+    _capture_failure_persistence(monkeypatch)
     gate_trips = []
     monkeypatch.setattr(
         scw,
@@ -220,7 +219,10 @@ def test_fetch_failure_event_still_emitted_when_persistence_fails(tmp_path, monk
 
 
 def test_complete_frozen_bundle_reconstructs_inputs_without_specter(monkeypatch):
-    payload = _bundle(requires_specter_mcp=False)
+    payload = _bundle(
+        requires_specter_mcp=False,
+        schema_version="frozen-leadgen-evidence-bundle-v2",
+    )
     bundle_sha256 = hashlib.sha256(_canonical(payload)).hexdigest()
     monkeypatch.setattr(
         scw.db,
@@ -243,4 +245,45 @@ def test_complete_frozen_bundle_reconstructs_inputs_without_specter(monkeypatch)
 
     assert company.name == "Acme"
     assert company.domain == "acme.example"
-    assert [chunk.chunk_id for chunk in store.chunks] == ["company-profile"]
+    assert len(store.chunks) == 5
+    assert [chunk.chunk_id for chunk in store.chunks[:2]] == [
+        "leadgen-packet:evidence-europe",
+        "leadgen-packet:evidence-funding",
+    ]
+    assert store.chunks[-1].chunk_id == "leadgen-packet:evidence-founder"
+    packet_chunk = store.chunks[0]
+    assert packet_chunk.text == "Acme operates from Prague."
+    assert packet_chunk.source_file == "https://news.example/acme-europe"
+    assert packet_chunk.page_or_slide == "european_connection"
+    assert packet_chunk.metadata == {
+        "lineage_source": "leadgen_research_packet",
+        "schema_version": "research-evidence-packet-v2",
+        "packet_sha256": payload["research_evidence_packet"]["packet_sha256"],
+        "objective": "european_connection",
+        "evidence_id": "evidence-europe",
+        "category": "geography",
+        "status": "supports",
+        "source_url": "https://news.example/acme-europe",
+        "publisher_domain": "news.example",
+        "producer_origin": "public-web-research:http:news.example",
+        "source_family": "public-web-research",
+        "observed_at": "2026-08-21T08:00:00Z",
+        "retrieved_at": "2026-08-21T08:00:00Z",
+        "confidence": "medium",
+        "confidence_reason_codes": [],
+        "provenance_ref": "test:europe",
+        "subject_company_ref": "acme.example",
+        "is_primary": False,
+        "is_company_owned": False,
+        "stale_objective": False,
+    }
+    assert sum(
+        chunk.metadata.get("evidence_id") == "evidence-founder"
+        for chunk in store.chunks
+    ) == 1
+
+def test_packet_claim_chunk_id_falls_back_to_digest_for_empty_tokens() -> None:
+    chunk_id = scw._packet_claim_chunk_id("", "market_problem_and_buyer", 7)
+
+    assert chunk_id.startswith("leadgen-packet:")
+    assert len(chunk_id) == len("leadgen-packet:") + 16
