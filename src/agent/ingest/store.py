@@ -1,6 +1,7 @@
 """In-memory evidence store for ingested document chunks."""
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -11,6 +12,7 @@ class Chunk:
     text: str
     source_file: str
     page_or_slide: str | int
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

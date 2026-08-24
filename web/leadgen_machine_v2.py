@@ -48,7 +48,9 @@ from starlette.responses import Response
 
 CONTRACT_VERSION = "rdi.leadgen-machine.v2"
 SERVICE_ACTOR = "service:rockaway-leadgen"
-BUNDLE_SCHEMA_VERSION = "frozen-leadgen-evidence-bundle-v1"
+BUNDLE_SCHEMA_VERSION_V1 = "frozen-leadgen-evidence-bundle-v1"
+BUNDLE_SCHEMA_VERSION_V2 = "frozen-leadgen-evidence-bundle-v2"
+BUNDLE_SCHEMA_VERSION = BUNDLE_SCHEMA_VERSION_V2
 BUSINESS_TIMEZONE = "Europe/Prague"
 V2_ENABLED_ENV = "RDI_LEADGEN_MACHINE_V2_ENABLED"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -163,6 +165,7 @@ class BundleChunk(BaseModel):
     text: str = Field(min_length=1, max_length=200_000)
     source_file: str = Field(min_length=1, max_length=2_048)
     page_or_slide: str | int
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("chunk_id")
     @classmethod
@@ -244,17 +247,21 @@ class BundleSpecterOperation(BaseModel):
 class FrozenLeadGenEvidenceBundleV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["frozen-leadgen-evidence-bundle-v1"]
+    schema_version: Literal["frozen-leadgen-evidence-bundle-v1", "frozen-leadgen-evidence-bundle-v2"]
     external_company_id: str
     canonical_domain: str
     specter_company_id: str | None
     requires_specter_mcp: bool
     parent_bundle_sha256: str | None
     created_at: datetime
+    analysis_ready: bool | None = None
+    specter_evidence_state: str | None = None
+    quota_authorization_id: str | None = None
     company: dict[str, Any]
     evidence_chunks: list[BundleChunk] = Field(max_length=10_000)
     components: list[BundleComponent] = Field(max_length=256)
     component_payloads: dict[str, Any]
+    research_evidence_packet: dict[str, Any] | None = None
     specter_operations: list[BundleSpecterOperation] = Field(default_factory=list, max_length=200)
     authorization: LeadGenAuthorizationManifest
 
@@ -282,6 +289,13 @@ class FrozenLeadGenEvidenceBundleV1(BaseModel):
             raise ValueError("must be a lowercase SHA-256 digest")
         return value
 
+    @field_validator("quota_authorization_id")
+    @classmethod
+    def _quota_authorization_id(cls, value: str | None) -> str | None:
+        if value in {None, ""}:
+            return None
+        return _identifier(value)
+
     @model_validator(mode="after")
     def _lineage_matches(self) -> "FrozenLeadGenEvidenceBundleV1":
         if self.authorization.company_id != self.external_company_id:
@@ -303,6 +317,13 @@ class FrozenLeadGenEvidenceBundleV1(BaseModel):
             for item in self.components
         ):
             raise ValueError("bundle component payload hash does not match")
+        if self.schema_version == BUNDLE_SCHEMA_VERSION_V2 and self.research_evidence_packet:
+            packet_identity = self.research_evidence_packet.get("identity") or {}
+            packet_domain = _domain(
+                packet_identity.get("domain") or packet_identity.get("website_url")
+            )
+            if packet_domain != self.canonical_domain:
+                raise ValueError("research packet identity does not match bundle")
         return self
 
     def canonical_payload(self) -> dict[str, Any]:
@@ -661,7 +682,7 @@ def build_leadgen_machine_v2_router(dependencies: MachineV2Dependencies) -> APIR
         store = _require_store(dependencies)
         result = store.put_machine_v2_evidence_bundle(
             bundle_sha256=bundle_sha256,
-            schema_version=BUNDLE_SCHEMA_VERSION,
+            schema_version=request.schema_version,
             external_company_id=request.external_company_id,
             canonical_domain=request.canonical_domain,
             requires_specter_mcp=request.requires_specter_mcp,

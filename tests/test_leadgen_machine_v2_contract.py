@@ -23,10 +23,14 @@ def _canonical(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode()
 
 
-def _bundle(*, requires_specter_mcp: bool) -> dict[str, Any]:
+def _bundle(
+    *,
+    requires_specter_mcp: bool,
+    schema_version: str = "frozen-leadgen-evidence-bundle-v1",
+) -> dict[str, Any]:
     component_payload = {"name": "Acme", "domain": "acme.example"}
-    return {
-        "schema_version": "frozen-leadgen-evidence-bundle-v1",
+    bundle = {
+        "schema_version": schema_version,
         "external_company_id": "a1f4e5d0-1111-4111-8111-111111111111",
         "canonical_domain": "acme.example",
         "specter_company_id": "0123456789abcdef01234567",
@@ -89,6 +93,39 @@ def _bundle(*, requires_specter_mcp: bool) -> dict[str, Any]:
             "frozen_lineage_sha256": "6" * 64,
         },
     }
+    if schema_version == "frozen-leadgen-evidence-bundle-v2":
+        bundle.update(
+            analysis_ready=True,
+            specter_evidence_state="cached_partial",
+            quota_authorization_id="quota-auth-1",
+            research_evidence_packet={
+                "schema_version": "research-evidence-packet-v2",
+                "company_ref": "acme.example",
+                "identity": {"domain": "acme.example", "website_url": "https://acme.example"},
+                "claims": [],
+                "contradiction_checked": True,
+                "objective_coverage": {},
+                "stale_objectives": [],
+                "analysis_ready": True,
+                "specter_refresh_required": True,
+                "specter_evidence_state": "cached_partial",
+                "quota_authorization_id": "quota-auth-1",
+                "assessment": {
+                    "missing_objectives": [],
+                    "contradicted_objectives": [],
+                    "contradiction_refs": [],
+                    "contradiction_checked": True,
+                    "compound_evidence": False,
+                    "preferred_research_ready": False,
+                },
+                "packet_sha256": hashlib.sha256(_canonical({"schema_version": "research-evidence-packet-v2"})).hexdigest(),
+            },
+        )
+        bundle["evidence_chunks"][0]["metadata"] = {
+            "source_kind": "research_evidence_claim",
+            "packet_sha256": bundle["research_evidence_packet"]["packet_sha256"],
+        }
+    return bundle
 
 
 def _intake(bundle_sha256: str) -> dict[str, Any]:
@@ -419,6 +456,22 @@ def test_complete_bundle_starts_while_gate_is_blocked_and_is_passed_to_worker() 
     )
     assert starts[0]["context"]["rdi_scoring_version"] == "ranking-v1"
     assert "evidence_bundle" not in starts[0]["context"]["leadgen_machine_v2"]
+
+
+def test_v2_bundle_upload_is_accepted_with_packet_metadata() -> None:
+    store = FakeV2Store()
+    client = _client(store, [])
+
+    bundle = _bundle(
+        requires_specter_mcp=False,
+        schema_version="frozen-leadgen-evidence-bundle-v2",
+    )
+    digest = _upload(client, bundle)
+
+    stored = store.bundles[digest]
+    assert stored["schema_version"] == "frozen-leadgen-evidence-bundle-v2"
+    assert stored["payload"]["research_evidence_packet"]["identity"]["domain"] == "acme.example"
+    assert stored["payload"]["evidence_chunks"][0]["metadata"]["source_kind"] == "research_evidence_claim"
 
 
 def test_legacy_v2_terminal_result_recovers_bounded_pipeline_scoring_version() -> None:
