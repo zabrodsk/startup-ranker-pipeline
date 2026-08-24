@@ -1,6 +1,7 @@
 from agent.batch import (
     build_argument_rows,
     build_qa_provenance_rows,
+    build_result_lineage,
     build_summary_rows,
 )
 from agent.dataclasses.argument import Argument
@@ -143,3 +144,61 @@ def test_argument_and_summary_rows_include_dimension_metadata() -> None:
     assert dimension_scores[1]["evidence_count"] == 2
     assert dimension_scores[1]["evidence_snippets"] == ["Repeat founder signal"]
     assert dimension_scores[1]["critical_gaps"] == []
+
+
+def test_result_lineage_includes_replayable_composite_inputs() -> None:
+    ranking = CompanyRankingResult(
+        company_name="Apify",
+        slug="apify",
+        strategy_fit_score=84.0,
+        team_score=72.0,
+        upside_score=81.0,
+        risk_adjusted_potential_score=78.0,
+        composite_score=78.0,
+        bucket="priority_review",
+        dimension_scores=[
+            DimensionScore(
+                dimension="strategy_fit",
+                raw_score=84.0,
+                confidence=1.0,
+                evidence_count=1,
+            ),
+            DimensionScore(
+                dimension="team",
+                raw_score=72.0,
+                confidence=1.0,
+                evidence_count=1,
+            ),
+            DimensionScore(
+                dimension="upside",
+                raw_score=81.0,
+                confidence=1.0,
+                evidence_count=1,
+                risk_adjusted_potential_score=78.0,
+            ),
+        ],
+    )
+
+    lineage = build_result_lineage(
+        store=None,
+        qa_pairs=[],
+        final_arguments=[],
+        ranking=ranking,
+    )
+
+    assert lineage["composite"] == {
+        "score": 78.0,
+        "bucket": "priority_review",
+        "algorithm": "equal_weight_mean_v1",
+        "dimension_weights": {
+            "strategy_fit": "1/3",
+            "team": "1/3",
+            "upside": "1/3",
+        },
+        "dimension_input_scores": {
+            "strategy_fit": 84.0,
+            "team": 72.0,
+            "upside": 78.0,
+        },
+        "dimension_refs": ["strategy_fit", "team", "upside"],
+    }

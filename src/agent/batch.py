@@ -1114,6 +1114,29 @@ def build_result_lineage(
     """Build additive chunk-to-score lineage without changing legacy payload readers."""
     qa_rows = [qa for qa in (qa_pairs or []) if isinstance(qa, dict)]
     chunk_lineage = _chunk_lineage_map(store)
+    composite = None
+    if ranking is not None:
+        composite = {
+            "score": ranking.composite_score,
+            "bucket": ranking.bucket,
+            "algorithm": "equal_weight_mean_v1",
+            "dimension_weights": {
+                "strategy_fit": "1/3",
+                "team": "1/3",
+                "upside": "1/3",
+            },
+            "dimension_input_scores": {
+                "strategy_fit": ranking.strategy_fit_score,
+                "team": ranking.team_score,
+                "upside": (
+                    ranking.risk_adjusted_potential_score
+                    or ranking.upside_score
+                ),
+            },
+            "dimension_refs": [
+                score.dimension for score in ranking.dimension_scores
+            ],
+        }
     return {
         "leadgen_bundle": dict(leadgen_context or {}),
         "chunks": list(chunk_lineage.values()),
@@ -1155,6 +1178,7 @@ def build_result_lineage(
             }
             for score in (ranking.dimension_scores if ranking else [])
         ],
+        "composite": composite,
     }
 
 

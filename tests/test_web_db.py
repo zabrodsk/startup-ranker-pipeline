@@ -160,6 +160,11 @@ def test_compact_company_run_payload_preserves_evidence_lineage() -> None:
                 "leadgen_bundle": {"evidence_bundle_sha256": "abc123"},
                 "chunks": [{"chunk_id": "leadgen-packet:evidence-founder"}],
                 "qa_pairs": [{"qa_index": 0, "chunk_ids": ["leadgen-packet:evidence-founder"]}],
+                "composite": {
+                    "score": 77.5,
+                    "algorithm": "equal_weight_mean_v1",
+                    "dimension_refs": ["strategy_fit", "team", "upside"],
+                },
             },
             "ranking_result": {
                 "dimension_scores": [
@@ -176,6 +181,7 @@ def test_compact_company_run_payload_preserves_evidence_lineage() -> None:
 
     assert payload["evidence_lineage"]["leadgen_bundle"]["evidence_bundle_sha256"] == "abc123"
     assert payload["evidence_lineage"]["chunks"][0]["chunk_id"] == "leadgen-packet:evidence-founder"
+    assert payload["evidence_lineage"]["composite"]["score"] == 77.5
     assert payload["ranking_result"]["dimension_scores"][0]["top_chunk_ids"] == [
         "leadgen-packet:evidence-founder"
     ]
