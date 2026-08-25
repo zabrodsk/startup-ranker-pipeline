@@ -7,6 +7,10 @@ BROKER_MIGRATION = ROOT / "supabase/migrations/20260824103000_specter_quota_brok
 BROKER_PGCRYPTO_REPAIR = (
     ROOT / "supabase/migrations/20260825062000_specter_quota_broker_pgcrypto_schema.sql"
 )
+BROKER_RECOVERY_REPAIR = (
+    ROOT
+    / "supabase/migrations/20260825064000_specter_quota_recovery_probe_closes_circuit.sql"
+)
 
 
 def test_v2_reservation_cross_generation_cap_stays_behind_service_rpc() -> None:
@@ -57,3 +61,15 @@ def test_specter_quota_broker_repair_adds_existing_supabase_extension_schema() -
 
     assert "alter function public.reserve_specter_quota_authorization" in sql
     assert "set search_path to public, extensions, pg_temp" in sql
+
+
+def test_successful_recovery_probe_closes_transient_provider_circuit() -> None:
+    original = BROKER_MIGRATION.read_text(encoding="utf-8").lower()
+    repair = BROKER_RECOVERY_REPAIR.read_text(encoding="utf-8").lower()
+
+    for sql in (original, repair):
+        assert "v_auth.quota_class = 'recovery_probe'" in sql
+        assert "v_daily.circuit_state = 'probing'" in sql
+        assert "set circuit_state = 'closed'" in sql
+        assert "reason_code = null" in sql
+        assert "retry_at = null" in sql

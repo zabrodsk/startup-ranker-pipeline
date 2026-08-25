@@ -507,6 +507,17 @@ BEGIN
           WHERE target_environment = v_auth.target_environment
             AND business_date = v_auth.business_date
           RETURNING * INTO v_daily;
+    ELSIF v_final_status = 'committed'
+          AND v_auth.quota_class = 'recovery_probe'
+          AND v_daily.circuit_state = 'probing' THEN
+        UPDATE public.specter_quota_broker_daily
+          SET circuit_state = 'closed',
+              reason_code = NULL,
+              retry_at = NULL,
+              updated_at = clock_timestamp()
+          WHERE target_environment = v_auth.target_environment
+            AND business_date = v_auth.business_date
+          RETURNING * INTO v_daily;
     END IF;
 
     PERFORM public._specter_quota_write_event(
