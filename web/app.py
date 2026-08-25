@@ -215,7 +215,7 @@ app.add_middleware(
     allow_headers=_cors_headers,
 )
 
-APP_PASSWORD = os.getenv("APP_PASSWORD", "9876")
+APP_PASSWORD = os.getenv("APP_PASSWORD", "").strip()
 # Fail closed: no hardcoded default. An unset/empty SESSION_SECRET disables
 # stateless signed sessions entirely (a known default would let anyone forge a
 # token). Set it in the deployment env to enable password-based sessions.
@@ -2623,7 +2623,9 @@ async def portal_login(req: PortalLoginRequest) -> dict[str, Any]:
 
 @app.post("/api/login")
 async def login(req: LoginRequest):
-    if req.password != APP_PASSWORD:
+    if not APP_PASSWORD:
+        raise HTTPException(status_code=503, detail="Password login is not configured")
+    if not secrets.compare_digest(req.password, APP_PASSWORD):
         raise HTTPException(status_code=401, detail="Wrong password")
     if not SESSION_SECRET:
         # Fail closed: refuse to mint a session signed with an empty/forgeable

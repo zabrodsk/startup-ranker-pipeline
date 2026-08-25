@@ -71,6 +71,17 @@ async def test_login_fails_closed_when_secret_unset(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_login_fails_closed_when_password_unset(monkeypatch):
+    monkeypatch.setattr(app_module, "APP_PASSWORD", "")
+    monkeypatch.setattr(app_module, "SESSION_SECRET", "real-secret-value")
+
+    with pytest.raises(HTTPException) as exc:
+        await login(LoginRequest(password="9876"))
+
+    assert exc.value.status_code == 503
+
+
+@pytest.mark.asyncio
 async def test_login_issues_valid_session_when_secret_set(monkeypatch):
     monkeypatch.setattr(app_module, "APP_PASSWORD", "correct-pw")
     monkeypatch.setattr(app_module, "SESSION_SECRET", "real-secret-value")
