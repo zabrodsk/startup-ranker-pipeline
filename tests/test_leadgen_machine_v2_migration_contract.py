@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "supabase/migrations/20260823010500_leadgen_v2_reservation_service_boundary.sql"
 BROKER_MIGRATION = ROOT / "supabase/migrations/20260824103000_specter_quota_broker.sql"
@@ -10,6 +9,9 @@ BROKER_PGCRYPTO_REPAIR = (
 BROKER_RECOVERY_REPAIR = (
     ROOT
     / "supabase/migrations/20260825064000_specter_quota_recovery_probe_closes_circuit.sql"
+)
+BUNDLE_V2_SCHEMA_MIGRATION = (
+    ROOT / "supabase/migrations/20260825135740_allow_leadgen_bundle_v2.sql"
 )
 
 
@@ -21,6 +23,17 @@ def test_v2_reservation_cross_generation_cap_stays_behind_service_rpc() -> None:
     assert "FROM PUBLIC, anon, authenticated" in sql
     assert "TO service_role" in sql
     assert "GRANT SELECT ON public.leadgen_machine_intakes" not in sql
+
+
+def test_bundle_schema_constraint_accepts_only_v1_and_v2() -> None:
+    sql = BUNDLE_V2_SCHEMA_MIGRATION.read_text(encoding="utf-8").lower()
+
+    assert "drop constraint leadgen_evidence_bundles_schema_version_check" in sql
+    assert "add constraint leadgen_evidence_bundles_schema_version_check" in sql
+    assert "'frozen-leadgen-evidence-bundle-v1'" in sql
+    assert "'frozen-leadgen-evidence-bundle-v2'" in sql
+    assert "not valid" in sql
+    assert "validate constraint leadgen_evidence_bundles_schema_version_check" in sql
 
 
 def test_specter_quota_broker_migration_keeps_policy_and_service_boundary_explicit() -> None:
