@@ -250,7 +250,7 @@ CREATE OR REPLACE FUNCTION public.reserve_specter_quota_authorization(
 ) RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path TO public, pg_temp
+SET search_path TO public, extensions, pg_temp
 AS $$
 DECLARE
     v_daily public.specter_quota_broker_daily%ROWTYPE;

@@ -4,6 +4,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "supabase/migrations/20260823010500_leadgen_v2_reservation_service_boundary.sql"
 BROKER_MIGRATION = ROOT / "supabase/migrations/20260824103000_specter_quota_broker.sql"
+BROKER_PGCRYPTO_REPAIR = (
+    ROOT / "supabase/migrations/20260825062000_specter_quota_broker_pgcrypto_schema.sql"
+)
 
 
 def test_v2_reservation_cross_generation_cap_stays_behind_service_rpc() -> None:
@@ -41,8 +44,16 @@ def test_specter_quota_broker_migration_keeps_policy_and_service_boundary_explic
     assert "circuit_state in ('closed', 'open', 'probing')" in sql
     assert "authorization_id ~ '^specter-auth-[0-9a-f]{64}$'" in sql
     assert "encode(digest(v_authorization_material, 'sha256'), 'hex')" in sql
+    assert "set search_path to public, extensions, pg_temp" in sql
     assert "event_type in ('reserve', 'deny', 'commit', 'release')" in sql
     assert "grant execute on function public.reserve_specter_quota_authorization" in sql
     assert "grant execute on function public.commit_specter_quota_authorization" in sql
     assert "grant execute on function public.release_specter_quota_authorization" in sql
     assert "to service_role" in sql
+
+
+def test_specter_quota_broker_repair_adds_existing_supabase_extension_schema() -> None:
+    sql = BROKER_PGCRYPTO_REPAIR.read_text(encoding="utf-8").lower()
+
+    assert "alter function public.reserve_specter_quota_authorization" in sql
+    assert "set search_path to public, extensions, pg_temp" in sql
