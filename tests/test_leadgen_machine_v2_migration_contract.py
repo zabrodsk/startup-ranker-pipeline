@@ -11,7 +11,7 @@ BROKER_RECOVERY_REPAIR = (
     / "supabase/migrations/20260825064000_specter_quota_recovery_probe_closes_circuit.sql"
 )
 BUNDLE_V2_SCHEMA_MIGRATION = (
-    ROOT / "supabase/migrations/20260825135740_allow_leadgen_bundle_v2.sql"
+    ROOT / "supabase/migrations/20260825135929_allow_leadgen_bundle_v2.sql"
 )
 
 
