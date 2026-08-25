@@ -126,6 +126,46 @@ _RESEARCH_FOUNDER_OBJECTIVES = (
     "founder_prior_execution",
     "founder_market_fit",
 )
+# These shared profile/publishing hosts can carry evidence, but they do not
+# establish independent corroboration. Keep this aligned with LeadGen's
+# SHARED_COMPANY_IDENTITY_HOSTS contract. Editorial publications such as
+# eu-startups.com remain valid independent evidence even though RDI also blocks
+# them from being mistaken for a company's canonical domain.
+_NON_INDEPENDENT_RESEARCH_HOSTS = frozenset(
+    {
+        "angel.co",
+        "azurewebsites.net",
+        "bitbucket.org",
+        "blogspot.com",
+        "bsky.app",
+        "crunchbase.com",
+        "discord.com",
+        "discord.gg",
+        "facebook.com",
+        "github.com",
+        "github.io",
+        "gitlab.com",
+        "gitlab.io",
+        "herokuapp.com",
+        "instagram.com",
+        "linkedin.com",
+        "medium.com",
+        "notion.site",
+        "notion.so",
+        "pages.dev",
+        "substack.com",
+        "threads.net",
+        "tiktok.com",
+        "t.me",
+        "twitter.com",
+        "vercel.app",
+        "webflow.io",
+        "wixsite.com",
+        "x.com",
+        "youtu.be",
+        "youtube.com",
+    }
+)
 _RESEARCH_CLAIM_METADATA_FIELDS = frozenset(
     {
         "source_kind",
@@ -144,6 +184,13 @@ _RESEARCH_CLAIM_METADATA_FIELDS = frozenset(
         "content_sha256",
     }
 )
+
+
+def _non_independent_research_host(domain: str) -> bool:
+    return any(
+        domain == shared or domain.endswith(f".{shared}")
+        for shared in _NON_INDEPENDENT_RESEARCH_HOSTS
+    )
 
 
 def _problem(
@@ -287,7 +334,7 @@ def _derived_research_packet_fields(
         and candidate["source_url"] != anchor["source_url"]
         and candidate["publisher_domain"] != anchor["publisher_domain"]
         and candidate["producer_origin"] != anchor["producer_origin"]
-        and not company_source_host(candidate["publisher_domain"])
+        and not _non_independent_research_host(candidate["publisher_domain"])
     }
     compound_evidence = bool(
         primary_signals

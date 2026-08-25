@@ -627,6 +627,64 @@ def test_v2_bundle_upload_is_accepted_with_packet_metadata() -> None:
     assert stored["payload"]["evidence_chunks"][0]["metadata"]["source_kind"] == "research_evidence_claim"
 
 
+def test_v2_bundle_accepts_editorial_publication_as_independent_evidence() -> None:
+    store = FakeV2Store()
+    client = _client(store, [])
+    bundle = _bundle(
+        requires_specter_mcp=False,
+        schema_version="frozen-leadgen-evidence-bundle-v2",
+    )
+    packet = bundle["research_evidence_packet"]
+    for claim in packet["claims"]:
+        evidence = claim["evidence"]
+        if evidence["publisher_domain"] == "news.example":
+            evidence["publisher_domain"] = "eu-startups.com"
+            evidence["source_url"] = evidence["source_url"].replace(
+                "news.example", "eu-startups.com"
+            )
+            evidence["producer_origin"] = "public-web-research:http:eu-startups.com"
+    packet.pop("packet_sha256")
+    packet["packet_sha256"] = hashlib.sha256(_canonical(packet)).hexdigest()
+    bundle["evidence_chunks"][0]["metadata"]["packet_sha256"] = packet["packet_sha256"]
+
+    digest = _upload(client, bundle)
+
+    assert store.bundles[digest]["payload"]["research_evidence_packet"]["assessment"][
+        "compound_evidence"
+    ] is True
+
+
+def test_v2_bundle_rejects_shared_profile_host_as_independent_evidence() -> None:
+    store = FakeV2Store()
+    client = _client(store, [])
+    bundle = _bundle(
+        requires_specter_mcp=False,
+        schema_version="frozen-leadgen-evidence-bundle-v2",
+    )
+    packet = bundle["research_evidence_packet"]
+    for claim in packet["claims"]:
+        evidence = claim["evidence"]
+        if evidence["publisher_domain"] == "news.example":
+            evidence["publisher_domain"] = "medium.com"
+            evidence["source_url"] = evidence["source_url"].replace(
+                "news.example", "medium.com"
+            )
+            evidence["producer_origin"] = "public-web-research:http:medium.com"
+    packet.pop("packet_sha256")
+    packet["packet_sha256"] = hashlib.sha256(_canonical(packet)).hexdigest()
+    bundle["evidence_chunks"][0]["metadata"]["packet_sha256"] = packet["packet_sha256"]
+    digest = hashlib.sha256(_canonical(bundle)).hexdigest()
+
+    response = client.put(
+        f"/api/machine/leadgen/v2/evidence-bundles/{digest}",
+        headers=SERVICE_HEADERS,
+        json=bundle,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "machine_v2_request_invalid"
+
+
 def test_v1_bundle_round_trips_without_hash_drift() -> None:
     bundle = _bundle(requires_specter_mcp=False)
     digest = hashlib.sha256(_canonical(bundle)).hexdigest()
